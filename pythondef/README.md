@@ -18,12 +18,14 @@ Bind paths and mounts to the image, like this on sigma2`clusters
 singularity shell --bind /cluster python.sif
 ```
 
-Once having activated the singularity shell, you're effectively running a Ubuntu machine with python and all python modules necessary to use fvtools interatively on the cluster. I like to work in ipyton, and this simply just need to call it to get started;
+Once having activated the singularity shell, you're effectively running a Ubuntu machine with python and all python modules necessary to use OpenDrift interatively on the cluster. 
+
+Those who loke to work in ipyton just need to call it to get started;
 ```singularity
 ipython
 ```
 
-Or, alternatively start a jupyter lab notebook
+Others might want to use a jupyter lab notebook
 ```singularity
 jupyter lab --no-browser --port 8890
 ```
@@ -33,3 +35,6 @@ create a link to that port from, say, betzy to your local machine
 ssh -N -f -L localhost:8890:localhost:8890 hes001@betzy.sigma2.no
 ```
 and you should be set to go.
+
+# Copy
+The singularity image is essentially just an ubuntu-desktop with python pre-installed. You can use images made by others, and copy them to any machine you may want to use it on.

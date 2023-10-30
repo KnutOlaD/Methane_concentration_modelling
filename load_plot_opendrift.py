@@ -276,6 +276,12 @@ bin_x_number = np.digitize(x.compressed(),bin_x)
 bin_y_number = np.digitize(y.compressed(),bin_y)
 bin_z_number = np.digitize(z.compressed(),bin_z)
 
+#Simplified vertical profile of length the same as the vertical grid
+vertical_profile = np.ones(bin_z.shape[0])
+#Should be an exponential with around 100 at the bottom and 10 at the surface
+vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])),1)/44))
+
+
 #Fill the GRID with the horizontal field at all timesteps
 for j in range(0,len(particles['time']-1)): 
     print(j)
@@ -286,8 +292,6 @@ for j in range(0,len(particles['time']-1)):
     for i in range(0,len(bin_z_number)):
         GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
 
-
-
 #Plot the horizontal field at the first time step and depth level 1
 plt.figure()
 plt.imshow(np.flipud(GRID[len(particles['time'])-1][1].todense().T))
@@ -295,7 +299,6 @@ plt.colorbar()
 #set a smaller color range
 plt.clim(0,10)
 plt.show()
-
 
 #Plot the horizontal field at the first time step and depth level
 #Create a gif of the horizontal fields at the first depth level
@@ -305,9 +308,6 @@ for i in range(0,len(GRID)):
     #make sure the color range is the same for all images
     #flip the image left to right
     images.append(np.flipud(GRID[i][1].todense().T))
-    
-    
-    
     #make sure the color range is the same for all images
 imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
 

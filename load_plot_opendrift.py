@@ -242,8 +242,83 @@ def get_grid_params(particles,resolution=[1000,10]):
 
     return bin_x,bin_y,bin_z,bin_time
 
+#############################################################################################################
+
+def calc_schmidt_number(T=5,gas='methane'):
+    '''
+    Calculates the Schmidt number for methane, co2, oxygen or nitrogen in 
+    seawater at a given temperature. Temperature default value is 5 degrees celcius.
+
+    Input:
+    T: temperature in degrees celcius
+    gas: string containing the name of the gas. Default is methane. Options are 
+    'methane', 'carbon dioxide', 'oxygen' and 'nitrogen'
+
+    Output:
+    Sc: Schmidt number
+
+    '''
+    
+    #Coefficient matrix for methane, oxygen, nitrogen, and carbon dioxide
+    #Coefficients from Table 1 in Wanninkhof (2014)
+
+    coeffmat = np.array([[2101.2,-131.54,4.4931,-0.08676,0.00070663],
+                        [2116.8,-136.25,4.7353,-0.092307,0.0007555],
+                        [1920.4,-135.6,5.2122,-0.10939,0.00093713],
+                        [2304.8,-162.75,6.2557,-0.13129,0.0011255]])
+
+    if gas == 'methane':
+        coeff = coeffmat[0]
+    elif gas == 'carbon dioxide':
+        coeff = coeffmat[1]
+    elif gas == 'oxygen':
+        coeff = coeffmat[2]
+    elif gas == 'nitrogen':
+        coeff = coeffmat[3]
+    else:
+        print('Error: Gas name not recognized')
+    
+    Sc = coeff[0] + coeff[1]*T + coeff[2]*T**2 + coeff[3]*T**3 + coeff[4]*T**4
+    
+    #everything is good.
+
+    return Sc
 
 #############################################################################################################
+
+def calc_atm_flux(C_o,C_a,Sc,u10=5,temperature=20,gas='methane'):
+    ''' 
+    Calculates the atmospheric flux of gas using the Wanninkhof (2014) formulation.
+
+    Input:
+    C_o: concentration in the surface layer
+    C_a: concentration in the atmosphere
+    Sc: Schmidt number
+    u10: wind speed at 10 meters height
+    temperature: temperature in degrees celcius in air(?)
+    gas: string containing the name of the gas. Default is methane. Options are
+    'methane', 'carbon dioxide', 'oxygen' and 'nitrogen'
+
+    Output:
+    k: gas transfer velocity
+
+    '''
+
+    #Calculate the Schmidt number
+    Sc = calc_schmidt_number(T=temperature,gas=gas)
+
+    #Calculate the gas transfer velocity
+    k = 0.251 * u10**2 * (Sc/660)**(-0.5) #m/day
+
+    #Calculate the atmospheric flux
+    F = k * (C_o - C_a) #mol/m2/day
+
+    return F
+
+
+
+
+
 
 #Just load the grid object to make it faster
 #with open('grid_object.pickle', 'rb') as f:
@@ -305,14 +380,9 @@ atmospheric_conc = ((44.64*2)/1000000) #mol/m3
 #Oswald spøiboøotu coeffocient
 oswald_solu_coeff = 0.28 #(for methane)
 
-def calc_schmidt_number(T=5):
-    '''
-    Calculates the Schmidt number for methane in seawater at a given temperature
-    Temperature default value is 5 degrees celcius
-    '''
-    Sc = 2101.2 - 131.54*T + 4.4931*T**2 - -0.08676*T**3 + 0.00070663*T**4
-    #Something weird going on. Wont match publication values.
-    return Sc
+#Set wind speed and temperature to constant value for now
+U_constant = 5 #m/s
+T_constant = 10 #degrees celcius
 
 #WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
 #Fill the GRID with the horizontal field at all timesteps
@@ -340,7 +410,18 @@ for j in range(0,len(particles['time']-1)):
         
         #Apply loss and calculate and store atmospheric flux if particle was in the surface layer.
         if bin_z_number[i] == 1:
-
+            #Calculate atmoshperic flux
+            GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]] = calc_atm_flux(
+                C_o=GRID[j][1][bin_x_number[i],bin_y_number[i]],
+                C_a=atmospheric_conc,
+                Sc=calc_schmidt_number(T=20,gas='methane'),
+                u10=U_constant,
+                temperature=temp_constant,
+                gas='methane')
+            #Calculate the loss. Loss occurs at the same timestep as flux.
+            GRID[j][1][bin_x_number[i],bin_y_number[i]] = (GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
+                                                            GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]])
+        
         #Add the vertical profile to the GRID
         #calculate the concentration of the grid cell. 
         GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid

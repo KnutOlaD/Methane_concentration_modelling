@@ -18,9 +18,6 @@ from datetime import datetime
 import numpy as np
 import netCDF4
 
-
-
-
 #Find path to the netcdf file containing the Nordkyst-800 data
 date    = datetime(2018, 5, 20)
 https   = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/his/ocean_his.an.'

@@ -45,11 +45,13 @@ def load_nc_data(filename):
                         'status':ODdata.variables['status'][:],
                         'trajectory':ODdata.variables['trajectory'][:]}
 
-    return particles
+    #example of usage
+    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
+    #particles = load_nc_data(datapath)
 
-#load data:
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
-particles = load_nc_data(datapath)
+
+
+    return particles
 
 ###########################################################################################
 
@@ -317,176 +319,175 @@ def calc_atm_flux(C_o,C_a,Sc,u10=5,temperature=20,gas='methane'):
 
 
 
+if __name__ == '__main__':
 
+    #Just load the grid object to make it faster
+    #with open('grid_object.pickle', 'rb') as f:
+    #   GRID = pickle.load(f)
 
+    #Add utm coordinates to the particles dictionary
+    particles = add_utm(particles)
 
-#Just load the grid object to make it faster
-#with open('grid_object.pickle', 'rb') as f:
- #   GRID = pickle.load(f)
+    #Create a zero grid
+    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(particles,
+                                                savefile_path=False,
+                                                resolution=[5000,50])
 
-#Add utm coordinates to the particles dictionary
-particles = add_utm(particles)
+    ### Try to fill the first sparse matrix with the horizontal field at the first time step and depth level
+    #Get locations from the utm coordinates in the particles dictionary 
+    #Get the grid parameters
 
-#Create a zero grid
-GRID,bin_x,bin_y,bin_z,bin_time = create_grid(particles,
-                                              savefile_path=False,
-                                              resolution=[5000,50])
+    #Get the grid parameters
+    #bin_x,bin_y,bin_z,bin_time = get_grid_params(particles)
 
-### Try to fill the first sparse matrix with the horizontal field at the first time step and depth level
-#Get locations from the utm coordinates in the particles dictionary 
-#Get the grid parameters
+    #Get the last timestep
+    bin_time_number = np.digitize(particles['time'][0],bin_time)
+    bin_time_number = len(particles['time'])-1
 
-#Get the grid parameters
-#bin_x,bin_y,bin_z,bin_time = get_grid_params(particles)
+    #Get the utm coordinates of the particles in the first time step
+    x = particles['UTM_x'][:,bin_time_number]
+    y = particles['UTM_y'][:,bin_time_number]
+    z = np.abs(particles['z'][:,bin_time_number])
 
-#Get the last timestep
-bin_time_number = np.digitize(particles['time'][0],bin_time)
-bin_time_number = len(particles['time'])-1
+    #Get the bin numbers for the particles
+    bin_x_number = np.digitize(x.compressed(),bin_x)
+    bin_y_number = np.digitize(y.compressed(),bin_y)
+    bin_z_number = np.digitize(z.compressed(),bin_z)
 
-#Get the utm coordinates of the particles in the first time step
-x = particles['UTM_x'][:,bin_time_number]
-y = particles['UTM_y'][:,bin_time_number]
-z = np.abs(particles['z'][:,bin_time_number])
+    #Simplified vertical profile of length the same as the vertical grid
+    vertical_profile = np.ones(bin_z.shape[0])
+    #Should be an exponential with around 100 at the bottom and 10 at the surface
+    vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])+10),1)/44))
+    #Create a matrix with the same size as particles['z'] and fill with the vertical profile depending
+    #on the depth level where the particle was in its first active timestep
 
-#Get the bin numbers for the particles
-bin_x_number = np.digitize(x.compressed(),bin_x)
-bin_y_number = np.digitize(y.compressed(),bin_y)
-bin_z_number = np.digitize(z.compressed(),bin_z)
+    #Create new dictionary entry with same size and mask as particles['z']:
+    particles['weight'] = np.ma.zeros(particles['z'].shape)
+    #add mask
+    particles['weight'].mask = particles['z'].mask
 
-#Simplified vertical profile of length the same as the vertical grid
-vertical_profile = np.ones(bin_z.shape[0])
-#Should be an exponential with around 100 at the bottom and 10 at the surface
-vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])+10),1)/44))
-#Create a matrix with the same size as particles['z'] and fill with the vertical profile depending
-#on the depth level where the particle was in its first active timestep
+    #Grid cell volume
+    grid_resolution = [5000,5000,50]
+    V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 
-#Create new dictionary entry with same size and mask as particles['z']:
-particles['weight'] = np.ma.zeros(particles['z'].shape)
-#add mask
-particles['weight'].mask = particles['z'].mask
+    #Have a sparse matrix which keeps track of the number of particles in each grid cell. 
+    GRID_part = GRID
+    #Establish a matrix for atmospheric flux which is the same size as GRID only with one depth layer
+    GRID_atm_flux = GRID[1][:]
 
-#Grid cell volume
-grid_resolution = [5000,5000,50]
-V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
+    #Atmospheric background concentration
+    atmospheric_conc = ((44.64*2)/1000000) #mol/m3
 
-#Have a sparse matrix which keeps track of the number of particles in each grid cell. 
-GRID_part = GRID
-#Establish a matrix for atmospheric flux which is the same size as GRID only with one depth layer
-GRID_atm_flux = GRID[1][:]
+    #Oswald spøiboøotu coeffocient
+    oswald_solu_coeff = 0.28 #(for methane)
 
-#Atmospheric background concentration
-atmospheric_conc = ((44.64*2)/1000000) #mol/m3
+    #Set wind speed and temperature to constant value for now
+    U_constant = 5 #m/s
+    T_constant = 10 #degrees celcius
 
-#Oswald spøiboøotu coeffocient
-oswald_solu_coeff = 0.28 #(for methane)
-
-#Set wind speed and temperature to constant value for now
-U_constant = 5 #m/s
-T_constant = 10 #degrees celcius
-
-#WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
-#Fill the GRID with the horizontal field at all timesteps
-for j in range(0,len(particles['time']-1)): 
-    #Calculate gas transfer velocity:
-    gas_transf_vel = 0.31 * (u10**2 + 0.5 * (Sc/660)**(-2/3)) #m/day
-    print(j)
-    #Get the utm coordinates of the particles at time step j but only non-masked values
-    bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)
-    bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
-    bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-    for i in range(0,len(bin_z_number)): #This essentially loops over all particles
-        #Give initial weight to particles that just became active
-        if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
-            #use the round of the depth
-            particles['weight'][i,j] = vertical_profile[
-                int(np.abs(particles['z'][i,j]))]
+    #WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
+    #Fill the GRID with the horizontal field at all timesteps
+    for j in range(0,len(particles['time']-1)): 
+        #Calculate gas transfer velocity:
+        gas_transf_vel = 0.31 * (u10**2 + 0.5 * (Sc/660)**(-2/3)) #m/day
+        print(j)
+        #Get the utm coordinates of the particles at time step j but only non-masked values
+        bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)
+        bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
+        bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
+        for i in range(0,len(bin_z_number)): #This essentially loops over all particles
+            #Give initial weight to particles that just became active
+            if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
+                #use the round of the depth
+                particles['weight'][i,j] = vertical_profile[
+                    int(np.abs(particles['z'][i,j]))]
+            
+            #Set the weight to the average of the weights of the particles in the previous grid cell. 
+            if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
+                particles['weight'][i,j] = (V_grid * 
+                                            GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
+                                                GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
+                                            )
+            
+            #Apply loss and calculate and store atmospheric flux if particle was in the surface layer.
+            if bin_z_number[i] == 1:
+                #Calculate atmoshperic flux
+                GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]] = calc_atm_flux(
+                    C_o=GRID[j][1][bin_x_number[i],bin_y_number[i]],
+                    C_a=atmospheric_conc,
+                    Sc=calc_schmidt_number(T=20,gas='methane'),
+                    u10=U_constant,
+                    temperature=temp_constant,
+                    gas='methane')
+                #Calculate the loss. Loss occurs at the same timestep as flux.
+                GRID[j][1][bin_x_number[i],bin_y_number[i]] = (GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
+                                                                GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]])
+            
+            #Add the vertical profile to the GRID
+            #calculate the concentration of the grid cell. 
+            GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
+            #Add the number of particles to the particles matrix. 
+            GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
         
-        #Set the weight to the average of the weights of the particles in the previous grid cell. 
-        if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-            particles['weight'][i,j] = (V_grid * 
-                                        GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-                                            GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-                                        )
-        
-        #Apply loss and calculate and store atmospheric flux if particle was in the surface layer.
-        if bin_z_number[i] == 1:
-            #Calculate atmoshperic flux
-            GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]] = calc_atm_flux(
-                C_o=GRID[j][1][bin_x_number[i],bin_y_number[i]],
-                C_a=atmospheric_conc,
-                Sc=calc_schmidt_number(T=20,gas='methane'),
-                u10=U_constant,
-                temperature=temp_constant,
-                gas='methane')
-            #Calculate the loss. Loss occurs at the same timestep as flux.
-            GRID[j][1][bin_x_number[i],bin_y_number[i]] = (GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-                                                            GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]])
-        
-        #Add the vertical profile to the GRID
-        #calculate the concentration of the grid cell. 
-        GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-        #Add the number of particles to the particles matrix. 
-        GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
-    
-    #Calculate the atmospheric flux. 
-    GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atm_background)*0.4
+        #Calculate the atmospheric flux. 
+        GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atm_background)*0.4
 
-    bin_z_number_old = bin_z_number
+        bin_z_number_old = bin_z_number
 
-#numba. test. 
+    #numba. test. 
 
-#Plot the horizontal field at the first time step and depth level 1
-plt.figure()
-plt.imshow(np.flipud(GRID[len(particles['time'])-1][1].todense().T))
-plt.colorbar()
-#set a smaller color range
-plt.clim(0,10)
-plt.show()
+    #Plot the horizontal field at the first time step and depth level 1
+    plt.figure()
+    plt.imshow(np.flipud(GRID[len(particles['time'])-1][1].todense().T))
+    plt.colorbar()
+    #set a smaller color range
+    plt.clim(0,10)
+    plt.show()
 
-#Plot the horizontal field at the first time step and depth level
-#Create a gif of the horizontal fields at the first depth level
-import imageio
-images = []
-for i in range(0,len(GRID)):
-    #make sure the color range is the same for all images
-    #flip the image left to right
-    images.append(np.flipud(GRID[i][1].todense().T))
-    #make sure the color range is the same for all images
-imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
+    #Plot the horizontal field at the first time step and depth level
+    #Create a gif of the horizontal fields at the first depth level
+    import imageio
+    images = []
+    for i in range(0,len(GRID)):
+        #make sure the color range is the same for all images
+        #flip the image left to right
+        images.append(np.flipud(GRID[i][1].todense().T))
+        #make sure the color range is the same for all images
+    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
 
-from PIL import Image
+    from PIL import Image
 
-# Create a list to store the images
-images = []
+    # Create a list to store the images
+    images = []
 
-for i in range(0,len(GRID)):
-    fig, ax = plt.subplots()
-    im = ax.imshow(np.flipud(GRID[i][1].todense().T))
-    im.set_cmap('viridis')
-    im.set_clim(0,50)
-    fig.colorbar(im, ax=ax)
+    for i in range(0,len(GRID)):
+        fig, ax = plt.subplots()
+        im = ax.imshow(np.flipud(GRID[i][1].todense().T))
+        im.set_cmap('viridis')
+        im.set_clim(0,50)
+        fig.colorbar(im, ax=ax)
 
-    # Draw the figure first
-    fig.canvas.draw()
+        # Draw the figure first
+        fig.canvas.draw()
 
-    # Now we can save it to a numpy array.
-    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        # Now we can save it to a numpy array.
+        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
 
-    # Normalize the data to the range [0, 255]
-    data = ((data - data.min()) * (1/(data.max() - data.min()) * 255)).astype('uint8')
+        # Normalize the data to the range [0, 255]
+        data = ((data - data.min()) * (1/(data.max() - data.min()) * 255)).astype('uint8')
 
-    images.append(Image.fromarray(data))
+        images.append(Image.fromarray(data))
 
-    plt.close(fig)
+        plt.close(fig)
 
-imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_0.gif', images, fps=5)
+    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_0.gif', images, fps=5)
 
 
 
 
 
-        
+            
 
 
 

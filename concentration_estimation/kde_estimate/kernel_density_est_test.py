@@ -6,9 +6,7 @@ from KDEpy import TreeKDE
 import matplotlib.pyplot as plt
 import numpy as np
 
-
-
-
+'''
 # Create 2D data of shape (obs, dims)
 data = np.random.randn(2**4, 2)
 
@@ -72,8 +70,6 @@ x,y = np.meshgrid(np.linspace(-4,4,grid_points[0]),np.linspace(-4,4,grid_points[
 plt.figure()
 for i in range(0, 10):
     
-    
-
     #activate one point
     weights[:i] = 1.
 
@@ -105,7 +101,7 @@ for i in range(0, 10):
 
 
 
-
+'''
 #Create a kernel function with age-based bandwidth and custom weights
 
 #dissipation_energy_timescale = 1.0

@@ -104,9 +104,8 @@ def gaussian_kernel_2d(x,y,bw=[[1,0],[0,1]],norm='l2norm'):
     dens_kernel = np.zeros((len(x),len(y)))
     
 #    if bw[0,1] == 0 and bw[1,0] == 0:
-#        dens_kernel = ((1/(2*np.pi*bw**2))*np.exp(-0.5*((x/bw)**2+(y/bw)**2)))
+#    dens_kernel = ((1/(2*np.pi*bw**2))*np.exp(-0.5*((x/bw)**2+(y/bw)**2)))
 
-    
     for i in range(len(x)):
         for j in range(len(y)):
             dens_kernel[i,j] = multivariate_normal.pdf([x[i],y[j]],mean=[0,0],cov=bw)
@@ -153,7 +152,7 @@ fig, ax = plt.subplots()
 ax.scatter(x, y, alpha=1, s=10, c='k')
 
 #kde parameters
-bw = 1 #bandwidth
+bw = 0.1 #bandwidth
 
 #assign a gaussian 2d kernel to each datapoint and compute the sum on a grid
 #Define the grid
@@ -172,7 +171,7 @@ xx, yy = np.meshgrid(x_grid,y_grid)
 #evaluate the kernel on the datapoints and grid
 grid_points = np.vstack([xx.ravel(),yy.ravel()])
 #Create a kernel matrix for each datapoint
-kernel_matrix_sum = np.zeros((n,len(grid_points[0])))
+kernel_matrix_sum = np.zeros((len(grid_points[0])))
 #craete a matrix that can hold 3x3 kernel matrices
 kernel_matrix = np.zeros((n,3,3))
 for i in range(n):
@@ -183,6 +182,20 @@ for i in range(n):
     b = np.array([[bw,bw,bw],[0,0,0],[-bw,-bw,-bw]])
     #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
     kernel_matrix[i,:,:] = ((1/(2*np.pi*bw**2))*np.exp(-0.5*((a/bw)**2+(b/bw)**2)))/np.sum(((1/(2*np.pi*bw**2))*np.exp(-0.5*((a/bw)**2+(b/bw)**2))))
+    #add the kernel_matrix values by binning them into the grid using digitize
+    #get the indices of the grid points that are closest to the datapoints
+    #locaatio of kernel function using a, b and x/y
+    lx = a+x[i]
+    ly = b+y[i]
+    #get the indices of the grid points that are closest to the datapoints
+    ix = np.digitize(lx,x_grid)
+    iy = np.digitize(ly,y_grid)
+    #add the kernel values to the kernel_matrix_sum
+    kernel_matrix_sum[ix,iy] += kernel_matrix[i,:,:].ravel()  
+
+    
+
+
 
     #check if the kernle is normalized
     print(np.sum(kernel_matrix[i,:]))

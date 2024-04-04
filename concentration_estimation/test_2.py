@@ -12,14 +12,12 @@ import utm
 from scipy.sparse import coo_matrix as coo_matrix
 from scipy.sparse import csr_matrix as csr_matrix
 import pickle
-import numba
 
 #List of variables in the script:
-#datapath: path to the netcdf file containing the opendrift data|
+#datapath: path to the netcdf file containing the opendrift data
 #ODdata: netcdf file containing the opendrift data
 #particles: dictionary containing information about the drift particles
 #GRID: list of lists containing the horizontal fields at each depth and time step as sparse matrices
-
 
 #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
@@ -44,21 +42,19 @@ def load_nc_data(filename):
                         'z':ODdata.variables['z'][:],
                         'time':ODdata.variables['time'][:],
                         'status':ODdata.variables['status'][:],
-                        'trajectory':ODdata.variables['trajectory'][:]} #this is 
+                        'trajectory':ODdata.variables['trajectory'][:]}
 
     #example of usage
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
     #particles = load_nc_data(datapath)
 
+
+
     return particles
 
 ###########################################################################################
 
-#@numba.jit(nopython=True)
-def create_grid(time,
-                UTM_x_minmax,
-                UTM_y_minmax,
-                maxdepth,
+def create_grid(particles,
                 resolution=[1000,10],
                 savefile_path=False,
                 grid_params=[],
@@ -79,7 +75,6 @@ def create_grid(time,
     [bin_x,bin_y,bin_z,bin_time].
     fill_data: boolean. If True, the grid object will be filled with the horizontal fields from
     the particles dictionary
-    maxdepth: maximum depth of the drift
 
     Output:
     GRID: list of lists containing the sparse matrices for each horizontal field at each
@@ -88,6 +83,7 @@ def create_grid(time,
     bin_y: bin edges for the horizontal grid
     bin_z: bin edges for the vertical grid
     bin_time: bin edges for the temporal grid
+            
     '''
     #Create a 4 dimensional grid, covering the whole area of the drift and all timesteps
     #Define grid spatial resolution
@@ -95,15 +91,15 @@ def create_grid(time,
     if not grid_params:
         grid_resolution = resolution[0] #in meters
         #Define temporal resolution
-        grid_temporal_resolution = time[1] - time[0] #the time resolution from OD.
+        grid_temporal_resolution = particles['time'][1] - particles['time'][0] #the time resolution from OD.
         #Define vertical resolution
         grid_vertical_resolution = resolution[1] #in meters
 
         ### CREATE HORIZONTAL GRID ###
-        UTM_x_min = UTM_x_minmax[0]
-        UTM_x_max = UTM_x_minmax[1]
-        UTM_y_min = UTM_y_minmax[0]
-        UTM_y_max = UTM_y_minmax[1]
+        UTM_x_min = np.min(particles['UTM_x'])
+        UTM_x_max = np.max(particles['UTM_x'])
+        UTM_y_min = np.min(particles['UTM_y'])
+        UTM_y_max = np.max(particles['UTM_y'])
 
         #Define the bin edges using the grid resolution and min/max values
         bin_x = np.arange(UTM_x_min-grid_resolution,
@@ -120,13 +116,13 @@ def create_grid(time,
         ### CREATE VERTICAL GRID ###
         #Define the bin edges using the grid resolution and min/max values
         bin_z = np.arange(0,
-                          maxdepth+grid_vertical_resolution,
+                          np.max(np.abs(particles['z']))+grid_vertical_resolution,
                           grid_vertical_resolution)
 
         ### CREATE TEMPORAL GRID ###
         #Define the bin edges using the grid resolution and min/max values
-        bin_time = np.arange(np.min(time),
-                             np.max(time)+grid_temporal_resolution,
+        bin_time = np.arange(np.min(particles['time']),
+                             np.max(particles['time'])+grid_temporal_resolution,
                              grid_temporal_resolution)
     
     #Loop over all time steps and depth levels and create a sparse matrix for each
@@ -139,26 +135,25 @@ def create_grid(time,
         #Bin all the particles at time j into different depth levels
         z_indices = np.digitize(particles['z'][:,i],bin_z) 
         for j in range(0,bin_z.shape[0]):
-            #Create a sparse matrix for each time step
-            GRID[i].append([])
-            #Create a sparse matrix for each depth level
-            GRID[i][j] = csr_matrix(H_0)
-            #if fill_data == True:
+            if fill_data == True:
                 #Bin the particles in the first time step and depth level to the grid
                 #Binned x coordinates:
-            #    x = UTM_x[z_indices == i,j]
+                x = particles['UTM_x'][z_indices == i,j]
                 #Binned y coordinates:
-            #    y = UTM_y[z_indices == i,j]
+                y = particles['UTM_y'][z_indices == i,j]
                 #Find the index locations of the x and y coordinates
-                #x_indices = np.digitize(x,bin_x)
-                #y_indices = np.digitize(y,bin_y)
+                x_indices = np.digitize(x,bin_x)
+                y_indices = np.digitize(y,bin_y)
                 #Create a horizontal field with the same size as the grid and fill with the 
                 #horizontal coordinates, adding up duplicates in the x_indices/y_indices list
                 #Find duplicates in the x_indices/y_indices list
                 #x_indices_unique = np.unique(x_indices)
                 
-            #else:
-            
+            else:
+                #Create a sparse matrix for each time step
+                GRID[i].append([])
+                #Create a sparse matrix for each depth level
+                GRID[i][j] = csr_matrix(H_0)
 
     
     if savefile_path == True:
@@ -190,8 +185,6 @@ def add_utm(particles):
     UTM_y.mask = particles['lon'].mask
     #Loop over all time steps
     for i in range(particles['lon'].shape[1]):
-        #set all values outside of the UTM domain to nan
-        #...
         #Find the UTM coordinates
         UTM_x[:,i],UTM_y[:,i],zone_number,zone_letter = utm.from_latlon(
         particles['lat'][:,i],
@@ -203,7 +196,6 @@ def add_utm(particles):
     return particles
 
 ###########################################################################################
-
 
 def get_grid_params(particles,resolution=[1000,10]):
     '''
@@ -295,9 +287,9 @@ def calc_schmidt_number(T=5,gas='methane'):
 
 #############################################################################################################
 
-def calc_gt_vel(u10=5,temperature=20,gas='methane'):
+def calc_atm_flux(C_o,C_a,Sc,u10=5,temperature=20,gas='methane'):
     ''' 
-    Calculates the gas transfer velocity using the Wanninkhof (2014) formulation.
+    Calculates the atmospheric flux of gas using the Wanninkhof (2014) formulation.
 
     Input:
     C_o: concentration in the surface layer
@@ -316,30 +308,15 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
     #Calculate the Schmidt number
     Sc = calc_schmidt_number(T=temperature,gas=gas)
 
-    #make this such that we can calculate the gas transfer velocity for the whole grid and just
-    #grab the data... 
     #Calculate the gas transfer velocity
     k = 0.251 * u10**2 * (Sc/660)**(-0.5) #m/day
 
     #Calculate the atmospheric flux
-    #F = k * (C_o - C_a) #mol/m2/day
+    F = k * (C_o - C_a) #mol/m2/day
 
-    return k
+    return F
 
-def calc_mox_consumption(C_o,R_ox):
-    '''
-    Calculates the consumption of oxygen due to methane oxidation
 
-    Input:
-    C_o: concentration of methane (mol/m3)
-    R_ox: rate of oxygen consumption due to methane oxidation (1/s)
-
-    Output:
-    O2_consumption: consumption of oxygen due to methane oxidation
-    '''
-    CH4_consumption = R_ox * C_o
-
-    return CH4_consumption
 
 if __name__ == '__main__':
 
@@ -347,23 +324,16 @@ if __name__ == '__main__':
     #with open('grid_object.pickle', 'rb') as f:
     #   GRID = pickle.load(f)
 
-    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
-    #particles = load_nc_data(datapath)
-
+    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
+    particles = load_nc_data(datapath)
 
     #Add utm coordinates to the particles dictionary
     particles = add_utm(particles)
 
-run_everything = False
-if run_everything == True:
     #Create a zero grid
-    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
-                                                [np.min(np.ma.filled(np.array(particles['UTM_x']),np.nan)),np.max(np.ma.filled(np.array(particles['UTM_x']),np.nan))],
-                                                [np.min(np.ma.filled(np.array(particles['UTM_y']),np.nan)),np.max(np.ma.filled(np.array(particles['UTM_y']),np.nan))],
-                                                np.max(np.abs(particles['z'])),
+    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(particles,
                                                 savefile_path=False,
-                                                resolution=np.array([5000,50]))
+                                                resolution=[5000,50])
 
     ### Try to fill the first sparse matrix with the horizontal field at the first time step and depth level
     #Get locations from the utm coordinates in the particles dictionary 
@@ -405,11 +375,10 @@ if run_everything == True:
     #Have a sparse matrix which keeps track of the number of particles in each grid cell. 
     GRID_part = GRID
     #Establish a matrix for atmospheric flux which is the same size as GRID only with one depth layer
-    GRID_atm_flux = np.array(GRID)[:,0] #this can be just an np array. 
+    GRID_atm_flux = GRID[1][:]
 
     #Atmospheric background concentration
     atmospheric_conc = ((44.64*2)/1000000) #mol/m3
-    background_ocean_conc = 3e-09 #mol/m3
 
     #Oswald spøiboøotu coeffocient
     oswald_solu_coeff = 0.28 #(for methane)
@@ -418,65 +387,25 @@ if run_everything == True:
     U_constant = 5 #m/s
     T_constant = 10 #degrees celcius
 
-    ############################################################
-    ######### CALCULATE THE GAS TRANSFER VELOCITY FIELD ########
-    ############################################################
-
-    #Calculate the gas transfer velocity
     gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
-
-    ############################################
-    ######### MODEL THE CONCENTRATION ##########
-    ############################################
-
 
     #WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
     #Fill the GRID with the horizontal field at all timesteps
-    for j in range(1,len(particles['time']-1)): 
+    for j in range(0,len(particles['time']-1)): 
         #Calculate gas transfer velocity:
-        #gas_transf_vel = 0.31 * (u10**2 + 0.5 * (Sc/660)**(-2/3)) #m/day
-        
+        gas_transf_vel = 0.31 * (u10**2 + 0.5 * (Sc/660)**(-2/3)) #m/day
         print(j)
-        
-        #--------------------#
-        #PUT PARTICLES IN BINS#
-        #--------------------#
-
+        #Get the utm coordinates of the particles at time step j but only non-masked values
         bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)
         bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
         bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-
-        #LOOP OVER ALL PARTICLES AND FILL THE GRID
-
         for i in range(0,len(bin_z_number)): #This essentially loops over all particles
-            
-            #-------------------------#
-            #GIVE NEW PARTICLES WEIGHT#
-            #-------------------------#
-
-            #This is output from M2PG1       
+            #Give initial weight to particles that just became active
             if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
                 #use the round of the depth
                 particles['weight'][i,j] = vertical_profile[
                     int(np.abs(particles['z'][i,j]))]
-                
-            #-------------------------------#
-            #CALCULATE ATMOSPHERIC FLUX/LOSS#
-            #-------------------------------#
-                
-            #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
-            GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]] = gas_transfer_vel*(
-                (((GRID[j][1][bin_x_number[i],bin_y_number[i]]+3e-09)-atmospheric_conc)
-                ))
-            #CALCULATE LOSS
-            GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
-                GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-                GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
-
-            #-----------------------------------#
-            #ASSUME COMPLETE MIXING IN GRID CELL#
-            #-----------------------------------#
-
+            
             #Set the weight to the average of the weights of the particles in the previous grid cell. 
             if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
                 particles['weight'][i,j] = (V_grid * 
@@ -485,27 +414,27 @@ if run_everything == True:
                                             )
             
             #Apply loss and calculate and store atmospheric flux if particle was in the surface layer.
-            #if bin_z_number[i] == 1:
+            if bin_z_number[i] == 1:
                 #Calculate atmoshperic flux
-            #    GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]] = gas_transfer_vel*(
-            #        (GRID[j][1][bin_x_number[i],bin_y_number[i]]-atmospheric_conc)
-            #    )
-                                #Calculate the loss. Loss occurs at the same timestep as flux.
-            #    GRID[j][1][bin_x_number[i],bin_y_number[i]] = (GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-            #                                                    GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]])
+                GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]] = calc_atm_flux(
+                    C_o=GRID[j][1][bin_x_number[i],bin_y_number[i]],
+                    C_a=atmospheric_conc,
+                    Sc=calc_schmidt_number(T=20,gas='methane'),
+                    u10=U_constant,
+                    temperature=temp_constant,
+                    gas='methane')
+                #Calculate the loss. Loss occurs at the same timestep as flux.
+                GRID[j][1][bin_x_number[i],bin_y_number[i]] = (GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
+                                                                GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]])
             
             #Add the vertical profile to the GRID
-            
-            #-----------------------------------------#
-            #CALCULATE CONCENTRATION IN THE GRID CELLS#
-            #-----------------------------------------#
-                
+            #calculate the concentration of the grid cell. 
             GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-            #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
+            #Add the number of particles to the particles matrix. 
             GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
         
-        #Calculate the totaø atmospheric flux. 
-        #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+        #Calculate the atmospheric flux. 
+        GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atm_background)*0.4
 
         bin_z_number_old = bin_z_number
 
@@ -563,18 +492,3 @@ if run_everything == True:
 
 
             
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

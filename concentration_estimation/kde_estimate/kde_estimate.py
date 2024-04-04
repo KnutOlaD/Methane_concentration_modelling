@@ -185,9 +185,6 @@ grid_points = (int(np.ceil(bin_x_test)),int(np.ceil(bin_y_test)))  # Grid points
 plt.figure()
 plt.scatter(particles_test_set[:,0],particles_test_set[:,1],s=1)
 
-
-
-
 #set number of contours: N
 N = 64  # Number of contours
 

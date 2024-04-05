@@ -10,6 +10,7 @@ from scipy.stats import norm
 from scipy.stats import gaussian_kde
 from scipy.stats import multivariate_normal
 import time as time
+from numba import jit, prange, njit
 
 ########################################
 ############# FUNCTIONS ################
@@ -141,18 +142,84 @@ def normalize_kernel(kernel,norm='l2norm'):
         return kernel
 
 
+def add_elements(z_kernelized, ix, iy, kernel_matrix):
+    for i in range(ix.shape[0]):
+        for j in range(ix.shape[1]):
+            z_kernelized[ix[i, j], iy[i, j]] += kernel_matrix[i, j]
+    return z_kernelized
+
+#create a function of this
+@jit(nopython=True)
+def kernel_matrix_2d(x,y,x_grid,y_grid,bw):
+    ''' 
+    Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 
+    2*bw for all datapoints and sums them onto grid x_grid,ygrid. The kernel matrices are 
+    created by binning the kernel values (the 2d gaussian) are created with a grid with
+    adaptive resolution such that the kernel resolution fits within the x_grid/y_grid grid resolution. 
+    Normalizes with the sum of the kernel values (l2norm). Assumes uniform x_grid/y_grid resolution.
+
+    Input: 
+    x: x-coordinates of the datapoints
+    y: y-coordinates of the datapoints
+    x_grid: x-coordinates of the grid
+    y_grid: y-coordinates of the grid
+    bw: bandwidth of the kernel (vector of length n with the bandwidth for each datapoint)
+
+    Output:
+    z_kernelized: a 3d matrix with the kernel values for each datapoint
+    '''
+
+    #calculate the grid resolution
+    dxy_grid = x_grid[1]-x_grid[0]
+
+    #create a grid for z values
+    z_kernelized = np.zeros((len(x_grid),len(y_grid)))
+    
+    for i in range(len(x)):
+        #calculate the kernel for each datapoint
+        #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
+        #create a matrix for the kernel that makes sure the kernel resolution fits
+        #within the grid resolution (adaptive kernel size)
+        ker_size = int(np.ceil((2*bw[i])/dxy_grid)*3)
+        a = np.linspace(-2*bw[i],2*bw[i],ker_size)
+        b = np.linspace(-2*bw[i],2*bw[i],ker_size)
+        #create the 2d coordinate matrix
+        a = a.reshape(-1,1)
+        b = b.reshape(1,-1)
+        #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
+        kernel_matrix = ((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2)))/np.sum(((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2))))
+        #add the kernel_matrix values by binning them into the grid using digitize
+        #get the indices of the grid points that are closest to the datapoints
+        lx = a+x[i]
+        ly = b+y[i]
+        #get the indices of the grid points that are closest to the datapoints
+        ix = np.digitize(lx,x_grid)
+        iy = np.digitize(ly,y_grid)
+        #add the kernel values to the grid
+        # Use the function in your code
+        z_kernelized[ix,iy] += kernel_matrix
+        #z_kernelized[ix,iy] += kernel_matrix
+    #reshape z_kernelized to the grid
+
+    return z_kernelized
+
+# n IS THE NUMBER OF DATAPOINTS AND N IS THE NUMBER OF CONTOURS IN THE PLOT
+
+#set plotting style
+plt.style.use('dark_background')
+
 #generate data
 mu = [0., 0.]
 sigma = [[1, 0], [0, 5]]
-n = 10
+n = 100
 x,y = np.random.multivariate_normal(mu, sigma, n).T
 
 #plot the points
 fig, ax = plt.subplots()
-ax.scatter(x, y, alpha=1, s=10, c='k')
+ax.scatter(x, y, alpha=1, s=10, c='w')
 
 #kde parameters
-bw = 0.1 #bandwidth
+bw = 0.5 #bandwidth
 
 #assign a gaussian 2d kernel to each datapoint and compute the sum on a grid
 #Define the grid
@@ -165,53 +232,35 @@ dxy_grid = 0.1
 #Create a grid
 x_grid = np.arange(xmin,xmax,dxy_grid)
 y_grid = np.arange(ymin,ymax,dxy_grid)
+#create a grid for z values
 #Create a grid of points
 xx, yy = np.meshgrid(x_grid,y_grid)
+#create a grid for z values
+z = np.zeros((len(x_grid),len(y_grid)))
 
 #evaluate the kernel on the datapoints and grid
 grid_points = np.vstack([xx.ravel(),yy.ravel()])
 #Create a kernel matrix for each datapoint
-kernel_matrix_sum = np.zeros((len(grid_points[0])))
+kernel_matrix_sum = grid_points*0
 #craete a matrix that can hold 3x3 kernel matrices
-kernel_matrix = np.zeros((n,3,3))
-for i in range(n):
-    #calculate the kernel for each datapoint
-    #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
-    #create a matrix for creating the 3x3 kernel matrix
-    a = np.array([[-bw,0,bw],[-bw,0,bw],[-bw,0,bw]])
-    b = np.array([[bw,bw,bw],[0,0,0],[-bw,-bw,-bw]])
-    #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
-    kernel_matrix[i,:,:] = ((1/(2*np.pi*bw**2))*np.exp(-0.5*((a/bw)**2+(b/bw)**2)))/np.sum(((1/(2*np.pi*bw**2))*np.exp(-0.5*((a/bw)**2+(b/bw)**2))))
-    #add the kernel_matrix values by binning them into the grid using digitize
-    #get the indices of the grid points that are closest to the datapoints
-    #locaatio of kernel function using a, b and x/y
-    lx = a+x[i]
-    ly = b+y[i]
-    #get the indices of the grid points that are closest to the datapoints
-    ix = np.digitize(lx,x_grid)
-    iy = np.digitize(ly,y_grid)
-    #add the kernel values to the kernel_matrix_sum
-    kernel_matrix_sum[ix,iy] += kernel_matrix[i,:,:].ravel()  
+kernel_matrix = np.zeros((n,9,9))
+#create a 3dN vector for holding all the N=nx9 kernel positions and values
+kernel_matrix_locs = np.zeros((n,9,9))
 
-    
+z = kernel_matrix_2d(x,y,x_grid,y_grid,bw=np.ones(n)*bw)
 
-
-
-    #check if the kernle is normalized
-    print(np.sum(kernel_matrix[i,:]))
-
-#Sum the kernel matrices
-z = np.sum(kernel_matrix,axis=0)
-#Reshape the z values to the grid
-z = z.reshape(xx.shape)
+#make sure z matches xx and yy
+zz = z.transpose()
 
 #Plot the kernel density estimate
 N = 8 #number of contours
 fig, ax = plt.subplots()
-ax.contour(xx, yy, z, N, linewidths=0.8, colors='k')
-ax.contourf(xx, yy, z, N,cmap='RdBu_r')
+ax.contour(xx, yy, zz, N, linewidths=0.8, colors='k')
+ax.contourf(xx, yy, zz, N,cmap='inferno')
+#ax.pcolor(xx, yy, zz, cmap='RdBu_r')
+
 #plot the datapoints
-ax.scatter(x, y, alpha=1, s=10, c='k')
+ax.scatter(x, y, alpha=1, s=10, c='w')
 ax.set_xlabel('x')
 ax.set_ylabel('y')
 ax.set_title('Kernel density estimate')

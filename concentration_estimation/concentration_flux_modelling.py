@@ -12,7 +12,10 @@ import utm
 from scipy.sparse import coo_matrix as coo_matrix
 from scipy.sparse import csr_matrix as csr_matrix
 import pickle
-import numba
+from numba import jit, prange
+#add folder with kde estimator
+from kernel_density_estimator import kernel_matrix_2d
+
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -54,7 +57,7 @@ def load_nc_data(filename):
 
 ###########################################################################################
 
-#@numba.jit(nopython=True)
+#@numba.jit(nopython=False)
 def create_grid(time,
                 UTM_x_minmax,
                 UTM_y_minmax,
@@ -158,8 +161,6 @@ def create_grid(time,
                 #x_indices_unique = np.unique(x_indices)
                 
             #else:
-            
-
     
     if savefile_path == True:
         #save the grid object as a pickle file for later use
@@ -347,17 +348,22 @@ if __name__ == '__main__':
     #with open('grid_object.pickle', 'rb') as f:
     #   GRID = pickle.load(f)
 
-    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
-    #particles = load_nc_data(datapath)
-
+    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
+    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
+    particles = load_nc_data(datapath)
 
     #Add utm coordinates to the particles dictionary
     particles = add_utm(particles)
 
-run_everything = False
+    #Set horizontal grid resolution
+    dxy_grid = 5000 #m
+    #Set vertical grid resolution
+    dz_grid = 50 #m
+
+run_everything = True
 if run_everything == True:
-    #Create a zero grid
+    #Create a zero grid. This grid has all timesteps and all spatial locations, but is a sparse
+    #grid, so hopefully it will not take up too much memory.
     GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
                                                 [np.min(np.ma.filled(np.array(particles['UTM_x']),np.nan)),np.max(np.ma.filled(np.array(particles['UTM_x']),np.nan))],
                                                 [np.min(np.ma.filled(np.array(particles['UTM_y']),np.nan)),np.max(np.ma.filled(np.array(particles['UTM_y']),np.nan))],
@@ -365,6 +371,8 @@ if run_everything == True:
                                                 savefile_path=False,
                                                 resolution=np.array([5000,50]))
 
+    #bin_x AND bin_y GIVES THE BIN EDGES IN METERS
+    
     ### Try to fill the first sparse matrix with the horizontal field at the first time step and depth level
     #Get locations from the utm coordinates in the particles dictionary 
     #Get the grid parameters
@@ -376,6 +384,10 @@ if run_everything == True:
     bin_time_number = np.digitize(particles['time'][0],bin_time)
     bin_time_number = len(particles['time'])-1
 
+    ############################
+    ###### FIRST TIMESTEP ######
+    ############################
+
     #Get the utm coordinates of the particles in the first time step
     x = particles['UTM_x'][:,bin_time_number]
     y = particles['UTM_y'][:,bin_time_number]
@@ -386,7 +398,10 @@ if run_everything == True:
     bin_y_number = np.digitize(y.compressed(),bin_y)
     bin_z_number = np.digitize(z.compressed(),bin_z)
 
-    #Simplified vertical profile of length the same as the vertical grid
+    ######################################################################################
+    ### CREATE A VERTICAL PROFILE AT MEASUREMENT LOCATIONS FITTING THE GRID RESOLUTION ###
+    ######################################################################################
+
     vertical_profile = np.ones(bin_z.shape[0])
     #Should be an exponential with around 100 at the bottom and 10 at the surface
     vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])+10),1)/44))
@@ -398,14 +413,27 @@ if run_everything == True:
     #add mask
     particles['weight'].mask = particles['z'].mask
 
-    #Grid cell volume
+    ##################################
+    ### CALCULATE GRID CELL VOLUME ###
+    ##################################
+
     grid_resolution = [5000,5000,50]
     V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 
+    ################################################
+    ### WE DONT NEED THIS PART WITH KDE ESTIMATE ###
+    ################################################
     #Have a sparse matrix which keeps track of the number of particles in each grid cell. 
     GRID_part = GRID
     #Establish a matrix for atmospheric flux which is the same size as GRID only with one depth layer
     GRID_atm_flux = np.array(GRID)[:,0] #this can be just an np array. 
+    ################################################
+    ################################################
+    ################################################
+
+    ############################
+    ### DEFINE CONSTANTS ETC ###
+    ############################
 
     #Atmospheric background concentration
     atmospheric_conc = ((44.64*2)/1000000) #mol/m3
@@ -425,26 +453,55 @@ if run_everything == True:
     #Calculate the gas transfer velocity
     gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
 
-    ############################################
-    ######### MODEL THE CONCENTRATION ##########
-    ############################################
-
+    #############################################################
+    ######### MODEL THE CONCENTRATION AT EACH TIMESTEP ##########
+    #############################################################
 
     #WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
     #Fill the GRID with the horizontal field at all timesteps
+
     for j in range(1,len(particles['time']-1)): 
         #Calculate gas transfer velocity:
         #gas_transf_vel = 0.31 * (u10**2 + 0.5 * (Sc/660)**(-2/3)) #m/day
         
         print(j)
         
-        #--------------------#
+        #---------------------#
         #PUT PARTICLES IN BINS#
-        #--------------------#
+        #---------------------#
 
         bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)
         bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
         bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
+        part_weights = particles['weight'][:,j].compressed() #the weight of the active particles
+        #calculate the bandwidth for the particles
+        bw = np.ones(len(bin_x_number))*20000
+        #give the particles some weight
+        parts_active = particles['weight'][:,j].compressed()
+        parts_active += vertical_profile[bin_z_number]
+        
+        #--------------------------------------------------#
+        #CALCULATE THE KDE ESTIMATE OF THE HORISONTAL FIELD#
+        #--------------------------------------------------#
+        #...using the above and the x_grid/y_grid coordinates given by bin_x and bin_y
+        #and the kernel_matrix_2d function.
+
+        z_kernelized = kernel_matrix_2d(particles['UTM_x'][:,j].compressed(),
+                                        particles['UTM_y'][:,j].compressed(),
+                                        bin_x,bin_y,bw,parts_active)
+
+        #plot the results on the bin_x/bin_y grid to see if it looks good
+        #create meshgrid
+        bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
+        #and for z_kernelized
+        zz = z_kernelized
+        N = 8 #number of contours
+        fig, ax = plt.subplots()
+        CS = ax.contourf(bin_x_mesh,bin_y_mesh,z_kernelized.T,N)
+        cbar = fig.colorbar(CS)
+        cbar.set_label('Concentration [mol/m3]')
+        plt.show()
+
 
         #LOOP OVER ALL PARTICLES AND FILL THE GRID
 
@@ -477,28 +534,20 @@ if run_everything == True:
             #ASSUME COMPLETE MIXING IN GRID CELL#
             #-----------------------------------#
 
+            ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
             #Set the weight to the average of the weights of the particles in the previous grid cell. 
-            if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-                particles['weight'][i,j] = (V_grid * 
-                                            GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-                                                GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-                                            )
-            
-            #Apply loss and calculate and store atmospheric flux if particle was in the surface layer.
-            #if bin_z_number[i] == 1:
-                #Calculate atmoshperic flux
-            #    GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]] = gas_transfer_vel*(
-            #        (GRID[j][1][bin_x_number[i],bin_y_number[i]]-atmospheric_conc)
-            #    )
-                                #Calculate the loss. Loss occurs at the same timestep as flux.
-            #    GRID[j][1][bin_x_number[i],bin_y_number[i]] = (GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-            #                                                    GRID_atm_flux[j][1][bin_x_number[i],bin_y_number[i]])
-            
-            #Add the vertical profile to the GRID
+            #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
+            #    particles['weight'][i,j] = (V_grid * 
+            #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
+            #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
+            #                                )
+            ###################################
             
             #-----------------------------------------#
             #CALCULATE CONCENTRATION IN THE GRID CELLS#
             #-----------------------------------------#
+
+
                 
             GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
             #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 

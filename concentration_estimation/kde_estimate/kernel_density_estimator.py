@@ -150,7 +150,23 @@ def add_elements(z_kernelized, ix, iy, kernel_matrix):
 
 #create a function of this
 @jit(nopython=True)#This can be run in parallell but for N=10000 it was slower, parallel=True)
-def kernel_matrix_2d(x,y,x_grid,y_grid,bw):
+def kernel_matrix_2d(x,y,x_grid,y_grid,bw,weights):
+    ''' 
+    Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 
+    2*bw for all datapoints and sums them onto grid x_grid,ygrid. The kernel matrices are 
+    created by binning the kernel values (the 2d gaussian) are created with a grid with
+    adaptive resolution such that the kernel resolution fits within the x_grid/y_grid grid resolution. 
+    Normalizes with the sum of the kernel values (l2norm). Assumes uniform x_grid/y_grid resolution.
+    Input: 
+    x: x-coordinates of the datapoints
+    y: y-coordinates of the datapoints
+    x_grid: x-coordinates of the grid
+    y_grid: y-coordinates of the grid
+    bw: bandwidth of the kernel (vector of length n with the bandwidth for each datapoint)
+    Output:
+    z_kernelized: a 3d matrix with the kernel values for each datapoint
+    '''
+
     dxy_grid = x_grid[1]-x_grid[0]
     z_kernelized = np.zeros((len(x_grid),len(y_grid)))
     z_kernelized = z_kernelized.ravel()
@@ -177,11 +193,10 @@ def kernel_matrix_2d(x,y,x_grid,y_grid,bw):
             ixm[j,:] = ix.flatten()
             iym[:,j] = iy.flatten()
         
-
         # Flatten the arrays
         ix_flat = ixm.ravel()
         iy_flat = iym.ravel()
-        kernel_matrix_flat = kernel_matrix.ravel()
+        kernel_matrix_flat = kernel_matrix.ravel()*weights[i] 
 
         #store indices
         indices = np.zeros((len(ix_flat)))
@@ -191,16 +206,14 @@ def kernel_matrix_2d(x,y,x_grid,y_grid,bw):
             index = int(ix_flat[j]*len(y_grid) + iy_flat.transpose()[j])
             indices[j] = index
             z_kernelized[index] += kernel_matrix_flat[j]
+            
+
+        #multiply with the weights
+
 
     # Reshape z_kernelized back to 2D
     z_kernelized = z_kernelized.reshape(len(x_grid), len(y_grid))
     #shift the grid to the correct position
-    #z_kernelized = np.roll(z_kernelized, 1, axis=0)
-    #z_kernelized = np.roll(z_kernelized, 1, axis=1)
-
-    #BEWARE OF EDGE EFFECTS!
-
-    #plt.imshow(z_kernelized)
 
     return z_kernelized
 
@@ -247,7 +260,7 @@ plt.style.use('dark_background')
 #generate data
 mu = [0., 0.]
 sigma = [[1, 0], [0, 5]]
-n = 3
+n = 100
 x,y = np.random.multivariate_normal(mu, sigma, n).T
 
 #plot the points
@@ -256,6 +269,7 @@ ax.scatter(x, y, alpha=1, s=10, c='w')
 
 #kde parameters
 bw = 0.5*np.ones(len(x))
+weights = np.ones(len(x))*np.linspace(100,1,len(x))
 
 #assign a gaussian 2d kernel to each datapoint and compute the sum on a grid
 #Define the grid
@@ -297,7 +311,7 @@ kernel_matrix = np.zeros((n,9,9))
 #create a 3dN vector for holding all the N=nx9 kernel positions and values
 kernel_matrix_locs = np.zeros((n,9,9))
 
-z = kernel_matrix_2d(x,y,x_grid,y_grid,bw=np.ones(n)*bw*0.9)
+z = kernel_matrix_2d(x,y,x_grid,y_grid,bw=np.ones(n)*bw*0.9,weights=weights)
 
 #make sure z matches xx and yy
 zz = z.transpose()

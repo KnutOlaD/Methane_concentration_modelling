@@ -67,7 +67,6 @@ CONCENTRATION = {}
 # zbinlocs_t_now
 zbinlocs_t_now_unique = np.unique(zbinlocs_t_now)
 
-
 from KDEpy import FFTKDE
 
 '''
@@ -145,7 +144,6 @@ grid, points = kde.fit(particles_test_set).evaluate(grid_points)
 #get x,y, and z values
 x,y = np.unique(grid[:,0]),np.unique(grid[:,1])
 z = points.reshape(grid_points[0], grid_points[1]).T
-
 
 #find all particles that have z value less than 10
 z = particles['z'][:,-1]

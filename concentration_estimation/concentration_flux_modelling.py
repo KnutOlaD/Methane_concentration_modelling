@@ -13,13 +13,24 @@ from scipy.sparse import coo_matrix as coo_matrix
 from scipy.sparse import csr_matrix as csr_matrix
 import pickle
 from numba import jit, prange
-#add folder with kde estimator
-#from kernel_density_estimator import kernel_matrix_2d
-#from kernel_density_estimator import kernel_matrix_2d_NOFLAT
+from scipy.interpolate import griddata
+import pandas as pd
+#UTM_x and UTM_y are already meshgrids
+from scipy.interpolate import griddata
 
-#set rules
+###############   
+###SET RULES###
+###############
+
 plotting = True
-
+#Set plotting style
+plt.style.use('dark_background') 
+#fit wind data
+fit_wind_data = False
+#set path for wind model pickle file
+wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
+#plot wind data
+plot_wind_field = False
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -444,6 +455,11 @@ if __name__ == '__main__':
         datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
         particles = load_nc_data(datapath)
         particles = add_utm(particles)
+        #adjust the time vector to start on May 20 2018
+        
+        
+        
+        
     
     run_full = False
     if run_full == True:
@@ -496,12 +512,6 @@ if __name__ == '__main__':
             #find all indices in distance where the difference in horizontal distance is less than 
             #100 meters
 
-
-
-
-
-
-
         #get only the particles that are active (they are nonmasked)
         #particles = {'lon':ODdata.variables['lon'][unmasked_indices],
         #                'lat':ODdata.variables['lat'][unmasked_indices],
@@ -521,23 +531,20 @@ if __name__ == '__main__':
 
 run_everything = True# True
 if run_everything == True:
-    #Create a zero grid. This grid has all timesteps and all spatial locations, but is a sparse
-    #grid, so hopefully it will not take up too much memory.
+    
+    ###### SET UP GRIDS FOR THE MODEL ######
+
+    #MODEELING OUTPUT GRID
     GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
-                                                [np.min(particles['UTM_x'].compressed()-dxy_grid),np.max(particles['UTM_x'].compressed()+dxy_grid)],
-                                                [np.min(particles['UTM_y'].compressed()-dxy_grid),np.max(particles['UTM_y'].compressed()+dxy_grid)],
+                                                [np.max([100000-dxy_grid-1,np.min(particles['UTM_x'].compressed())]),np.min([np.max(particles['UTM_x'].compressed()),1000000-dxy_grid-1])],
+                                                [np.max([dxy_grid+1,np.min(particles['UTM_y'].compressed())]),np.min([np.max(particles['UTM_y'].compressed()),10000000-dxy_grid-1])],
                                                 np.max(np.abs(particles['z'])),
                                                 savefile_path=False,
                                                 resolution=np.array([dxy_grid,dz_grid]))
-
-    #bin_x AND bin_y GIVES THE BIN EDGES IN METERS
-    
-    ### Try to fill the first sparse matrix with the horizontal field at the first time step and depth level
-    #Get locations from the utm coordinates in the particles dictionary 
-    #Get the grid parameters
-
-    #Get the grid parameters
-    #bin_x,bin_y,bin_z,bin_time = get_grid_params(particles)
+    #CREATE ONE ACTIVE HORIZONTAL MODEL FIELD
+    GRID_active = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+    #ATMOSPHERIC FLUX GRID
+    GRID_atm_flux = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
 
     ############################
     ###### FIRST TIMESTEP ######
@@ -591,9 +598,173 @@ if run_everything == True:
     ############################
     ### LOAD WIND FIELD DATA ###
     ############################
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'rb') as f:
-        lons, lats, times, sst, u10, v10 = pickle.load(f)
 
+    if fit_wind_data == True:
+
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'rb') as f:
+            lons, lats, times, sst, u10, v10, ws = pickle.load(f)
+
+        #reverse the lats coordinates and associated matrices (sst, u10, v10, ws)
+        lats = lats[::-1]
+        #the matrices should be reversed only in the first dimension
+        sst = sst[:,::-1,:]
+        u10 = u10[:,::-1,:]
+        v10 = v10[:,::-1,:]
+        ws = ws[:,::-1,:]
+
+        #create a time vector on unix timestamps
+        #create datetime vector
+        datetime_vector = pd.to_datetime(times)
+
+        # Convert datetime array to Unix timestamps
+        wind_time_unix = (datetime_vector.astype(np.int64) // 10**9).values
+
+        #create a time vector that starts on May 20 if using the test data
+        if run_test == True:
+            ocean_time_unix = bin_time - pd.to_datetime('2020-01-01').timestamp() + pd.to_datetime('2018-05-20').timestamp()
+
+        ### FIT THE WIND DATASET ONTO THE MODEL GRID ###
+
+        #create a lon/lat meshgrid
+        lon_mesh,lat_mesh = np.meshgrid(lons,lats)
+
+        # Create empty arrays for UTM coordinates
+        UTM_x_wind = np.empty_like(lon_mesh)
+        UTM_y_wind = np.empty_like(lat_mesh)
+
+        utm_zone = 33 #force zone number to be 33
+
+        # Convert each point in the grid to UTM
+        for i in range(lon_mesh.shape[0]):
+            for j in range(lon_mesh.shape[1]):
+                UTM_x_wind[i, j], UTM_y_wind[i, j], _, _ = utm.from_latlon(lat_mesh[i, j], lon_mesh[i, j],force_zone_number=utm_zone)
+
+        #interpolate onto the GRID grid where the grid is determined by bin_x and bin_y
+        #and the wind field is given by UTM_x_wind and UTM_y_wind
+        #interpolate onto the grid
+
+        #create meshgrids for bin_x and bin_y
+        bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
+
+        #Loop over and 
+        #1. Create objects to store wind fields and sst fields for each model timestep
+        #2. Find the closest neighbour in time in the wind field
+        #3. Interpolate the wind field onto the model grid
+        #4. Interpolate the sst field onto the model grid
+        #5. Store in a pickle file
+
+        #create objects to store wind fields and sst fields for each model timestep
+        ws_interp = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+        sst_interp = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+
+        for i in range(0,len(bin_time)):
+            print(i)
+            #find the closest neighbour in time in the wind field
+            time_diff = np.abs(ocean_time_unix[i] - wind_time_unix)
+            time_index = np.argmin(time_diff)
+            #interpolate ws and sst onto the model grid
+            ws_interp[i,:,:] = griddata((UTM_x_wind.flatten(), UTM_y_wind.flatten()), ws[time_index,:,:].flatten(), (bin_x_mesh, bin_y_mesh), method='cubic')
+            sst_interp[i,:,:] = griddata((UTM_x_wind.flatten(), UTM_y_wind.flatten()), sst[time_index,:,:].flatten(), (bin_x_mesh, bin_y_mesh), method='nearest')
+        
+        #store the interpolated wind fields and sst fields in a pickle file
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle', 'wb') as f:
+            pickle.dump([ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix], f)
+    else:
+        #LOAD THE PICKLE FILE
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
+            ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
+
+    #---------------------------------------------#
+    ### PLOT THE WIND AND SST DATA AND MAKE GIF ### 
+    #---------------------------------------------#
+
+    if plot_wind_field == True:
+        levels_w = np.arange(-1, 24, 2)
+        levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
+        #do the same plot but just on lon lat coordinates
+        #convert bin_x_mesh and bin_y_mesh to lon/lat
+        lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+        colormap = 'magma'
+
+        import imageio
+        import matplotlib.gridspec as gridspec
+
+        images_wind = []
+        images_sst = []
+        time_steps = len(bin_time)
+
+        #datetimevector
+        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+
+        for i in range(time_steps):
+            #WIND FIELD PLOT
+            fig = plt.figure(figsize=(7, 7))
+            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
+
+            lons_zoomed = lon_mesh
+            lats_zoomed = lat_mesh
+            ws_zoomed = ws_interp[i,:,:]
+
+            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_w,cmap=colormap)
+            cbar = plt.colorbar(contourf, ax=ax1)
+            cbar.set_label('[m/s]')
+            cbar.set_ticks(levels_w[1:-1])
+            ax1.set_title('Wind speed, '+str(times[i])[:10])
+            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_w, colors = 'w', linewidths = 0.2)
+            ax1.clabel(contour, inline=True, fontsize=8)
+            ax1.set_xlabel('Longitude')
+            ax1.set_ylabel('Latitude')
+
+            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+            ax2.set_position([0.12,0.12,0.6246,0.03])
+            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+            ax2.set_yticks([])  # Hide the y-axis ticks
+            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field'+str(i)+'.png')
+            images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field'+str(i)+'.png'))
+            plt.close()
+
+            #SST PLOT
+            fig = plt.figure(figsize=(7, 7))
+            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
+
+            lons_zoomed = lon_mesh
+            lats_zoomed = lat_mesh
+            ws_zoomed = sst_interp[i,:,:]
+
+            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_sst,cmap = colormap)
+            cbar = plt.colorbar(contourf, ax=ax1)
+            cbar.set_label('[m/s]')
+            cbar.set_ticks(levels_sst[1:-1])
+            ax1.set_title('Wind speed, '+str(times[i])[:10])
+            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_sst, colors = 'w', linewidths = 0.2)
+            ax1.clabel(contour, inline=True, fontsize=8)
+            ax1.set_xlabel('Longitude')
+            ax1.set_ylabel('Latitude')
+
+            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+            ax2.set_position([0.12,0.12,0.6246,0.03])
+            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+            ax2.set_yticks([])  # Hide the y-axis ticks
+            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png')
+            images_sst.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png'))
+            plt.close()
+
+        #create a gif
+        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field.gif', images_wind, duration=0.5)
+        #and for sst
+        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)
 
     ############################
     ### DEFINE CONSTANTS ETC ###
@@ -627,26 +798,19 @@ if run_everything == True:
     #Add mask
     particles['bw'].mask = particles['lon'].mask
     
-    ############################################################
-    ######### CALCULATE THE GAS TRANSFER VELOCITY FIELD ########
-    ############################################################
+    ################################################################
+    ######### CALCULATE INITIAL GAS TRANSFER VELOCITY FIELD ########
+    ################################################################
 
     #Calculate the gas transfer velocity
-    gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
+    gas_transfer_vel = calc_gt_vel(u10=ws_interp,
+                                   temperature=sst_interp,
+                                   gas='methane')
 
-    #####################################################
-    ######### SET UP PLOTTING AND GIF SETTINGS ##########
-    #####################################################
+    ################################################################
+    ################### END INITIAL CONDITIONS #####################
+    ################################################################
 
-    #Set plotting style
-    plt.style.use('dark_background') 
-
-    #Setup for gif
-    images = []
-    time_steps = len(particles['time'])
-    import imageio
-
-    
     #---------------------------------------------------#
     #####################################################
     #####  MODEL THE CONCENTRATION AT EACH TIMESTEP #####
@@ -750,67 +914,86 @@ if run_everything == True:
     #imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
 
 
-
-        #LOOP OVER ALL PARTICLES AND FILL THE GRID
-        #do the rest if if
+    #LOOP OVER ALL PARTICLES AND FILL THE GRID
     do = False
     if do == True:
-            for i in range(0,len(bin_z_number)): #This essentially loops over all particles
-                
-                #-------------------------#
-                #GIVE NEW PARTICLES WEIGHT#
-                #-------------------------#
-
-                #This is output from M2PG1       
-                if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
-                    #use the round of the depth
-                    if run_test == True:
-                        particles['weight'][i,j] = vertical_profile[
-                            int(np.abs(particles['z'][i,j]))]
-                    elif run_full == True:
-                        particles['weight'][i,j] = weights_full_sim
-                    
-                #-------------------------------#
-                #CALCULATE ATMOSPHERIC FLUX/LOSS#
-                #-------------------------------#
-                #gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
-                #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
-                GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]] = calc_gt_vel(
-                    u10=WS_GRID[bin_x_number[i],bin_y_number[j]],temperature=SST_GRID[bin_x_number[i],bin_y_number[j]],gas='methane')*(
-                    (((GRID[j][1][bin_x_number[i],bin_y_number[i]]+3e-09)-atmospheric_conc)
-                    ))
-                #CALCULATE LOSS
-                GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
-                    GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-                    GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
-
-                #-----------------------------------#
-                #ASSUME COMPLETE MIXING IN GRID CELL#
-                #-----------------------------------#
-
-                ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
-                #Set the weight to the average of the weights of the particles in the previous grid cell. 
-                #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-                #    particles['weight'][i,j] = (V_grid * 
-                #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-                #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-                #                                )
-                ###################################
-                
-                #-----------------------------------------#
-                #CALCULATE CONCENTRATION IN THE GRID CELLS#
-                #-----------------------------------------#
-
-                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-                #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
-                GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
+        for i in range(0,len(bin_z_number)): #This essentially loops over all particles
             
-            #Calculate the totaø atmospheric flux. 
-            #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+            #-------------------------#
+            #GIVE NEW PARTICLES WEIGHT#
+            #-------------------------#
 
-            bin_z_number_old = bin_z_number
+            #This is output from M2PG1       
+            if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
+                #use the round of the depth
+                if run_test == True:
+                    particles['weight'][i,j] = vertical_profile[
+                        int(np.abs(particles['z'][i,j]))]
+                elif run_full == True:
+                    particles['weight'][i,j] = weights_full_sim
+                
+            #-------------------------------#
+            #CALCULATE ATMOSPHERIC FLUX/LOSS#
+            #-------------------------------#
+            #gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
+            #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
+            GRID_atm_flux[j,:,:] = np.matmul(calc_gt_vel(
+                u10=ws_interp,temperature=sst_interp,gas='methane'),
+                (((GRID[j][1][:,:]+3e-09)-atmospheric_conc))
+                )
+            #CALCULATE LOSS BY 
+            GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
+                GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
+                GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
 
-        #numba. test. 
+            #-----------------------------------------#
+            #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
+            #-----------------------------------------#
+
+            #Half life rates with sources per day:
+            # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
+            # 0.05 Mau et al., 2017 West of Svalbard
+            # <0.085 Gr~undker et al., 2021
+            
+            #0.02/(3600*24)
+            #use just e-7 per second, that's kind of in the middle of the pack
+            R_ox = (10**-7)*3600 #half life per hour
+        
+            #loop over all depths and calculate the Mox consumption
+            for k in range(0,len(bin_z_number)):
+                GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] = (
+                    GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] - 
+                    (GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]]*R_ox)
+                )
+
+
+            #-----------------------------------#
+            #ASSUME COMPLETE MIXING IN GRID CELL#
+            #-----------------------------------#
+
+            ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
+            #Set the weight to the average of the weights of the particles in the previous grid cell. 
+            #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
+            #    particles['weight'][i,j] = (V_grid * 
+            #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
+            #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
+            #                                )
+            ###################################
+            
+            #-----------------------------------------#
+            #CALCULATE CONCENTRATION IN THE GRID CELLS#
+            #-----------------------------------------#
+
+            GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
+            #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
+            GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
+        
+        #Calculate the totaø atmospheric flux. 
+        #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+
+        bin_z_number_old = bin_z_number
+
+    #numba. test. 
 
 
 ####################################################################################################

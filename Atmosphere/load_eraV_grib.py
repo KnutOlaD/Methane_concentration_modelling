@@ -9,106 +9,83 @@ import matplotlib.pyplot as plt
 import xarray as xr
 import pandas as pd
 import pickle
-import pygrib
 import xarray as xr
 
 #change plotting style to dark
 plt.style.use('dark_background')
 
 ##############################
-### LOAD DATA USING PYGRIB ###
+### LOAD DATA USING xarray ###
 ##############################
+
 
 import xarray as xr
 
 ds = xr.open_dataset('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_May_2018.grib', engine='cfgrib')
 
-#get the time values
+u10May = ds['u10']
+v10May = ds['v10']
+sstMay = ds['sst']
+timeMay = ds['time']
+lonsMay = ds['longitude']
+latsMay = ds['latitude']
 
-# Open the GRIB file
-with pygrib.open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_June_2018.grib') as grb:
-    
-    # Create lists to store the data and times
-    u10_list = []
-    v10_list = []
-    sst_list = []
-    time_list_June = []
-    # Iterate over the messages in the GRIB file
-    for message in grb:
-        print(message)
-        pause = input('Press enter to continue')
-        #if the time_list more than one hour since the last one, then add the previous fields to 
-        #the list and a timestep to the time_array until the time_list is continuous
-        # Check the name of the message and append the data to the appropriate list
-        if message.name == '10 metre U wind component':
-            u10_list.append(message.values)
-            time_list_June.append(pd.Timestamp(message.analDate) + pd.Timedelta(hours=message.hour))
-        elif message.name == '10 metre V wind component':
-            v10_list.append(message.values)
-        elif message.name == 'Sea surface temperature':
-            sst_list.append(message.values)
-    # Convert the lists into 3D numpy arrays and a 1D array
-    u10_array_JUNE = np.array(u10_list)
-    v10_array_JUNE = np.array(v10_list)
-    sst_array_JUNE = np.array(sst_list)
-    time_array_JUNE = np.array(time_list_June)
+#get arrays
+u10_array_MAY = u10May.values
+v10_array_MAY = v10May.values
+sst_array_MAY = sstMay.values
+time_array_MAY = timeMay.values
+lonsMay = lonsMay.values
+latsMay = latsMay.values
+#calculate magnitude
+wsMay = np.sqrt(u10_array_MAY**2 + v10_array_MAY**2)
 
-print(u10_array_JUNE.shape)
-print(v10_array_JUNE.shape)
-print(sst_array_JUNE.shape)
-print(time_array_JUNE.shape)
 
-# Get the latitude and longitude values
-lats, lons = message.latlons()
+ds = xr.open_dataset('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_June_2018.grib', engine='cfgrib')
+
+u10June = ds['u10']
+v10June = ds['v10']
+sstJune = ds['sst']
+timeJune = ds['time']
+lonsJune = ds['longitude']  
+latsJune = ds['latitude']
+
+#get arrays
+u10_array_JUNE = u10June.values
+v10_array_JUNE = v10June.values
+sst_array_JUNE = sstJune.values
+time_array_JUNE = timeJune.values
+lonsJune = lonsJune.values
+latsJune = latsJune.values
+
+#calculate magnitude
+wsJune = np.sqrt(u10_array_JUNE**2 + v10_array_JUNE**2)
+
 
 # Merge the data for MAY and JUNE
-u10_array = np.concatenate((u10_array_MAY, u10_array_JUNE), axis=0)
-v10_array = np.concatenate((v10_array_MAY, v10_array_JUNE), axis=0)
-sst_array = np.concatenate((sst_array_MAY, sst_array_JUNE), axis=0)
-time_list = np.concatenate((time_array_MAY, time_array_JUNE), axis=0)
-#create a time array with all times
-times = pd.date_range(start='2018-05-20', end='2018-06-20', freq='H')
+u10merge = np.concatenate((u10_array_MAY, u10_array_JUNE), axis=0)
+v10merge = np.concatenate((v10_array_MAY, v10_array_JUNE), axis=0)
+sstmerge = np.concatenate((sst_array_MAY, sst_array_JUNE), axis=0)
+timemerge = np.concatenate((time_array_MAY, time_array_JUNE), axis=0)
 
-#create u10, v10 and sst arrays with the same time dimension as the times array
-u10merge = np.zeros((len(times), u10_array.shape[1], u10_array.shape[2]))
-v10merge = np.zeros((len(times), v10_array.shape[1], v10_array.shape[2]))
-sstmerge = np.zeros((len(times), sst_array.shape[1], sst_array.shape[2]))
+wsmerge = np.sqrt(u10merge**2 + v10merge**2)
 
 
-#Go through the time_list and find missing times. If there are missing times, then add the previous fields to the list
-#fill in with the previous fields
-time_list_count = 0
-for i in range(1, len(times)):
-    #fill in the fields into u10merge, v10merge and sstmerge
-    if times[i] == time_list[time_list_count]:
-        u10merge[i] = u10_array[time_list_count]
-        v10merge[i] = v10_array[time_list_count]
-        sstmerge[i] = sst_array[time_list_count]
-        time_list_count += 1
-    elif times[i] != time_list[time_list_count] and time_list_count !=0:
-        u10merge[i] = u10_array[time_list_count-1]
-        v10merge[i] = v10_array[time_list_count-1]
-        sstmerge[i] = sst_array[time_list_count-1]
-    else:
-        u10merge[i] = u10_array[time_list_count]
-        v10merge[i] = v10_array[time_list_count]
-        sstmerge[i] = sst_array[time_list_count]
-        time_list_count += 1
 
-
-print(u10_array.shape)
 
 #save these to a pickle file
 import pickle
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'wb') as f:
-    pickle.dump([lons2, lats2, timemerge, sstmerge, u10merge, v10merge], f)
+    pickle.dump([lonsJune, latsJune, timemerge, sstmerge, u10merge, v10merge, wsmerge], f)
 
 #load the pickel file
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'rb') as f:
 #    lons, lats, times, sst, u10, v10 = pickle.load(f)
 
-#calculate the wind speed
-ws = np.sqrt(u10**2 + v10**2)
+ws = wsmerge
+lons = lonsJune
+lats = latsJune
+times = timemerge
 
 #limits
 levels = np.arange(0, 21, 2)
@@ -116,8 +93,6 @@ levels = np.arange(0, 21, 2)
 colormap = plt.cm.get_cmap('magma', 20)
 
 import scipy.ndimage
-
-import cfgrib
 
 zoom_factor = 3
 
@@ -150,6 +125,22 @@ plt.show()
 #create a gif of the wind field by looping over the time dimension
 import imageio
 import matplotlib.gridspec as gridspec
+
+### IF PLOTTING MODEL DOMAIN WIND DATA ###
+#load the model pickle file to get the data
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
+#    ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
+
+#levels_w = np.arange(-1, 24, 2)
+#levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
+#do the same plot but just on lon lat coordinates
+#convert bin_x_mesh and bin_y_mesh to lon/lat
+#lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+#colormap = 'magma'
+
+#ws = ws_interp #switch to sst if you want to plot that instead. 
+
+###########################
 
 zoom_factor = 3
 
@@ -190,10 +181,19 @@ for i in range(time_steps):
     images.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\create_gif\\wind_field'+str(i)+'.png'))
     plt.close()
 
-
-
-
 imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\create_gif\\wind_field.gif', images, duration = 0.1)
+
+#make a plot that shows average wind speed over time for the whole field
+plt.figure(figsize = (7, 7))
+plt.plot(times, np.mean(ws, axis=(1,2)),linewidth = 2, color = 'w')
+plt.xlabel('Time')
+plt.ylabel('Wind speed [m/s]')
+plt.title('Average wind speed whole domain')
+plt.show()
+
+#save figure
+plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\wind_speed_over_time.png')   
+
 
 
 

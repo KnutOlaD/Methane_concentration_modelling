@@ -14,7 +14,11 @@ from scipy.sparse import csr_matrix as csr_matrix
 import pickle
 from numba import jit, prange
 #add folder with kde estimator
-from kernel_density_estimator import kernel_matrix_2d
+#from kernel_density_estimator import kernel_matrix_2d
+#from kernel_density_estimator import kernel_matrix_2d_NOFLAT
+
+#set rules
+plotting = True
 
 
 #List of variables in the script:
@@ -342,34 +346,189 @@ def calc_mox_consumption(C_o,R_ox):
 
     return CH4_consumption
 
+def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
+    ''' 
+    Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 
+    2*bw for all datapoints and sums them onto grid x_grid,ygrid. The kernel matrices are 
+    created by binning the kernel values (the 2d gaussian) are created with a grid with
+    adaptive resolution such that the kernel resolution fits within the x_grid/y_grid grid resolution. 
+    Normalizes with the sum of the kernel values (l2norm). Assumes uniform x_grid/y_grid resolution.
+    Input: 
+    x: x-coordinates of the datapoints
+    y: y-coordinates of the datapoints
+    x_grid: x-coordinates of the grid
+    y_grid: y-coordinates of the grid
+    bw: bandwidth of the kernel (vector of length n with the bandwidth for each datapoint)
+    weights: weights for each datapoint
+    ker_size_frac: the fraction of the grid size of the underlying grid that the kernel grid should be
+    bw_cutoff: the cutoff for the kernel in standard deviations
+
+    Output:
+    z_kernelized: a 3d matrix with the kernel values for each datapoint
+    '''
+
+    #desired fractional difference between kernel grid size and grid size
+    ker_size_frac = 4 #1/3 of the grid size of underlying grid
+    bw_cutoff = 2 #cutoff for the kernel in standard deviations
+
+    #calculate the grid resolution
+    dxy_grid = x_grid[1]-x_grid[0]
+
+    #create a grid for z values
+    z_kernelized = np.zeros((len(x_grid),len(y_grid)))
+
+    for i in range(len(x)):
+        #calculate the kernel for each datapoint
+        #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
+        #create a matrix for the kernel that makes sure the kernel resolution fits
+        #within the grid resolution (adaptive kernel size). ker_size is the number of points in each direction
+        #in the kernel. 
+        ker_size = int(np.ceil((bw_cutoff*2*bw[i]*ker_size_frac)/dxy_grid))
+        a = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
+        b = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
+        #create the 2d coordinate matrix
+        a = a.reshape(-1,1)
+        b = b.reshape(1,-1)
+        #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
+        kernel_matrix = ((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2)))/np.sum(((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2))))
+        #add the kernel_matrix values by binning them into the grid using digitize
+        #get the indices of the grid points that are closest to the datapoints
+        lx = a+x[i]
+        ly = b+y[i]
+        #get the indices of the grid points that are closest to the datapoints
+        ix = np.digitize(lx,x_grid)
+        iy = np.digitize(ly,y_grid)
+         #check that no indices are outside the grid (and use only the ones that are inside the grid and not below zero
+        #THIS WAS TOO MUCH HASSLE, JUST REMOVE ANY KERNELS THAT TOUCHES THE BOUNDARY
+        # Flatten ix and iy
+        #ix_flat = ix.flatten() 
+        #iy_flat = iy.flatten()
+        # Create the mask
+        #mask = (ix_flat >= 0) & (ix_flat < len(x_grid)) & (iy_flat >= 0) & (iy_flat < len(y_grid))
+        #get any indices that are false in the mask
+        #mask_false = np.where(mask == False)
+        # Apply the mask
+        #ix_flat = ix_flat[mask]
+        #iy_flat = iy_flat[mask]
+        # Reshape ix and iy back to their original shapes
+        #ix = ix_flat.reshape(len(ix_flat),1)
+        #iy = iy_flat.reshape(1,len(iy_flat))
+
+        #if any values in ix or iy is outside the grid, remove the kernel and skip to next iteration
+        if np.any(ix >= len(x_grid)) or np.any(iy >= len(y_grid)) or np.any(ix < 0) or np.any(iy < 0):
+            continue
+
+        #add the kernel values to the grid
+        z_kernelized[ix,iy] += kernel_matrix*weights[i]
+        
+    #reshape z_kernelized to the grid
+
+    return z_kernelized
+
+#def est_aging_constant
+
+#Create a function for aging constant estimation
+
+#################################
+########## INITIATION ###########
+#################################
+
 if __name__ == '__main__':
 
     #Just load the grid object to make it faster
     #with open('grid_object.pickle', 'rb') as f:
     #   GRID = pickle.load(f)
 
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
-    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
-    particles = load_nc_data(datapath)
+    run_test = True
+    if run_test == True:
+        datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
+        particles = load_nc_data(datapath)
+        particles = add_utm(particles)
+    
+    run_full = False
+    if run_full == True:
+        datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
+        ODdata = nc.Dataset(datapath)
+        #get all variables that are not masked at the first timestep
+        first_timestep_lon = ODdata.variables['lon'][:, 0]
+        #unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
+        unmasked_indices = np.where(~first_timestep_lon.mask)
+        unmasked_indices = np.array(unmasked_indices)[0] #fix shape/type problem
 
+        timestep_num = 744
+        #loop over and store the lon/lat positions of the particles indicated by
+        #the unmasked indices array
+        ### CALCULATE AGING FUNCTION ###
+        calc_age = False
+        if calc_age == True:
+            lon = np.zeros((len(unmasked_indices),timestep_num))
+            lat = np.zeros((len(unmasked_indices),timestep_num))
+            for i in range(0,timestep_num):
+                lon[:,i] = ODdata.variables['lon'][unmasked_indices,i]
+                lat[:,i] = ODdata.variables['lat'][unmasked_indices,i]
+                print(i)
+
+            #find and set to nan all values that are outside the UTM domain,
+            #that is above 71 degrees north and below 65 degrees north 
+            #and west of 20 degrees east and east of 0 degrees east
+            #remove everything above 71 degrees north and 20 degrees east
+            lon[lat > 71] = np.nan
+            lat[lat > 71] = np.nan
+
+           #Calculate the UTM coordinates
+            lon_masked = np.ma.masked_invalid(lon)
+            lat_masked = np.ma.masked_invalid(lat)
+            UTM = utm.from_latlon(lon_masked,lat_masked)
+            utm_x = UTM[0]
+            utm_y = UTM[1]
+
+            #create a masked utm_x/utm_y array
+            utm_x_masked = np.ma.masked_invalid(utm_x)
+            utm_y_masked = np.ma.masked_invalid(utm_y)
+
+            for i in range(0,len(utm_x_masked)):
+                diff_x[i,:] = utm_x_masked[i,j] - utm_x_masked[:,j]
+                diff_y[i,:] = utm_y_masked[i,j] - utm_y_masked[:,j]
+            
+                #calculate the distance between all particles
+            distance = np.sqrt(diff_x**2 + diff_y**2)
+
+            #find all indices in distance where the difference in horizontal distance is less than 
+            #100 meters
+
+
+
+
+
+
+
+        #get only the particles that are active (they are nonmasked)
+        #particles = {'lon':ODdata.variables['lon'][unmasked_indices],
+        #                'lat':ODdata.variables['lat'][unmasked_indices],
+        #                'z':ODdata.variables['z'][unmasked_indices],
+        #                'time':ODdata.variables['time'][unmasked_indices],
+        #                'status':ODdata.variables['status'][unmasked_indices]}
+        
     #Add utm coordinates to the particles dictionary
-    particles = add_utm(particles)
+
 
     #Set horizontal grid resolution
-    dxy_grid = 5000 #m
+    dxy_grid = 5000. #m
     #Set vertical grid resolution
-    dz_grid = 50 #m
+    dz_grid = 25. #m
 
-run_everything = True
+    #Calculate the difference in absolute (horizontal) distance between particles released at the same time
+
+run_everything = True# True
 if run_everything == True:
     #Create a zero grid. This grid has all timesteps and all spatial locations, but is a sparse
     #grid, so hopefully it will not take up too much memory.
     GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
-                                                [np.min(np.ma.filled(np.array(particles['UTM_x']),np.nan)),np.max(np.ma.filled(np.array(particles['UTM_x']),np.nan))],
-                                                [np.min(np.ma.filled(np.array(particles['UTM_y']),np.nan)),np.max(np.ma.filled(np.array(particles['UTM_y']),np.nan))],
+                                                [np.min(particles['UTM_x'].compressed()-dxy_grid),np.max(particles['UTM_x'].compressed()+dxy_grid)],
+                                                [np.min(particles['UTM_y'].compressed()-dxy_grid),np.max(particles['UTM_y'].compressed()+dxy_grid)],
                                                 np.max(np.abs(particles['z'])),
                                                 savefile_path=False,
-                                                resolution=np.array([5000,50]))
+                                                resolution=np.array([dxy_grid,dz_grid]))
 
     #bin_x AND bin_y GIVES THE BIN EDGES IN METERS
     
@@ -380,13 +539,13 @@ if run_everything == True:
     #Get the grid parameters
     #bin_x,bin_y,bin_z,bin_time = get_grid_params(particles)
 
-    #Get the last timestep
-    bin_time_number = np.digitize(particles['time'][0],bin_time)
-    bin_time_number = len(particles['time'])-1
-
     ############################
     ###### FIRST TIMESTEP ######
     ############################
+
+    #Get the last timestep (to get the size of the thing)
+    bin_time_number = np.digitize(particles['time'][0],bin_time)
+    bin_time_number = len(particles['time'])-1
 
     #Get the utm coordinates of the particles in the first time step
     x = particles['UTM_x'][:,bin_time_number]
@@ -398,54 +557,76 @@ if run_everything == True:
     bin_y_number = np.digitize(y.compressed(),bin_y)
     bin_z_number = np.digitize(z.compressed(),bin_z)
 
-    ######################################################################################
-    ### CREATE A VERTICAL PROFILE AT MEASUREMENT LOCATIONS FITTING THE GRID RESOLUTION ###
-    ######################################################################################
+    #########################################
+    ### ADD WEIGHTS TO THE FIRST TIMESTEP ###
+    #########################################
 
     vertical_profile = np.ones(bin_z.shape[0])
     #Should be an exponential with around 100 at the bottom and 10 at the surface
-    vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])+10),1)/44))
+    vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])+10),1)/44)) #This is for test run
     #Create a matrix with the same size as particles['z'] and fill with the vertical profile depending
     #on the depth level where the particle was in its first active timestep
+    #It's the same initial weight of all particles. 
 
-    #Create new dictionary entry with same size and mask as particles['z']:
-    particles['weight'] = np.ma.zeros(particles['z'].shape)
-    #add mask
-    particles['weight'].mask = particles['z'].mask
+    weights_full_sim = 0.0408 #mol/hr
 
     ##################################
     ### CALCULATE GRID CELL VOLUME ###
     ##################################
 
-    grid_resolution = [5000,5000,50]
+    grid_resolution = [dxy_grid,dxy_grid,dz_grid] #in meters
     V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 
     ################################################
     ### WE DONT NEED THIS PART WITH KDE ESTIMATE ###
     ################################################
     #Have a sparse matrix which keeps track of the number of particles in each grid cell. 
-    GRID_part = GRID
+    #GRID_part = GRID
     #Establish a matrix for atmospheric flux which is the same size as GRID only with one depth layer
-    GRID_atm_flux = np.array(GRID)[:,0] #this can be just an np array. 
+    #GRID_atm_flux = np.array(GRID)[:,0] #this can be just an np array. 
     ################################################
     ################################################
     ################################################
+
+    ############################
+    ### LOAD WIND FIELD DATA ###
+    ############################
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'rb') as f:
+        lons, lats, times, sst, u10, v10 = pickle.load(f)
+
 
     ############################
     ### DEFINE CONSTANTS ETC ###
     ############################
 
-    #Atmospheric background concentration
+    ### Atmospheric background concentration ###
     atmospheric_conc = ((44.64*2)/1000000) #mol/m3
     background_ocean_conc = 3e-09 #mol/m3
 
-    #Oswald spøiboøotu coeffocient
+    ### Oswald solubility coeffocient ###
     oswald_solu_coeff = 0.28 #(for methane)
 
-    #Set wind speed and temperature to constant value for now
-    U_constant = 5 #m/s
-    T_constant = 10 #degrees celcius
+    ################################################################
+    ### ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT AND BANDWIDTH ###
+    ################################################################
 
+    ### Weight ###
+    particles['weight'] = np.ma.zeros(particles['z'].shape)
+    #add mask
+    particles['weight'].mask = particles['lon'].mask
+    
+    ### Bandwidth ###
+    #Define inital bandwidth
+    initial_bandwidth = 1000 #meters
+    #Define the bandwidth aging constant
+    age_constant = 200 #meters spread every hour
+    #Define the bandwidth matrix
+    particles['bw'] = np.ma.zeros(particles['z'].shape)
+    #Add the initial bandwidth to the particles at all timesteps
+    particles['bw'][:,0] = initial_bandwidth
+    #Add mask
+    particles['bw'].mask = particles['lon'].mask
+    
     ############################################################
     ######### CALCULATE THE GAS TRANSFER VELOCITY FIELD ########
     ############################################################
@@ -453,9 +634,25 @@ if run_everything == True:
     #Calculate the gas transfer velocity
     gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
 
-    #############################################################
-    ######### MODEL THE CONCENTRATION AT EACH TIMESTEP ##########
-    #############################################################
+    #####################################################
+    ######### SET UP PLOTTING AND GIF SETTINGS ##########
+    #####################################################
+
+    #Set plotting style
+    plt.style.use('dark_background') 
+
+    #Setup for gif
+    images = []
+    time_steps = len(particles['time'])
+    import imageio
+
+    
+    #---------------------------------------------------#
+    #####################################################
+    #####  MODEL THE CONCENTRATION AT EACH TIMESTEP #####
+    ### AKA THIS IS WHERE THE ACTUAL MODELING HAPPENS ###
+    #####################################################
+    #---------------------------------------------------#
 
     #WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
     #Fill the GRID with the horizontal field at all timesteps
@@ -473,157 +670,226 @@ if run_everything == True:
         bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)
         bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
         bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-        part_weights = particles['weight'][:,j].compressed() #the weight of the active particles
-        #calculate the bandwidth for the particles
-        bw = np.ones(len(bin_x_number))*20000
-        #give the particles some weight
+
         parts_active = particles['weight'][:,j].compressed()
         parts_active += vertical_profile[bin_z_number]
+
+        #----------------------------------------------------#
+        #BANDWIDTH AND WEIGHT OF THE PARTICLE DENSITY KERNELS#
+        #----------------------------------------------------#
+
+        ### Weight ###
+        #Pull vector from dictionary
+        part_weights = particles['weight'][:,j].compressed() #the weight of the active particle
+
+        ### Bandwidth ###
+        #Pull vector from dictionary
+        part_bw = particles['bw'][:,j].compressed() #the bandwidth of the active particle
+        #Add age to the currently active particles in the dictionary, but only to the particles that are active
+        
+        #Constant bandwidth aging
+        particles['bw'][~particles['bw'].mask[:,j]] += age_constant #(the aging happens before the calculation here
+        
+        #Bandwidth aging for vertically invariant bandwidth function
+        #
+
+        #Badnwidth aging for vertically variant bandwidth function
+        #particles['bw'][~particles['bw'].mask[:,j]] += age_constant*np.abs(particles['z'][:,j].compressed())
+
+        #limit the bandwidth to a maximum value
+        max_ker_bw = 25000
+        particles['bw'][particles['bw'] > max_ker_bw] = max_ker_bw
+        #but it doesnt matter since we're using the part_bw array to calculate the kernel matrix (particles['bw']) is
+        #passive until next iteration.)
         
         #--------------------------------------------------#
         #CALCULATE THE KDE ESTIMATE OF THE HORISONTAL FIELD#
         #--------------------------------------------------#
+
         #...using the above and the x_grid/y_grid coordinates given by bin_x and bin_y
         #and the kernel_matrix_2d function.
 
-        z_kernelized = kernel_matrix_2d(particles['UTM_x'][:,j].compressed(),
+        z_kernelized = kernel_matrix_2d_NOFLAT(particles['UTM_x'][:,j].compressed(),
                                         particles['UTM_y'][:,j].compressed(),
-                                        bin_x,bin_y,bw,parts_active)
+                                        bin_x,bin_y,part_bw,parts_active)
 
         #plot the results on the bin_x/bin_y grid to see if it looks good
         #create meshgrid
+
         bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
         #and for z_kernelized
         zz = z_kernelized
-        N = 8 #number of contours
-        fig, ax = plt.subplots()
-        CS = ax.contourf(bin_x_mesh,bin_y_mesh,z_kernelized.T,N)
-        cbar = fig.colorbar(CS)
-        cbar.set_label('Concentration [mol/m3]')
-        plt.show()
+
+        ### PLOTTING ###
+        if plotting == True:
+            levels = np.arange(0, 0.8, 0.1)
+            N = 8 #number of contours
+            fig, ax = plt.subplots()
+            ax.contour(bin_x_mesh,bin_y_mesh,z_kernelized.T,linewidths=0.8, colors='k')
+            CS = ax.contourf(bin_x_mesh,bin_y_mesh,z_kernelized.T,N,cmap='inferno',levels=levels) 
+            cbar = plt.colorbar(CS)
+            cbar.set_label('Concentration [mol/m3]')
+            #set fixed colorbar limits
+            #cbar.set_clim([0,0.8])
+            #set limits to 0,0.5*max_x and 0,0.5*max_y
+            #ax.set_xlim([np.min(bin_x),0.5*np.max(bin_x)])
+            #ax.set_ylim([np.min(bin_y),0.5*np.max(bin_y)])
+
+            #plt.show()
+            #save the figure
+            fig.savefig(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_'+str(j)+'.png')
+
+            #add the figure to the list of images
+            #images.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_'+str(j)+'.png'))
+
+            plt.close(fig)
+
+    #create the gif
+    #create a list of all images in r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration
+
+    #imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
+
 
 
         #LOOP OVER ALL PARTICLES AND FILL THE GRID
-
-        for i in range(0,len(bin_z_number)): #This essentially loops over all particles
-            
-            #-------------------------#
-            #GIVE NEW PARTICLES WEIGHT#
-            #-------------------------#
-
-            #This is output from M2PG1       
-            if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
-                #use the round of the depth
-                particles['weight'][i,j] = vertical_profile[
-                    int(np.abs(particles['z'][i,j]))]
+        #do the rest if if
+    do = False
+    if do == True:
+            for i in range(0,len(bin_z_number)): #This essentially loops over all particles
                 
-            #-------------------------------#
-            #CALCULATE ATMOSPHERIC FLUX/LOSS#
-            #-------------------------------#
+                #-------------------------#
+                #GIVE NEW PARTICLES WEIGHT#
+                #-------------------------#
+
+                #This is output from M2PG1       
+                if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
+                    #use the round of the depth
+                    if run_test == True:
+                        particles['weight'][i,j] = vertical_profile[
+                            int(np.abs(particles['z'][i,j]))]
+                    elif run_full == True:
+                        particles['weight'][i,j] = weights_full_sim
+                    
+                #-------------------------------#
+                #CALCULATE ATMOSPHERIC FLUX/LOSS#
+                #-------------------------------#
+                #gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
+                #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
+                GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]] = calc_gt_vel(
+                    u10=WS_GRID[bin_x_number[i],bin_y_number[j]],temperature=SST_GRID[bin_x_number[i],bin_y_number[j]],gas='methane')*(
+                    (((GRID[j][1][bin_x_number[i],bin_y_number[i]]+3e-09)-atmospheric_conc)
+                    ))
+                #CALCULATE LOSS
+                GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
+                    GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
+                    GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
+
+                #-----------------------------------#
+                #ASSUME COMPLETE MIXING IN GRID CELL#
+                #-----------------------------------#
+
+                ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
+                #Set the weight to the average of the weights of the particles in the previous grid cell. 
+                #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
+                #    particles['weight'][i,j] = (V_grid * 
+                #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
+                #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
+                #                                )
+                ###################################
                 
-            #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
-            GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]] = gas_transfer_vel*(
-                (((GRID[j][1][bin_x_number[i],bin_y_number[i]]+3e-09)-atmospheric_conc)
-                ))
-            #CALCULATE LOSS
-            GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
-                GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-                GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
+                #-----------------------------------------#
+                #CALCULATE CONCENTRATION IN THE GRID CELLS#
+                #-----------------------------------------#
 
-            #-----------------------------------#
-            #ASSUME COMPLETE MIXING IN GRID CELL#
-            #-----------------------------------#
-
-            ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
-            #Set the weight to the average of the weights of the particles in the previous grid cell. 
-            #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-            #    particles['weight'][i,j] = (V_grid * 
-            #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-            #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-            #                                )
-            ###################################
+                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
+                #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
+                GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
             
-            #-----------------------------------------#
-            #CALCULATE CONCENTRATION IN THE GRID CELLS#
-            #-----------------------------------------#
+            #Calculate the totaø atmospheric flux. 
+            #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+
+            bin_z_number_old = bin_z_number
+
+        #numba. test. 
 
 
-                
-            GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-            #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
-            GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
-        
-        #Calculate the totaø atmospheric flux. 
-        #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+####################################################################################################
+#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#
+####################################################################################################
+'''
 
-        bin_z_number_old = bin_z_number
+    #calculate wind speed
+    wind_speed = np.sqrt(u10**2 + v10**2)
+    wind_speed = np.transpose(wind_speed,(2,1,0))
+    sst = np.transpose(sst,(2,1,0)) #Just to get it to match with the UTM coordinate matrix and have time as the last dimension.
+    del u10,v10
 
-    #numba. test. 
+    #Calculate utm coordinates for the wind field
+    #loop over to be sure, so much weird going on now. 
+    #UTM_wind = np.zeros((len(lats),len(lons)))
+    #for i in range(0,len(lats)):
+    #    for j in range(0,len(lons)):
+    #        UTM_wind[i,j] = utm.from_latlon(lats[i],lons[j])[0]
 
-    #Plot the horizontal field at the first time step and depth level 1
-    plt.figure()
-    plt.imshow(np.flipud(GRID[len(particles['time'])-1][1].todense().T))
-    plt.colorbar()
-    #set a smaller color range
-    plt.clim(0,10)
-    plt.show()
+    latmesh,lonmesh = np.meshgrid(lats,lons)
 
-    #Plot the horizontal field at the first time step and depth level
-    #Create a gif of the horizontal fields at the first depth level
-    import imageio
-    images = []
-    for i in range(0,len(GRID)):
-        #make sure the color range is the same for all images
-        #flip the image left to right
-        images.append(np.flipud(GRID[i][1].todense().T))
-        #make sure the color range is the same for all images
-    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
+    UTM_wind = utm.from_latlon(latmesh,lonmesh)
+    
+    UTM_wind_x_mesh = UTM_wind[0]
+    UTM_wind_y_mesh = UTM_wind[1]
+       
 
-    from PIL import Image
+    from scipy.interpolate import griddata
 
-    # Create a list to store the images
-    images = []
+    wind_coo_mat = np.array([UTM_x_wind_mesh.flatten(),UTM_y_wind_mesh.flatten()]).T
+    
+    #Flatten wind and sst data
+    wind_speed_flat = wind_speed[:,:,0].flatten()
+    sst_flat = sst[:,:,0].flatten()
 
-    for i in range(0,len(GRID)):
-        fig, ax = plt.subplots()
-        im = ax.imshow(np.flipud(GRID[i][1].todense().T))
-        im.set_cmap('viridis')
-        im.set_clim(0,50)
-        fig.colorbar(im, ax=ax)
+    #Create 2d array of fine grid
+    #create mesh
+    bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x.T,bin_y.T)
 
-        # Draw the figure first
-        fig.canvas.draw()
+    #plot the outlines of the two domains in the same figure
+    plt.plot(bin_x_mesh,bin_y_mesh,'r.')
+    plt.plot(UTM_wind_x_mesh,UTM_wind_y_mesh,'b.')
 
-        # Now we can save it to a numpy array.
-        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    GRID_coo_mat = np.array([bin_x_mesh.flatten(),bin_y_mesh.flatten()]).T
 
-        # Normalize the data to the range [0, 255]
-        data = ((data - data.min()) * (1/(data.max() - data.min()) * 255)).astype('uint8')
+    #Interpolate the wind field to the grid
+    wind_speed_interp = griddata(wind_coo_mat,wind_speed_flat,GRID_coo_mat,method='linear')
 
-        images.append(Image.fromarray(data))
+    #reshape the interpolated wind field
+    wind_speed_interp = wind_speed_interp.reshape(bin_x_mesh.shape)
 
-        plt.close(fig)
-
-    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_0.gif', images, fps=5)
-
-
-
-
-
-            
-
-
-
-
-
-
-
-
+    #Make a plot of the original and interpolated wind speed field with utm corrdinates in the same figure 
+    #using two subplots side by side. Use contourf
+    
+    levels = np.arange(0,21,1)
+    colormap = plt.cm.get_cmap('magma',20)
+    fig,ax = plt.subplots(2,2,figsize=(10,10))
+    ###WIND SPEED###
+    #original data
+    ax[0].contourf(UTM_x_wind_mesh,UTM_y_wind_mesh,wind_speed[:,:,0].T)
+    ax[0].contour(UTM_x_wind_mesh,UTM_y_wind_mesh,wind_speed[:,:,0].T,levels=levels,colors='black')
+    ax[0].set_title('Original wind speed field at time 0')
+    
+    #interpolated data
+    ax[1].contourf(bin_x_mesh,bin_y_mesh,wind_speed_interp)
+    ax[1].contour(bin_x_mesh,bin_y_mesh,wind_speed_interp,levels=levels,colors='black')
+    ax[1].set_title('Interpolated wind speed at time 0')
 
 
 
+    #ax[0].contourf(UTM_x_wind_mesh,UTM_y_wind_mesh,wind_speed[:,:,0].T)
+    #ax[0].set_title('Original wind speed field at time 0')
+    #ax[1].contourf(bin_x_mesh,bin_y_mesh,wind_speed_interp)
+    #ax[1].set_title('Interpolated wind speed field')
+    #plt.show()
 
+    ws = np.sqrt(u10**2 + v10**2)   
+    U_constant = 5 #m/s
+    T_constant = 10 #degrees celcius
 
-
-
+'''

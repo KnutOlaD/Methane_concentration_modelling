@@ -148,6 +148,65 @@ def add_elements(z_kernelized, ix, iy, kernel_matrix):
             z_kernelized[ix[i, j], iy[i, j]] += kernel_matrix[i, j]
     return z_kernelized
 
+
+    return z_kernelized
+
+#create a function of this
+#@jit(nopython=True) THIS ONE DOES NOT HAVE THE ALIASING PROBLEM
+#USE THIS. STILL QUITE FAST. 
+def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights):
+    ''' 
+    Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 
+    2*bw for all datapoints and sums them onto grid x_grid,ygrid. The kernel matrices are 
+    created by binning the kernel values (the 2d gaussian) are created with a grid with
+    adaptive resolution such that the kernel resolution fits within the x_grid/y_grid grid resolution. 
+    Normalizes with the sum of the kernel values (l2norm). Assumes uniform x_grid/y_grid resolution.
+    Input: 
+    x: x-coordinates of the datapoints
+    y: y-coordinates of the datapoints
+    x_grid: x-coordinates of the grid
+    y_grid: y-coordinates of the grid
+    bw: bandwidth of the kernel (vector of length n with the bandwidth for each datapoint)
+    weights: weights for each datapoint
+
+    Output:
+    z_kernelized: a 3d matrix with the kernel values for each datapoint
+    '''
+
+    #calculate the grid resolution
+    dxy_grid = x_grid[1]-x_grid[0]
+
+    #create a grid for z values
+    z_kernelized = np.zeros((len(x_grid),len(y_grid)))
+
+    for i in range(len(x)):
+        #calculate the kernel for each datapoint
+        #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
+        #create a matrix for the kernel that makes sure the kernel resolution fits
+        #within the grid resolution (adaptive kernel size)
+        ker_size = int(np.ceil((2*bw[i])/dxy_grid)*3)*2
+        a = np.linspace(-2*bw[i],2*bw[i],ker_size)
+        b = np.linspace(-2*bw[i],2*bw[i],ker_size)
+        #create the 2d coordinate matrix
+        a = a.reshape(-1,1)
+        b = b.reshape(1,-1)
+        #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
+        kernel_matrix = ((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2)))/np.sum(((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2))))
+        #add the kernel_matrix values by binning them into the grid using digitize
+        #get the indices of the grid points that are closest to the datapoints
+        lx = a+x[i]
+        ly = b+y[i]
+        #get the indices of the grid points that are closest to the datapoints
+        ix = np.digitize(lx,x_grid)
+        iy = np.digitize(ly,y_grid)
+        #add the kernel values to the grid
+        # Use the function in your code
+        z_kernelized[ix,iy] += kernel_matrix*weights[i]
+        #z_kernelized[ix,iy] += kernel_matrix
+    #reshape z_kernelized to the grid
+
+    return z_kernelized
+
 #create a function of this
 @jit(nopython=True)#This can be run in parallell but for N=10000 it was slower, parallel=True)
 def kernel_matrix_2d(x,y,x_grid,y_grid,bw,weights):
@@ -166,22 +225,31 @@ def kernel_matrix_2d(x,y,x_grid,y_grid,bw,weights):
     weights: weights for each datapoint
     
     Output:
-    z_kernelized: a 3d matrix with the kernel values for each datapoint
+    z_kernelized: a 2d matrix with the kernel values for each datapoint
     '''
 
     dxy_grid = x_grid[1]-x_grid[0]
     z_kernelized = np.zeros((len(x_grid),len(y_grid)))
     z_kernelized = z_kernelized.ravel()
     
-    for i in prange(len(x)):
+    for i in range(len(x)):
         #create kernel, first determine the kernel resolution
-        ker_size = int(np.ceil((3*bw[i])/dxy_grid)*2)
+        ker_size = int(np.ceil((3*bw[i])/dxy_grid))*4
+        #ker_size = int(np.ceil((2*bw[i])/dxy_grid)*3)*2
+        #ker_size = 28
+        #make sure the kernel size is even
+        #if ker_size%2 == 0:
+        #    ker_size += 1
+        #print(ker_size)
+        
+        #ker_size = 100
         #create grud for the kernel matrix
         a = np.linspace(-3*bw[i],3*bw[i],ker_size)
         b = np.linspace(-3*bw[i],3*bw[i],ker_size)
         a = a.reshape(-1,1)
         b = b.reshape(1,-1)
         kernel_matrix = ((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2)))/np.sum(((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2))))
+        #add zeroes to the edges of the kernel matrix
         lx = a+x[i]+dxy_grid/2
         ly = b+y[i]+dxy_grid/2
         ix = np.digitize(lx,x_grid)-1 #CHECK FOR OFF BY ONE ERROR. This is correct due to python indexing startint at zero.
@@ -208,17 +276,12 @@ def kernel_matrix_2d(x,y,x_grid,y_grid,bw,weights):
             index = int(ix_flat[j]*len(y_grid) + iy_flat.transpose()[j])
             indices[j] = index
             z_kernelized[index] += kernel_matrix_flat[j]
-            
-
-        #multiply with the weights
-
 
     # Reshape z_kernelized back to 2D
     z_kernelized = z_kernelized.reshape(len(x_grid), len(y_grid))
     #shift the grid to the correct position
 
     return z_kernelized
-
 
 ###########################
 #TESTIN
@@ -257,7 +320,7 @@ print(z_mat_flat)
 # n IS THE NUMBER OF DATAPOINTS AND N IS THE NUMBER OF CONTOURS IN THE PLOT
 
 #run the following only if script is main
-if __name__ == '__main--':
+if __name__ == '__main__':
 
     #set plotting style
     plt.style.use('dark_background')
@@ -274,7 +337,7 @@ if __name__ == '__main--':
 
     #kde parameters
     bw = 0.5*np.ones(len(x))
-    weights = np.ones(len(x))*np.linspace(100,1,len(x))
+    weights = np.ones(len(x))#*np.linspace(100,1,len(x))
 
     #assign a gaussian 2d kernel to each datapoint and compute the sum on a grid
     #Define the grid
@@ -316,23 +379,39 @@ if __name__ == '__main--':
     #create a 3dN vector for holding all the N=nx9 kernel positions and values
     kernel_matrix_locs = np.zeros((n,9,9))
 
-    z = kernel_matrix_2d(x,y,x_grid,y_grid,bw=np.ones(n)*bw*0.9,weights=weights)
+    z = kernel_matrix_2d(x,y,x_grid,y_grid,bw=np.ones(n)*bw,weights=weights)
 
+    Z_NOFLAT = kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw=np.ones(n)*bw*0.9,weights=weights)
     #make sure z matches xx and yy
     zz = z.transpose()
 
     #Plot the kernel density estimate
     N = 8 #number of contours
     fig, ax = plt.subplots()
-    ax.contour(xx, yy, zz, N, linewidths=0.8, colors='k')
-    ax.contourf(xx, yy, zz, N,cmap='inferno')
-    #ax.pcolor(xx, yy, zz, cmap='RdBu_r')
+    #ax.contour(xx, yy, zz, N, linewidths=0.8, colors='k')
+    #ax.contourf(xx, yy, zz, N,cmap='inferno')
+    ax.pcolor(xx, yy, zz, cmap='RdBu_r')
 
     #plot the datapoints
     ax.scatter(x, y, alpha=1, s=10, c='w')
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     ax.set_title('Kernel density estimate')
+    plt.show()
+
+    #MAKE MESHGRID WITH NOFLAT
+    #Plot the kernel density estimate
+    zz = Z_NOFLAT.transpose()
+
+    #plot with NOFLAT
+    fig, ax = plt.subplots()
+    #ax.contour(xx, yy, zz, N, linewidths=0.8, colors='k')
+    #ax.contourf(xx, yy, zz, N,cmap='inferno')
+    ax.pcolor(xx, yy, zz, cmap='RdBu_r')
+    ax.scatter(x, y, alpha=1, s=10, c='w')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_title('Kernel density estimate NOFLAT')
     plt.show()
 
 

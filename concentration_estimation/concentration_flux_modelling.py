@@ -52,6 +52,11 @@ background_ocean_conc = 3e-09 #mol/m3
 oswald_solu_coeff = 0.28 #(for methane)
 #Set projection
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
+#grid size
+dxy_grid = 5000. #m
+dz_grid = 25. #m
+#grid cell volume
+V_grid = dxy_grid*dxy_grid*dz_grid
 
 
 #List of variables in the script:
@@ -1127,52 +1132,74 @@ if run_everything == True:
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
         GRID_atm_flux = pickle.load(f)
 
-    
-
-
     #do the same plot but just on lon lat coordinates
     #convert bin_x_mesh and bin_y_mesh to lon/lat
     lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+    #reshape the GRID_atm_flux
+    lat_mesh = lat_mesh.reshape((len(bin_x),len(bin_y)))
+    lon_mesh = lon_mesh.reshape((len(bin_x),len(bin_y)))
+
     colormap = 'plasma'
 
-
+    #remove second dimensions in ws_zoomed until it is square
+    while GRID_atm_flux.shape[1] != GRID_atm_flux.shape[2]:
+        GRID_atm_flux = GRID_atm_flux[:,:,:-2]
 
     images_wind = []
     images_sst = []
     time_steps = len(bin_time)
     levels_atm = np.round(np.linspace(np.nanmin(np.nanmin(GRID_atm_flux))-1,np.nanmax(np.nanmax(GRID_atm_flux))+1,10))
 
+    levels_atm = np.round((np.linspace(0,1000,11)/V_grid)*10**6,2) #CHANGE THIS AFTERWARDS
     #datetimevector
     times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
     for i in range(time_steps):
-        #WIND FIELD PLOT
-        fig = plt.figure(figsize=(7, 7))
+        #Atmospheric release plot
+        fig = plt.figure(figsize=(14, 10))
         gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
 
         lons_zoomed = lon_mesh
         lats_zoomed = lat_mesh
-        ws_zoomed = GRID_atm_flux[i,:,:]
+        ws_zoomed = (GRID_atm_flux[i,:,:]/V_grid)*10**6	#convert to mmol/hr
 
-        ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
-        contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_atm,cmap=colormap)
-        cbar = plt.colorbar(contourf, ax=ax1)
-        cbar.set_label('[m/s]')
+        ax = fig.add_subplot(gs[0],projection=projection)
+
+        # Add a filled contour plot with a lower zorder
+        contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_atm,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
+        #cax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+
+        # Add the colorbar to the new axes
+        cbar = plt.colorbar(contourf, ax=ax)
+        cbar.set_label('Released methane [mol/hr]',fontsize = 16)
         cbar.set_ticks(levels_atm[1:-1])
-        ax1.set_title('Dissolved atmospheric flux, '+str(times[i])[:10])
-        contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_atm, colors = 'w', linewidths = 0.2)
-        ax1.clabel(contour, inline=True, fontsize=8)
-        ax1.set_xlabel('Longitude')
-        ax1.set_ylabel('Latitude')
+        cbar.ax.tick_params(labelsize=14)
+        #cbar = plt.colorbar(contourf, ax=ax)
+        #cbar.set_label('Released methane [mol]')
+        #cbar.set_ticks(levels_atm[1:-1])
+        ax.set_title('Released methane [mmol/hr]',fontsize=16)
+        contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_atm, colors = 'w', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+        # Add the land feature with a higher zorder
+        ax.add_feature(cfeature.LAND, facecolor='grey', zorder=2)
+        # Add the coastline with a higher zorder
+        ax.add_feature(cfeature.COASTLINE, zorder=3)
+        # Set the geographical extent of the plot
+        ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
+        gl.top_labels = True
+        gl.left_labels = True
+        gl.xlabel_style = {'size':14}
+        gl.ylabel_style = {'size':14}
 
         ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-        ax2.set_position([0.12,0.12,0.6246,0.03])
+        fig.subplots_adjust(hspace=0.2)
+        ax2.set_position([0.195,0.12,0.54558,0.03])
         ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
         #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
         ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
         ax2.set_yticks([])  # Hide the y-axis ticks
         ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
-        ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+        ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'],fontsize=16)  # Set the x-axis tick labels to the start and end time
 
         plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux'+str(i)+'.png')
         images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux'+str(i)+'.png'))
@@ -1193,9 +1220,6 @@ if run_everything == True:
     lats_zoomed = lat_mesh
     ws_zoomed = GRID_atm_flux_sum
 
-
-    # ...
-
     # Create a masked array where NaN values are masked
     ws_zoomed_masked = masked_invalid(ws_zoomed)
     # Apply the Gaussian filter only to the valid (unmasked) values
@@ -1203,9 +1227,10 @@ if run_everything == True:
     # Create a new masked array for the smoothed data, using the same mask
     ws_zoomed_smooth = np.ma.array(ws_zoomed_smooth_data, mask=ws_zoomed_masked.mask)
     ws_zoomed = ws_zoomed_smooth
-
     levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum))-1,4000,10)    
 
+    #CREATE FIGURE
+    colormap = 'magma'
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(1, 1, 1, projection=projection)
 

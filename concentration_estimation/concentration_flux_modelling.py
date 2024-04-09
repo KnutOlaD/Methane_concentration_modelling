@@ -33,13 +33,23 @@ wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1
 plot_wind_field = False
 #plot gas transfer velocity
 plot_gt_vel = False
+#Use all depth layers
+use_all_depth_layers = False
+### CONSTANTS ###
+#max kernel bandwidth
+max_ker_bw = 25000
+#atmospheric backgroudn concentration
+atmospheric_conc = ((44.64*2)/1000000) #mol/m3
+#oceanic background concentration
+background_ocean_conc = 3e-09 #mol/m3
+#Oswald solubility coeffocient
+oswald_solu_coeff = 0.28 #(for methane)
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
 #ODdata: netcdf file containing the opendrift data
 #particles: dictionary containing information about the drift particles
 #GRID: list of lists containing the horizontal fields at each depth and time step as sparse matrices
-
 
 #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
@@ -764,17 +774,6 @@ if run_everything == True:
         #and for sst
         imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)
 
-    ############################
-    ### DEFINE CONSTANTS ETC ###
-    ############################
-
-    ### Atmospheric background concentration ###
-    atmospheric_conc = ((44.64*2)/1000000) #mol/m3
-    background_ocean_conc = 3e-09 #mol/m3
-
-    ### Oswald solubility coeffocient ###
-    oswald_solu_coeff = 0.28 #(for methane)
-
     ################################################################
     ### ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT AND BANDWIDTH ###
     ################################################################
@@ -871,126 +870,185 @@ if run_everything == True:
     for j in range(1,len(particles['time']-1)): 
 
         print(j)
-        
-        #---------------------#
-        #PUT PARTICLES IN BINS#
-        #---------------------#
 
-        #bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)#WE DONT NEED THIS
-        #bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
-        bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-
-        #Define the [location_x,location_y,location_z,weight,bw] for the particles
-        parts_active = particles['weight'][:,j].compressed()
-
-        #----------------------#
-        #MODIFY PARTICLE WEIGHT#
-        #----------------------#
+        #--------------------------------------#
+        #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
+        #--------------------------------------#
 
         ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
-              
         if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
             #use the round of the depth
             if run_test == True:
                 particles['weight'][i,j] = vertical_profile[bin_z[bin_z_number]]#int(np.abs(particles['z'][i,j]))
+                particles['bw'][i,j] = initial_bandwidth
             elif run_full == True:
                 particles['weight'][i,j] = weights_full_sim
+                particles['bw'][i,j] = initial_bandwidth
+        else: #do modifications to already active particles
+            #add the weight of the particle to the current timestep
+            particles['weight'][i,j] = particles['weight'][i,j-1]
+            #add the bandwidth of the particle to the current timestep
+            particles['bw'][i,j] = particles['bw'][i,j-1] + age_constant
+            #limit the bandwidth to a maximum value
+            particles['bw'][i,j] = np.min([particles['bw'][i,j],max_ker_bw])
         
-        ### Do other 
+        #--------------------------------------------------#
+        #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
+        #--------------------------------------------------#
 
-        parts_active += vertical_profile[bin_z_number]
-
-        #----------------------------------------------------#
-        #BANDWIDTH AND WEIGHT OF THE PARTICLE DENSITY KERNELS#
-        #----------------------------------------------------#
-
-        ### Weight ###
-        #Pull vector from dictionary
-        part_weights = particles['weight'][:,j].compressed() #the weight of the active particle
-
-        ### Bandwidth ###
-        #Pull vector from dictionary
-        part_bw = particles['bw'][:,j].compressed() #the bandwidth of the active particle
-        #Add age to the currently active particles in the dictionary, but only to the particles that are active
+        #bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)#WE DONT NEED THIS
+        #bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
+        #get the bin_z_number and sort the particles into the correct depth layer
+        bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
+        #Get sort indices
+        sort_indices = np.argsort(bin_z_number)
+        #sort
+        bin_z_number = bin_z_number[sort_indices]
+        #get indices where bin_z_number changes
+        change_indices = np.where(np.diff(bin_z_number) != 0)[0]
+        #Trigger if you want to loop through all depth layers
+        if use_all_depth_layers == True:
+            change_indices = np.array([0,len(bin_z_number)])
         
-        #Constant bandwidth aging
-        particles['bw'][~particles['bw'].mask[:,j]] += age_constant #(the aging happens before the calculation here
+        #Define the [location_x,location_y,location_z,weight,bw] for the particle. This is the active particle matrix
+        parts_active = [particles['UTM_x'][:,j].compressed()[sort_indices],
+                        particles['UTM_y'][:,j].compressed()[sort_indices],
+                        particles['z'][:,j].compressed()[sort_indices],
+                        bin_z_number[sort_indices],
+                        particles['weight'][:,j].compressed()[sort_indices],
+                        particles['bw'][:,j].compressed()[sort_indices]]
+
+        #-----------------------------------#
+        #INITIATE FOR LOOP OVER DEPTH LAYERS#
+        #-----------------------------------#
+
+        for i in range(0,len(change_indices)): #This essentially loops over all particles
+            
+            #-----------------------------------------------------------#
+            #DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER#
+            #-----------------------------------------------------------#
+
+            #Define GRID_active by decompressing GRID[j][i][:,:] 
+            GRID_active = GRID[j][i][:,:].toarray()
+
+            #Define active particle matrix in depth layer i
+            parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]],
+                            parts_active[1][change_indices[i]:change_indices[i+1]],
+                            parts_active[2][change_indices[i]:change_indices[i+1]],
+                            parts_active[3][change_indices[i]:change_indices[i+1]],
+                            parts_active[4][change_indices[i]:change_indices[i+1]],
+                            parts_active[5][change_indices[i]:change_indices[i+1]]]
+
+            #-----------------------------------------------------#
+            #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
+            #-----------------------------------------------------#
+
+            GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
+                                        parts_active_z[1],
+                                        bin_x,
+                                        bin_y,
+                                        parts_active_z[5],
+                                        parts_active_z[4])
+
+            #----------------------------#
+            #PLOT THE CONCENTRATION FIELD#
+            #----------------------------#
+
+            bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
+            #and for GRID_active
+            zz = GRID_active
+
+            ### PLOTTING ###
+            if plotting == True:
+                levels = np.arange(0, 0.8, 0.1)
+                N = 8 #number of contours
+                fig, ax = plt.subplots()
+                ax.contour(bin_x_mesh,bin_y_mesh,GRID_active.T,linewidths=0.8, colors='k')
+                CS = ax.contourf(bin_x_mesh,bin_y_mesh,GRID_active.T,N,cmap='inferno',levels=levels) 
+                cbar = plt.colorbar(CS)
+                cbar.set_label('Concentration [mol/m3]')
+                #set fixed colorbar limits
+                #cbar.set_clim([0,0.8])
+                #set limits to 0,0.5*max_x and 0,0.5*max_y
+                #ax.set_xlim([np.min(bin_x),0.5*np.max(bin_x)])
+                #ax.set_ylim([np.min(bin_y),0.5*np.max(bin_y)])
+
+                #plt.show()
+                #save the figure
+                fig.savefig(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_'+str(j)+'.png')
+
+                #add the figure to the list of images
+                #images.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_'+str(j)+'.png'))
+
+                plt.close(fig)
+
+            #-------------------------------#
+            #CALCULATE ATMOSPHERIC FLUX/LOSS#
+            #-------------------------------#
+
+            #GRID_gt_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
+            #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
+            
+            if j != 0 and i == 0:
+                GRID_atm_flux[j,:,:] = np.multiply(GRID_gt_vel[j,:,:],
+                    (((GRID_active.T+background_ocean_conc)-atmospheric_conc))
+                    )
+            #CALCULATE LOSS IN SURFACE LAYER
+                GRID_active = GRID_active - GRID_atm_flux[j,:,:]
         
-        #Bandwidth aging for vertically invariant bandwidth function
+            #-----------------------------------------#
+            #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
+            #-----------------------------------------#
+
+            #Half life rates with sources per day:
+            # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
+            # 0.05 Mau et al., 2017 West of Svalbard
+            # <0.085 Gr~undker et al., 2021
+            
+            #0.02/(3600*24)
+            #use just e-7 per second, that's kind of in the middle of the pack
+            #R_ox = (10**-7)*3600 #half life per hour
+        
+            #loop over all depths and calculate the Mox consumption
+            #for k in range(0,len(bin_z_number)):
+            #    GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] = (
+            #        GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] - 
+            #        (GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]]*R_ox)
+            #    )
+
+
+            #-----------------------------------#
+            #ASSUME COMPLETE MIXING IN GRID CELL#
+            #-----------------------------------#
+
+            ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
+            #Set the weight to the average of the weights of the particles in the previous grid cell. 
+            #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
+            #    particles['weight'][i,j] = (V_grid * 
+            #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
+            #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
+            #                                )
+            ###################################
+            
+            #-----------------------------------------#
+            #CALCULATE CONCENTRATION IN THE GRID CELLS#
+            #-----------------------------------------#
+
+            #GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
+            #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
+            #GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
+        
+        #Calculate the totaø atmospheric flux. 
+        #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+
+        #bin_z_number_old = bin_z_number
+
+    
+
+
+
 
         
-        #Badnwidth aging for vertically variant bandwidth function
-        #particles['bw'][~particles['bw'].mask[:,j]] += age_constant*np.abs(particles['z'][:,j].compressed())
-
-        #limit the bandwidth to a maximum value
-        max_ker_bw = 25000
-        particles['bw'][particles['bw'] > max_ker_bw] = max_ker_bw
-        #but it doesnt matter since we're using the part_bw array to calculate the kernel matrix (particles['bw']) is
-        #passive until next iteration.)
-        
-        #---------------------------------#
-        #CALCULATE THE CONCENTRATION FIELD#
-        #---------------------------------#
-
-        #...using the above and the x_grid/y_grid coordinates given by bin_x and bin_y
-        #and the kernel_matrix_2d function.
-
-        GRID_active = kernel_matrix_2d_NOFLAT(particles['UTM_x'][:,j].compressed(),
-                                        particles['UTM_y'][:,j].compressed(),
-                                        bin_x,bin_y,part_bw,parts_active)
-
-        #----------------------------#
-        #PLOT THE CONCENTRATION FIELD#
-        #----------------------------#
-
-        bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
-        #and for GRID_active
-        zz = GRID_active
-
-        ### PLOTTING ###
-        if plotting == True:
-            levels = np.arange(0, 0.8, 0.1)
-            N = 8 #number of contours
-            fig, ax = plt.subplots()
-            ax.contour(bin_x_mesh,bin_y_mesh,GRID_active.T,linewidths=0.8, colors='k')
-            CS = ax.contourf(bin_x_mesh,bin_y_mesh,GRID_active.T,N,cmap='inferno',levels=levels) 
-            cbar = plt.colorbar(CS)
-            cbar.set_label('Concentration [mol/m3]')
-            #set fixed colorbar limits
-            #cbar.set_clim([0,0.8])
-            #set limits to 0,0.5*max_x and 0,0.5*max_y
-            #ax.set_xlim([np.min(bin_x),0.5*np.max(bin_x)])
-            #ax.set_ylim([np.min(bin_y),0.5*np.max(bin_y)])
-
-            #plt.show()
-            #save the figure
-            fig.savefig(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_'+str(j)+'.png')
-
-            #add the figure to the list of images
-            #images.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_'+str(j)+'.png'))
-
-            plt.close(fig)
-
-        #-------------------------------#
-        #CALCULATE ATMOSPHERIC FLUX/LOSS#
-        #-------------------------------#
-
-        #GRID_gt_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
-        #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
-        
-        if j != 0 and i == 0:
-            GRID_atm_flux[j,:,:] = np.matmul(calc_gt_vel(
-                u10=ws_interp,temperature=sst_interp,gas='methane'),
-                (((GRID[j][i][:,:]+background_ocean_conc)-atmospheric_conc))
-                )
-        #CALCULATE LOSS BY 
-        GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
-            GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-            GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
-        
-
-
-
     #create the gif
     #create a list of all images in r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration
 
@@ -998,67 +1056,8 @@ if run_everything == True:
 
 
         #LOOP OVER ALL PARTICLES AND MODIFY THEIR WEIGHT
-        do = True
-        if do == True:
-            for i in range(0,len(bin_z_number)): #This essentially loops over all particles
-                
-                #Define GRID_active by decompressing GRID[j][i][:,:] 
-                GRID_active = GRID[j][i][:,:].toarray()
 
-                #-------------------------#
-                #GIVE NEW PARTICLES WEIGHT#
-                #-------------------------#
-
-
-
-                #-----------------------------------------#
-                #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
-                #-----------------------------------------#
-
-                #Half life rates with sources per day:
-                # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
-                # 0.05 Mau et al., 2017 West of Svalbard
-                # <0.085 Gr~undker et al., 2021
-                
-                #0.02/(3600*24)
-                #use just e-7 per second, that's kind of in the middle of the pack
-                R_ox = (10**-7)*3600 #half life per hour
-            
-                #loop over all depths and calculate the Mox consumption
-                for k in range(0,len(bin_z_number)):
-                    GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] = (
-                        GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] - 
-                        (GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]]*R_ox)
-                    )
-
-
-                #-----------------------------------#
-                #ASSUME COMPLETE MIXING IN GRID CELL#
-                #-----------------------------------#
-
-                ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
-                #Set the weight to the average of the weights of the particles in the previous grid cell. 
-                #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-                #    particles['weight'][i,j] = (V_grid * 
-                #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-                #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-                #                                )
-                ###################################
-                
-                #-----------------------------------------#
-                #CALCULATE CONCENTRATION IN THE GRID CELLS#
-                #-----------------------------------------#
-
-                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-                #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
-                GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
-            
-            #Calculate the totaø atmospheric flux. 
-            #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
-
-            bin_z_number_old = bin_z_number
-
-        #numba. test. 
+    #numba. test. 
 
 
 ####################################################################################################

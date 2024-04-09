@@ -22,7 +22,7 @@ from scipy.interpolate import griddata
 ###SET RULES###
 ###############
 
-plotting = True
+plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
@@ -31,6 +31,8 @@ fit_wind_data = False
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
 plot_wind_field = False
+#plot gas transfer velocity
+plot_gt_vel = False
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -318,14 +320,14 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
     Input:
     C_o: concentration in the surface layer
     C_a: concentration in the atmosphere
-    Sc: Schmidt number
+    Sc: Schmidt number #
     u10: wind speed at 10 meters height
     temperature: temperature in degrees celcius in air(?)
     gas: string containing the name of the gas. Default is methane. Options are
     'methane', 'carbon dioxide', 'oxygen' and 'nitrogen'
 
     Output:
-    k: gas transfer velocity
+    k: gas transfer velocity #m/day
 
     '''
 
@@ -334,8 +336,8 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
 
     #make this such that we can calculate the gas transfer velocity for the whole grid and just
     #grab the data... 
-    #Calculate the gas transfer velocity
-    k = 0.251 * u10**2 * (Sc/660)**(-0.5) #m/day
+    #Calculate the gas transfer velocity constant
+    k = 0.251 * u10**2 * (Sc/660)**(-0.5) 
 
     #Calculate the atmospheric flux
     #F = k * (C_o - C_a) #mol/m2/day
@@ -375,7 +377,7 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
     bw_cutoff: the cutoff for the kernel in standard deviations
 
     Output:
-    z_kernelized: a 3d matrix with the kernel values for each datapoint
+    GRID_active: a 3d matrix with the kernel values for each datapoint
     '''
 
     #desired fractional difference between kernel grid size and grid size
@@ -386,7 +388,7 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
     dxy_grid = x_grid[1]-x_grid[0]
 
     #create a grid for z values
-    z_kernelized = np.zeros((len(x_grid),len(y_grid)))
+    GRID_active = np.zeros((len(x_grid),len(y_grid)))
 
     for i in range(len(x)):
         #calculate the kernel for each datapoint
@@ -425,16 +427,16 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
         #ix = ix_flat.reshape(len(ix_flat),1)
         #iy = iy_flat.reshape(1,len(iy_flat))
 
-        #if any values in ix or iy is outside the grid, remove the kernel and skip to next iteration
+        #if any values in ix or iy is outside the grid, remove the kernel entirely and skip to next iteration
         if np.any(ix >= len(x_grid)) or np.any(iy >= len(y_grid)) or np.any(ix < 0) or np.any(iy < 0):
             continue
 
         #add the kernel values to the grid
-        z_kernelized[ix,iy] += kernel_matrix*weights[i]
+        GRID_active[ix,iy] += kernel_matrix*weights[i]
         
-    #reshape z_kernelized to the grid
+    #reshape GRID_active to the grid
 
-    return z_kernelized
+    return GRID_active
 
 #def est_aging_constant
 
@@ -456,10 +458,6 @@ if __name__ == '__main__':
         particles = load_nc_data(datapath)
         particles = add_utm(particles)
         #adjust the time vector to start on May 20 2018
-        
-        
-        
-        
     
     run_full = False
     if run_full == True:
@@ -542,7 +540,7 @@ if run_everything == True:
                                                 savefile_path=False,
                                                 resolution=np.array([dxy_grid,dz_grid]))
     #CREATE ONE ACTIVE HORIZONTAL MODEL FIELD
-    GRID_active = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+    GRID_active = np.zeros((len(bin_y),len(bin_x)))
     #ATMOSPHERIC FLUX GRID
     GRID_atm_flux = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
 
@@ -725,8 +723,8 @@ if run_everything == True:
             ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
             ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
 
-            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field'+str(i)+'.png')
-            images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field'+str(i)+'.png'))
+            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png')
+            images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
             plt.close()
 
             #SST PLOT
@@ -798,18 +796,70 @@ if run_everything == True:
     #Add mask
     particles['bw'].mask = particles['lon'].mask
     
-    ################################################################
-    ######### CALCULATE INITIAL GAS TRANSFER VELOCITY FIELD ########
-    ################################################################
+    #########################################################
+    ######### CALCULATE GAS TRANSFER VELOCITY FIELDS ########
+    #########################################################
 
     #Calculate the gas transfer velocity
-    gas_transfer_vel = calc_gt_vel(u10=ws_interp,
+    GRID_gt_vel = calc_gt_vel(u10=ws_interp,
                                    temperature=sst_interp,
                                    gas='methane')
+    
+    if plot_gt_vel == True:
+        levels_gt = np.arange(np.round(np.nanmin(GRID_gt_vel))-0.2, np.round(np.nanmax(GRID_gt_vel))+0.2, 0.2)
+        #do the same plot but just on lon lat coordinates
+        #convert bin_x_mesh and bin_y_mesh to lon/lat
+        lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+        colormap = 'magma'
 
-    ################################################################
-    ################### END INITIAL CONDITIONS #####################
-    ################################################################
+        import imageio
+        import matplotlib.gridspec as gridspec
+
+        images_gt_vel = []
+        time_steps = len(bin_time)
+
+        #datetimevector
+        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+
+        for i in range(time_steps):
+            #Gas transfer velocity plot
+            fig = plt.figure(figsize=(7, 7))
+            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
+
+            lons_zoomed = lon_mesh
+            lats_zoomed = lat_mesh
+            ws_zoomed = GRID_gt_vel[i,:,:]
+
+            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_gt,cmap=colormap)
+            cbar = plt.colorbar(contourf, ax=ax1)
+            cbar.set_label('[$(m^2d)^{-1}$]')
+            cbar.set_ticks(levels_gt[1:-1])
+            ax1.set_title('Gas transfer velocity, '+str(times[i])[:10])
+            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_gt, colors = 'w', linewidths = 0.2)
+            ax1.clabel(contour, inline=True, fontsize=8)
+            ax1.set_xlabel('Longitude')
+            ax1.set_ylabel('Latitude')
+
+            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+            ax2.set_position([0.12,0.12,0.6246,0.03])
+            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+            ax2.set_yticks([])  # Hide the y-axis ticks
+            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png')
+            images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
+            plt.close()        
+
+        #create gif
+        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
+
+    #############################################################################################
+    ################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
+    #############################################################################################
 
     #---------------------------------------------------#
     #####################################################
@@ -818,24 +868,36 @@ if run_everything == True:
     #####################################################
     #---------------------------------------------------#
 
-    #WATCH OUT: PARTICLES['Z'] IS NEGATIVE DOWNWARDS
-    #Fill the GRID with the horizontal field at all timesteps
-
     for j in range(1,len(particles['time']-1)): 
-        #Calculate gas transfer velocity:
-        #gas_transf_vel = 0.31 * (u10**2 + 0.5 * (Sc/660)**(-2/3)) #m/day
-        
+
         print(j)
         
         #---------------------#
         #PUT PARTICLES IN BINS#
         #---------------------#
 
-        bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)
-        bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
+        #bin_x_number = np.digitize(particles['UTM_x'][:,j].compressed(),bin_x)#WE DONT NEED THIS
+        #bin_y_number = np.digitize(particles['UTM_y'][:,j].compressed(),bin_y)
         bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
 
+        #Define the [location_x,location_y,location_z,weight,bw] for the particles
         parts_active = particles['weight'][:,j].compressed()
+
+        #----------------------#
+        #MODIFY PARTICLE WEIGHT#
+        #----------------------#
+
+        ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
+              
+        if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
+            #use the round of the depth
+            if run_test == True:
+                particles['weight'][i,j] = vertical_profile[bin_z[bin_z_number]]#int(np.abs(particles['z'][i,j]))
+            elif run_full == True:
+                particles['weight'][i,j] = weights_full_sim
+        
+        ### Do other 
+
         parts_active += vertical_profile[bin_z_number]
 
         #----------------------------------------------------#
@@ -855,8 +917,8 @@ if run_everything == True:
         particles['bw'][~particles['bw'].mask[:,j]] += age_constant #(the aging happens before the calculation here
         
         #Bandwidth aging for vertically invariant bandwidth function
-        #
 
+        
         #Badnwidth aging for vertically variant bandwidth function
         #particles['bw'][~particles['bw'].mask[:,j]] += age_constant*np.abs(particles['z'][:,j].compressed())
 
@@ -866,31 +928,32 @@ if run_everything == True:
         #but it doesnt matter since we're using the part_bw array to calculate the kernel matrix (particles['bw']) is
         #passive until next iteration.)
         
-        #--------------------------------------------------#
-        #CALCULATE THE KDE ESTIMATE OF THE HORISONTAL FIELD#
-        #--------------------------------------------------#
+        #---------------------------------#
+        #CALCULATE THE CONCENTRATION FIELD#
+        #---------------------------------#
 
         #...using the above and the x_grid/y_grid coordinates given by bin_x and bin_y
         #and the kernel_matrix_2d function.
 
-        z_kernelized = kernel_matrix_2d_NOFLAT(particles['UTM_x'][:,j].compressed(),
+        GRID_active = kernel_matrix_2d_NOFLAT(particles['UTM_x'][:,j].compressed(),
                                         particles['UTM_y'][:,j].compressed(),
                                         bin_x,bin_y,part_bw,parts_active)
 
-        #plot the results on the bin_x/bin_y grid to see if it looks good
-        #create meshgrid
+        #----------------------------#
+        #PLOT THE CONCENTRATION FIELD#
+        #----------------------------#
 
         bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
-        #and for z_kernelized
-        zz = z_kernelized
+        #and for GRID_active
+        zz = GRID_active
 
         ### PLOTTING ###
         if plotting == True:
             levels = np.arange(0, 0.8, 0.1)
             N = 8 #number of contours
             fig, ax = plt.subplots()
-            ax.contour(bin_x_mesh,bin_y_mesh,z_kernelized.T,linewidths=0.8, colors='k')
-            CS = ax.contourf(bin_x_mesh,bin_y_mesh,z_kernelized.T,N,cmap='inferno',levels=levels) 
+            ax.contour(bin_x_mesh,bin_y_mesh,GRID_active.T,linewidths=0.8, colors='k')
+            CS = ax.contourf(bin_x_mesh,bin_y_mesh,GRID_active.T,N,cmap='inferno',levels=levels) 
             cbar = plt.colorbar(CS)
             cbar.set_label('Concentration [mol/m3]')
             #set fixed colorbar limits
@@ -908,92 +971,94 @@ if run_everything == True:
 
             plt.close(fig)
 
+        #-------------------------------#
+        #CALCULATE ATMOSPHERIC FLUX/LOSS#
+        #-------------------------------#
+
+        #GRID_gt_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
+        #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
+        
+        if j != 0 and i == 0:
+            GRID_atm_flux[j,:,:] = np.matmul(calc_gt_vel(
+                u10=ws_interp,temperature=sst_interp,gas='methane'),
+                (((GRID[j][i][:,:]+background_ocean_conc)-atmospheric_conc))
+                )
+        #CALCULATE LOSS BY 
+        GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
+            GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
+            GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
+        
+
+
+
     #create the gif
     #create a list of all images in r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration
 
     #imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field.gif', images)
 
 
-    #LOOP OVER ALL PARTICLES AND FILL THE GRID
-    do = False
-    if do == True:
-        for i in range(0,len(bin_z_number)): #This essentially loops over all particles
-            
-            #-------------------------#
-            #GIVE NEW PARTICLES WEIGHT#
-            #-------------------------#
-
-            #This is output from M2PG1       
-            if particles['z'].mask[i,j] == False and particles['z'].mask[i,j-1] == True or j == 0:
-                #use the round of the depth
-                if run_test == True:
-                    particles['weight'][i,j] = vertical_profile[
-                        int(np.abs(particles['z'][i,j]))]
-                elif run_full == True:
-                    particles['weight'][i,j] = weights_full_sim
+        #LOOP OVER ALL PARTICLES AND MODIFY THEIR WEIGHT
+        do = True
+        if do == True:
+            for i in range(0,len(bin_z_number)): #This essentially loops over all particles
                 
-            #-------------------------------#
-            #CALCULATE ATMOSPHERIC FLUX/LOSS#
-            #-------------------------------#
-            #gas_transfer_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
-            #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
-            GRID_atm_flux[j,:,:] = np.matmul(calc_gt_vel(
-                u10=ws_interp,temperature=sst_interp,gas='methane'),
-                (((GRID[j][1][:,:]+3e-09)-atmospheric_conc))
-                )
-            #CALCULATE LOSS BY 
-            GRID[j][1][bin_x_number[i],bin_y_number[i]] = (
-                GRID[j][1][bin_x_number[i],bin_y_number[i]] - 
-                GRID_atm_flux[j][bin_x_number[i],bin_y_number[i]])
+                #Define GRID_active by decompressing GRID[j][i][:,:] 
+                GRID_active = GRID[j][i][:,:].toarray()
 
-            #-----------------------------------------#
-            #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
-            #-----------------------------------------#
+                #-------------------------#
+                #GIVE NEW PARTICLES WEIGHT#
+                #-------------------------#
 
-            #Half life rates with sources per day:
-            # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
-            # 0.05 Mau et al., 2017 West of Svalbard
-            # <0.085 Gr~undker et al., 2021
+
+
+                #-----------------------------------------#
+                #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
+                #-----------------------------------------#
+
+                #Half life rates with sources per day:
+                # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
+                # 0.05 Mau et al., 2017 West of Svalbard
+                # <0.085 Gr~undker et al., 2021
+                
+                #0.02/(3600*24)
+                #use just e-7 per second, that's kind of in the middle of the pack
+                R_ox = (10**-7)*3600 #half life per hour
             
-            #0.02/(3600*24)
-            #use just e-7 per second, that's kind of in the middle of the pack
-            R_ox = (10**-7)*3600 #half life per hour
-        
-            #loop over all depths and calculate the Mox consumption
-            for k in range(0,len(bin_z_number)):
-                GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] = (
-                    GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] - 
-                    (GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]]*R_ox)
-                )
+                #loop over all depths and calculate the Mox consumption
+                for k in range(0,len(bin_z_number)):
+                    GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] = (
+                        GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]] - 
+                        (GRID[j][bin_z_number[k]][bin_x_number[i],bin_y_number[i]]*R_ox)
+                    )
 
 
-            #-----------------------------------#
-            #ASSUME COMPLETE MIXING IN GRID CELL#
-            #-----------------------------------#
+                #-----------------------------------#
+                #ASSUME COMPLETE MIXING IN GRID CELL#
+                #-----------------------------------#
 
-            ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
-            #Set the weight to the average of the weights of the particles in the previous grid cell. 
-            #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-            #    particles['weight'][i,j] = (V_grid * 
-            #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-            #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-            #                                )
-            ###################################
+                ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
+                #Set the weight to the average of the weights of the particles in the previous grid cell. 
+                #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
+                #    particles['weight'][i,j] = (V_grid * 
+                #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
+                #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
+                #                                )
+                ###################################
+                
+                #-----------------------------------------#
+                #CALCULATE CONCENTRATION IN THE GRID CELLS#
+                #-----------------------------------------#
+
+                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
+                #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
+                GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
             
-            #-----------------------------------------#
-            #CALCULATE CONCENTRATION IN THE GRID CELLS#
-            #-----------------------------------------#
+            #Calculate the totaø atmospheric flux. 
+            #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
 
-            GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-            #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
-            GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
-        
-        #Calculate the totaø atmospheric flux. 
-        #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
+            bin_z_number_old = bin_z_number
 
-        bin_z_number_old = bin_z_number
-
-    #numba. test. 
+        #numba. test. 
 
 
 ####################################################################################################

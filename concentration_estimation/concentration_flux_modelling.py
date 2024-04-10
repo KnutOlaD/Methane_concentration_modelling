@@ -18,10 +18,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-from scipy.ndimage import gaussian_filters
 from numpy.ma import masked_invalid
 import imageio
 import matplotlib.gridspec as gridspec
+from scipy.ndimage import gaussian_filter
+from matplotlib.colors import LogNorm
 
 
 ###############   
@@ -44,10 +45,11 @@ use_all_depth_layers = False
 ### CONSTANTS ###
 #max kernel bandwidth
 max_ker_bw = 25000
-#atmospheric backgroudn concentration
-atmospheric_conc = ((44.64*2)/1000000) #mol/m3
+#atmospheric background concentration
+#atmospheric_conc = ((44.64*2)/1000000) #mol/m3 #1911.8 ± 0.6 ppb #44.64 #From Helge
+atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
 #oceanic background concentration
-background_ocean_conc = 3e-09 #mol/m3
+background_ocean_conc = (3.3e-09)*1000 #mol/m3
 #Oswald solubility coeffocient
 oswald_solu_coeff = 0.28 #(for methane)
 #Set projection
@@ -57,7 +59,12 @@ dxy_grid = 5000. #m
 dz_grid = 25. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
-
+#age constant
+age_constant = 125 #m per hour, see figure.
+#Initial bandwidth
+initial_bandwidth = 250 #m
+#set colormap
+colromap = 'magma'
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -190,9 +197,9 @@ def create_grid(time,
             #if fill_data == True:
                 #Bin the particles in the first time step and depth level to the grid
                 #Binned x coordinates:
-            #    x = UTM_x[z_indices == i,j]
+                #x = UTM_x[z_indices == i,j]
                 #Binned y coordinates:
-            #    y = UTM_y[z_indices == i,j]
+                #y = UTM_y[z_indices == i,j]
                 #Find the index locations of the x and y coordinates
                 #x_indices = np.digitize(x,bin_x)
                 #y_indices = np.digitize(y,bin_y)
@@ -200,7 +207,6 @@ def create_grid(time,
                 #horizontal coordinates, adding up duplicates in the x_indices/y_indices list
                 #Find duplicates in the x_indices/y_indices list
                 #x_indices_unique = np.unique(x_indices)
-                
             #else:
     
     if savefile_path == True:
@@ -337,7 +343,7 @@ def calc_schmidt_number(T=5,gas='methane'):
 
 #############################################################################################################
 
-def calc_gt_vel(u10=5,temperature=20,gas='methane'):
+def calc_gt_vel(u10=5,temperature=20,grid_area=1,gas='methane'):
     ''' 
     Calculates the gas transfer velocity using the Wanninkhof (2014) formulation.
 
@@ -361,7 +367,7 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
     #make this such that we can calculate the gas transfer velocity for the whole grid and just
     #grab the data... 
     #Calculate the gas transfer velocity constant
-    k = 0.251 * u10**2 * (Sc/660)**(-0.5) 
+    k = (0.251 * u10**2 * (Sc/660)**(-0.5))*grid_area #m/day
 
     #Calculate the atmospheric flux
     #F = k * (C_o - C_a) #mol/m2/day
@@ -482,7 +488,7 @@ if __name__ == '__main__':
         particles = load_nc_data(datapath)
         particles = add_utm(particles)
         #adjust the time vector to start on May 20 2018
-    
+
     run_full = False
     if run_full == True:
         datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
@@ -541,15 +547,6 @@ if __name__ == '__main__':
         #                'time':ODdata.variables['time'][unmasked_indices],
         #                'status':ODdata.variables['status'][unmasked_indices]}
         
-    #Add utm coordinates to the particles dictionary
-
-
-    #Set horizontal grid resolution
-    dxy_grid = 5000. #m
-    #Set vertical grid resolution
-    dz_grid = 25. #m
-
-    #Calculate the difference in absolute (horizontal) distance between particles released at the same time
 
 run_everything = True# True
 if run_everything == True:
@@ -564,9 +561,14 @@ if run_everything == True:
                                                 savefile_path=False,
                                                 resolution=np.array([dxy_grid,dz_grid]))
     #CREATE ONE ACTIVE HORIZONTAL MODEL FIELD
-    GRID_active = np.zeros((len(bin_y),len(bin_x)))
+    GRID_active = np.zeros((len(bin_x),len(bin_y)))
     #ATMOSPHERIC FLUX GRID
-    GRID_atm_flux = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+    GRID_atm_flux = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
+
+    #Create coordinates for plotting
+    bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
+    #And lon lat coordinates
+    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh.T,bin_y_mesh.T,zone_number=33,zone_letter='V')
 
     ############################
     ###### FIRST TIMESTEP ######
@@ -705,7 +707,7 @@ if run_everything == True:
         levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
         #do the same plot but just on lon lat coordinates
         #convert bin_x_mesh and bin_y_mesh to lon/lat
-        lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+        lon_mesh,lat_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
         colormap = 'magma'
 
         import imageio
@@ -799,9 +801,9 @@ if run_everything == True:
     
     ### Bandwidth ###
     #Define inital bandwidth
-    initial_bandwidth = 1000 #meters
+    initial_bandwidth = initial_bandwidth #meters
     #Define the bandwidth aging constant
-    age_constant = 200 #meters spread every hour
+    age_constant = age_constant #meters spread every hour
     #Define the bandwidth matrix
     particles['bw'] = np.ma.zeros(particles['z'].shape)
     #Add the initial bandwidth to the particles at all timesteps
@@ -827,6 +829,7 @@ if run_everything == True:
     if calculate_new == True:
         GRID_gt_vel = calc_gt_vel(u10=ws_interp,
                                     temperature=sst_interp,
+                                    dxy_grid=dxy_grid**2,
                                     gas='methane')
     
         #save the GRID_gt_vel
@@ -836,7 +839,6 @@ if run_everything == True:
         with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'rb') as f:
             GRID_gt_vel = pickle.load(f)
         
-
     if plot_gt_vel == True:
         levels_gt = np.arange(np.round(np.nanmin(GRID_gt_vel))-0.2, np.round(np.nanmax(GRID_gt_vel))+0.2, 0.2)
         #do the same plot but just on lon lat coordinates
@@ -900,7 +902,7 @@ if run_everything == True:
     #####################################################
     #---------------------------------------------------#
 
-    for j in range(1,len(particles['time']-2)): 
+    for j in range(1,len(particles['time'])-1): 
         
         print(j)
 
@@ -997,7 +999,8 @@ if run_everything == True:
                                         parts_active_z[5],
                                         parts_active_z[4])
 
-            GRID_active = GRID_active.T #This just works
+            GRID_active = GRID_active/(V_grid*1000) #Dividing by V_grid to get concentration in mol/kg
+            #GRID_active = GRID_active.T #This just works
 
             #----------------------------#
             #PLOT THE CONCENTRATION FIELD#
@@ -1005,29 +1008,74 @@ if run_everything == True:
 
             bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
             #and for GRID_active
-            zz = GRID_active.T
+            images_conc = []
+            levels_atm = np.linspace(0, 5*10**-9, 8)
+            time_steps = len(bin_time)
 
             ### PLOTTING ###
             if plotting == True:
-                levels = np.arange(0, 0.8, 0.1)
-                N = 8 #number of contours
-                fig, ax = plt.subplots()
-                ax.contour(bin_x_mesh,bin_y_mesh,GRID_active.T,linewidths=0.8, colors='k')
-                CS = ax.contourf(bin_x_mesh,bin_y_mesh,GRID_active.T,N,cmap='inferno',levels=levels) 
-                cbar = plt.colorbar(CS)
-                cbar.set_label('Concentration [mol/m3]')
-                #set fixed colorbar limits
-                #cbar.set_clim([0,0.8])
-                #set limits to 0,0.5*max_x and 0,0.5*max_y
-                #ax.set_xlim([np.min(bin_x),0.5*np.max(bin_x)])
-                #ax.set_ylim([np.min(bin_y),0.5*np.max(bin_y)])
+                
+                fig = plt.figure(figsize=(14, 10))
+                gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
 
-                #plt.show()
+                #obtain lon_mesh from bin_x_mesh and bin_y_mesh
+                lon_mesh,lat_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+
+
+                lons_zoomed = lon_mesh
+                lats_zoomed = lat_mesh
+                #make input a vertically averaged concentration
+                ws_zoomed = GRID_active.T#convert to mmol/hr
+                ws_zoomed = ws_zoomed*10**9 #convert to nmol/hr
+                #calculate sum
+                #ws_zoomed = np.sum(ws_zoomed,axis=0)                
+
+                ax = fig.add_subplot(gs[0],projection=projection)
+
+                # Add a filled contour plot with a lower zorder
+
+                contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_atm,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
+                #cax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+                #plot a contour not on map projection¨
+                #plot a transparent grey shade indicating the model domain
+
+                # Add the colorbar to the new axes
+                cbar = plt.colorbar(contourf, ax=ax)
+                cbar.set_label('nmol/kg',fontsize = 16)
+                cbar.set_ticks(levels_atm[1:-1])
+                cbar.ax.tick_params(labelsize=14)
+                #cbar = plt.colorbar(contourf, ax=ax)
+                #cbar.set_label('Released methane [mol]')
+                #cbar.set_ticks(levels_atm[1:-1])
+                ax.set_title('Concentration in surface layer [nmol/kg]',fontsize=16)
+                contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_atm, colors = 'w', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+                # Add the land feature with a higher zorder
+                ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
+                # Add the coastline with a higher zorder
+                ax.add_feature(cfeature.COASTLINE, zorder=3, color = 'white' ,linewidth = 0.5)
+                # Set the geographical extent of the plot
+                ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
+                gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
+                gl.top_labels = True
+                gl.left_labels = True
+                gl.xlabel_style = {'size':14}
+                gl.ylabel_style = {'size':14}
+
+                ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+                fig.subplots_adjust(hspace=0.2)
+                ax2.set_position([0.195,0.12,0.54558,0.03])
+                ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+                #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+                ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+                ax2.set_yticks([])  # Hide the y-axis ticks
+                ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+                ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'],fontsize=16)  # Set the x-axis tick labels to the start and end time
+                plt.show()
                 #save the figure
-                fig.savefig(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_'+str(j)+'.png')
+                fig.savefig(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_surface'+str(j)+'.png')
 
                 #add the figure to the list of images
-                #images.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\Concentration_plots_gifs\horizontal_field_'+str(j)+'.png'))
+                images_conc.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_surface'+str(j)+'.png'))
 
                 plt.close(fig)
 
@@ -1039,14 +1087,11 @@ if run_everything == True:
             #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
             
             if j != 0 and i == 0:
-                GRID_atm_flux[j,:,:] = np.multiply(GRID_gt_vel[j,:,:],
+                GRID_atm_flux[j,:,:] = np.multiply(GRID_gt_vel[j,:,:].T,
                     (((GRID_active+background_ocean_conc)-atmospheric_conc))
                     )
-            #CALCULATE LOSS IN SURFACE LAYER
                 GRID_active = GRID_active - GRID_atm_flux[j,:,:]
 
-
-        
             #-----------------------------------------#
             #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
             #-----------------------------------------#
@@ -1094,6 +1139,9 @@ if run_everything == True:
 
         #bin_z_number_old = bin_z_number
 
+    #create a gif
+    #imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_gif.gif', images_conc, duration=0.5)
+
 
 ######################################################################################################
 #----------------------------------------------------------------------------------------------------#
@@ -1113,7 +1161,9 @@ if run_everything == True:
         f.write('--------------------------------\n')
         f.write('Number of particles: '+str(6200)+'\n')
         f.write('Number of timesteps: '+str(744)+'\n')
-        f.write('Grid resolution: '+str(dxy_grid)+'\n')
+        f.write('Grid horizontal resolution: '+str(dxy_grid)+'\n')
+        f.write('Grid vertical resolution: '+str(dz_grid)+'\n')
+        f.write('Grid cell volume: '+str(V_grid)+'\n')
         f.write('Initial bandwidth: '+str(initial_bandwidth)+'\n')
         f.write('Age constant: '+str(age_constant)+'\n')
         f.write('Max kernel bandwidth: '+str(max_ker_bw)+'\n')
@@ -1132,59 +1182,49 @@ if run_everything == True:
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
         GRID_atm_flux = pickle.load(f)
 
-    #do the same plot but just on lon lat coordinates
-    #convert bin_x_mesh and bin_y_mesh to lon/lat
-    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
-    #reshape the GRID_atm_flux
-    lat_mesh = lat_mesh.reshape((len(bin_x),len(bin_y)))
-    lon_mesh = lon_mesh.reshape((len(bin_x),len(bin_y)))
-
-    colormap = 'plasma'
-
-    #remove second dimensions in ws_zoomed until it is square
-    while GRID_atm_flux.shape[1] != GRID_atm_flux.shape[2]:
-        GRID_atm_flux = GRID_atm_flux[:,:,:-2]
-
-    images_wind = []
-    images_sst = []
+    images_atm_rel = []
     time_steps = len(bin_time)
-    levels_atm = np.round(np.linspace(np.nanmin(np.nanmin(GRID_atm_flux))-1,np.nanmax(np.nanmax(GRID_atm_flux))+1,10))
+    levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux))*10**9,np.nanmax(np.nanmax(GRID_atm_flux))*10**9,8)
 
-    levels_atm = np.round((np.linspace(0,1000,11)/V_grid)*10**6,2) #CHANGE THIS AFTERWARDS
-    #datetimevector
+    #datetimevector for the progress bar
     times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+
+    min_lon = np.min(lon_mesh)
+    max_lon = np.max(lon_mesh)
+    min_lat = np.min(lat_mesh)
+    max_lat = np.max(lat_mesh)
 
     for i in range(time_steps):
         #Atmospheric release plot
-        fig = plt.figure(figsize=(14, 10))
-        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
 
         lons_zoomed = lon_mesh
         lats_zoomed = lat_mesh
-        ws_zoomed = (GRID_atm_flux[i,:,:]/V_grid)*10**6	#convert to mmol/hr
+        ws_zoomed = GRID_atm_flux[i,:,:]#convert to mmol/hr
 
+        fig = plt.figure(figsize=(14, 10))
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
         ax = fig.add_subplot(gs[0],projection=projection)
 
         # Add a filled contour plot with a lower zorder
         contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_atm,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
-        #cax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
-
-        # Add the colorbar to the new axes
         cbar = plt.colorbar(contourf, ax=ax)
         cbar.set_label('Released methane [mol/hr]',fontsize = 16)
         cbar.set_ticks(levels_atm[1:-1])
         cbar.ax.tick_params(labelsize=14)
-        #cbar = plt.colorbar(contourf, ax=ax)
-        #cbar.set_label('Released methane [mol]')
-        #cbar.set_ticks(levels_atm[1:-1])
         ax.set_title('Released methane [mmol/hr]',fontsize=16)
         contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_atm, colors = 'w', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
         # Add the land feature with a higher zorder
-        ax.add_feature(cfeature.LAND, facecolor='grey', zorder=2)
+        ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
         # Add the coastline with a higher zorder
-        ax.add_feature(cfeature.COASTLINE, zorder=3)
+        ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.6' ,linewidth = 0.5)
         # Set the geographical extent of the plot
         ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
+        #Plot a red dot at the location of tromsø
+        ax.plot(18.9553,69.6496,marker='o',color='red',markersize=5,transform=ccrs.PlateCarree())
+        #with a text label
+        ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=14)
+
+        #Try to fix labels
         gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
         gl.top_labels = True
         gl.left_labels = True
@@ -1201,55 +1241,67 @@ if run_everything == True:
         ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
         ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'],fontsize=16)  # Set the x-axis tick labels to the start and end time
 
+
         plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux'+str(i)+'.png')
-        images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux'+str(i)+'.png'))
+        images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux'+str(i)+'.png'))
         plt.close()
 
     #create gif
-    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux.gif', images_wind, duration=0.5)
+    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux.gif', images_atm_rel, duration=0.5)
+
+
+    #set all values located above the line given by longitude=[13,15,17] and latitude = [71,72,73] to zero
+
+
+
 
 
     #Calculate the sum of all timesteps in GRID_atm_flux
-    GRID_atm_flux_sum = np.sum(GRID_atm_flux,axis=0)
+    GRID_atm_flux_sum = np.nansum(GRID_atm_flux,axis=0)
+    #total sum
+    total_sum = np.nansum(np.nansum(GRID_atm_flux_sum*dxy_grid**2))
+    GRID_atm_flux_sum = GRID_atm_flux_sum
+    GRID_atm_flux_sum = GRID_atm_flux_sum*3600 #mol/m^2
 
-    #Make a plot like the one above without the time loop or time bar (only plotting ax1)
-    fig = plt.figure(figsize=(7, 7))
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
 
+    levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),8)
     lons_zoomed = lon_mesh
     lats_zoomed = lat_mesh
     ws_zoomed = GRID_atm_flux_sum
 
-    # Create a masked array where NaN values are masked
-    ws_zoomed_masked = masked_invalid(ws_zoomed)
-    # Apply the Gaussian filter only to the valid (unmasked) values
-    ws_zoomed_smooth_data = gaussian_filter(ws_zoomed_masked.filled(0), sigma=0.7)
-    # Create a new masked array for the smoothed data, using the same mask
-    ws_zoomed_smooth = np.ma.array(ws_zoomed_smooth_data, mask=ws_zoomed_masked.mask)
-    ws_zoomed = ws_zoomed_smooth
-    levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum))-1,4000,10)    
-
-    #CREATE FIGURE
-    colormap = 'magma'
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(1, 1, 1, projection=projection)
+    fig = plt.figure(figsize=(14, 10))
+    gs = gridspec.GridSpec(1, 1)  # Create a GridSpec object
+    ax = fig.add_subplot(gs[0],projection=projection)
 
     # Add a filled contour plot with a lower zorder
-    contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_atm,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
+    contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
     cbar = plt.colorbar(contourf, ax=ax)
-    cbar.set_label('Released methane [mol]')
-    cbar.set_ticks(levels_atm[1:-1])
-    ax.set_title('Dissolved atmospheric release, sum of all timesteps')
-    contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_atm, colors = 'w', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+    cbar.set_label('Methane [mol/m$^2$]',fontsize = 16)
+    cbar.set_ticks(levels[1:-1])
+    cbar.ax.tick_params(labelsize=14)
+    ax.set_title('Released methane [mol/m$^2$], total = '+str(np.round(total_sum,2))+' mol',fontsize=16)
+    contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
     # Add the land feature with a higher zorder
-    ax.add_feature(cfeature.LAND, facecolor='grey', zorder=2)
+    ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
     # Add the coastline with a higher zorder
-    ax.add_feature(cfeature.COASTLINE, zorder=3)
+    ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
     # Set the geographical extent of the plot
     ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
-    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
+    #Plot a red dot at the location of tromsø
+    ax.plot(18.9553,69.6496,marker='o',color='red',markersize=5,transform=ccrs.PlateCarree())
+    #with a text label
+    ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=12)
+    #add text in lower right corner with the total sum
+    #ax.text(18.5,68.5,'Total release= '+str(np.round(total_sum,2))+' mol',transform=ccrs.PlateCarree(),color='white',fontsize=14)
+
+    #Try to fix labels
+    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
     gl.top_labels = True
     gl.left_labels = True
+    gl.xlabel_style = {'size':14}
+    gl.ylabel_style = {'size':14}
+
+    plt.show()
 
     #save figure
     plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux_sum.png')

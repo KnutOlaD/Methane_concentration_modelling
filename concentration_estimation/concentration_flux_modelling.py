@@ -34,6 +34,8 @@ plotting = False
 plt.style.use('dark_background') 
 #fit wind data
 fit_wind_data = False
+#fit gas transfer velocity
+fit_gt_vel = False
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -77,7 +79,7 @@ total_seabed_release = 20833
 #particles: dictionary containing information about the drift particles
 #GRID: list of lists containing the horizontal fields at each depth and time step as sparse matrices
 
-#create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
+ #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
 
 ################################
@@ -105,7 +107,6 @@ def load_nc_data(filename):
     #example of usage
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
     #particles = load_nc_data(datapath)
-
     return particles
 
 ###########################################################################################
@@ -430,7 +431,7 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
         #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
         #create a matrix for the kernel that makes sure the kernel resolution fits
         #within the grid resolution (adaptive kernel size). ker_size is the number of points in each direction
-        #in the kernel. 
+        #in the kernel. Can also add in weight of kernel here to save time, but let's do that later if needed.
         ker_size = int(np.ceil((bw_cutoff*2*bw[i]*ker_size_frac)/dxy_grid))
         a = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
         b = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
@@ -446,21 +447,6 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
         #get the indices of the grid points that are closest to the datapoints
         ix = np.digitize(lx,x_grid)
         iy = np.digitize(ly,y_grid)
-         #check that no indices are outside the grid (and use only the ones that are inside the grid and not below zero
-        #THIS WAS TOO MUCH HASSLE, JUST REMOVE ANY KERNELS THAT TOUCHES THE BOUNDARY
-        # Flatten ix and iy
-        #ix_flat = ix.flatten() 
-        #iy_flat = iy.flatten()
-        # Create the mask
-        #mask = (ix_flat >= 0) & (ix_flat < len(x_grid)) & (iy_flat >= 0) & (iy_flat < len(y_grid))
-        #get any indices that are false in the mask
-        #mask_false = np.where(mask == False)
-        # Apply the mask
-        #ix_flat = ix_flat[mask]
-        #iy_flat = iy_flat[mask]
-        # Reshape ix and iy back to their original shapes
-        #ix = ix_flat.reshape(len(ix_flat),1)
-        #iy = iy_flat.reshape(1,len(iy_flat))
 
         #if any values in ix or iy is outside the grid, remove the kernel entirely and skip to next iteration
         if np.any(ix >= len(x_grid)) or np.any(iy >= len(y_grid)) or np.any(ix < 0) or np.any(iy < 0):
@@ -468,19 +454,21 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
 
         #add the kernel values to the grid
         GRID_active[ix,iy] += kernel_matrix*weights[i]
-        
-    #reshape GRID_active to the grid
 
     return GRID_active
 
-def plot_2d_data_map(data,lon,lat,projection,levels,colormap,title,unit,savefile_path=False,show=False):
+def plot_2d_data_map_loop(data,lon,lat,time,
+                          projection,levels,
+                          colormap,title,unit,
+                          savefile_path=False,show=False):
     '''
-    Plots 2d data on a map
+    Plots 2d data on a map with time progression bar
 
     Input:
     data: 2d data
     lon: longitude
     lat: latitude
+    time: time vector (datetime object)
     projection: projection
     levels: levels for the contour plot
     colormap: colormap
@@ -516,31 +504,84 @@ def plot_2d_data_map(data,lon,lat,projection,levels,colormap,title,unit,savefile
     # Set the geographical extent of the plot
     ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
     #Plot a red dot at the location of tromsø
-    ax.plot(18.9553,69.6496,marker='o',color='red',markersize=5,transform=ccrs.PlateCarree())
+    ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
     #with a text label
     ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=12)
+    #add location marker for seepage
+    ax.plot(14.29,68.9179949,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
     #add text in lower right corner with the total sum
-    #ax.text(18.5,68.5,'Total release= '+str(np.round(total_sum,2))+' mol',transform=ccrs.PlateCarree(),color='white',fontsize=14)
+    ax.text(14.39,68.8479949,'Methane seeps',transform=ccrs.PlateCarree(),color='white',fontsize=12)
 
+    #add text in lower right corner with the total sum
     #Try to fix labels
     gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
     gl.top_labels = True
     gl.left_labels = True
     gl.xlabel_style = {'size':14}
     gl.ylabel_style = {'size':14}
-
     #savefigure if savefile_path is given
     if savefile_path != False:
-        plt.savefig(savefile_path,dpi=300)
-    
+        plt.savefig(savefile_path,dpi=150)
     #show figure if show is True
     if show == True:
         plt.show()
 
-
-#def est_aging_constant
-
-#Create a function for aging constant estimation
+def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
+    '''
+    loads and fits wind and sea surface temperature data onto model grid given by bin_x, bin_y and bin_time.
+    '''
+    print('Fitting wind data')
+    #load the wind data
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'rb') as f:
+        lons, lats, times, sst, u10, v10, ws = pickle.load(f)
+    #create a time vector on unix timestamps
+    #create datetime vector
+    datetime_vector = pd.to_datetime(times)
+    # Convert datetime array to Unix timestamps
+    wind_time_unix = (datetime_vector.astype(np.int64) // 10**9).values
+    #create a time vector that starts on May 20 if using the test data
+    if run_test == True:
+        ocean_time_unix = bin_time - pd.to_datetime('2020-01-01').timestamp() + pd.to_datetime('2018-05-20').timestamp()
+    #reverse the lats coordinates and associated matrices (sst, u10, v10, ws)
+    lats = lats[::-1]
+    #the matrices should be reversed only in the first dimension
+    sst = sst[:,::-1,:]
+    u10 = u10[:,::-1,:]
+    v10 = v10[:,::-1,:]
+    ws = ws[:,::-1,:]
+    ### FIT THE WIND DATASET ONTO THE MODEL GRID ###
+    #create a lon/lat meshgrid
+    lon_mesh,lat_mesh = np.meshgrid(lons,lats)
+    # Create empty arrays for UTM coordinates
+    UTM_x_wind = np.empty_like(lon_mesh)
+    UTM_y_wind = np.empty_like(lat_mesh)
+    utm_zone = 33 #force zone number to be 33
+    # Convert each point in the grid to UTM
+    for i in range(lon_mesh.shape[0]):
+        for j in range(lon_mesh.shape[1]):
+            UTM_x_wind[i, j], UTM_y_wind[i, j], _, _ = utm.from_latlon(lat_mesh[i, j], lon_mesh[i, j],force_zone_number=utm_zone)
+    #create meshgrids for bin_x and bin_y
+    bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
+    #Loop over and 
+    #1. Create objects to store wind fields and sst fields for each model timestep
+    #2. Find the closest neighbour in time in the wind field
+    #3. Interpolate the wind field onto the model grid
+    #4. Interpolate the sst field onto the model grid
+    #create objects to store wind fields and sst fields for each model timestep
+    ws_interp = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+    sst_interp = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+    for i in range(0,len(bin_time)):
+        print(i)
+        #find the closest neighbour in time in the wind field
+        time_diff = np.abs(ocean_time_unix[i] - wind_time_unix)
+        time_index = np.argmin(time_diff)
+        #interpolate ws and sst onto the model grid
+        ws_interp[i,:,:] = griddata((UTM_x_wind.flatten(), UTM_y_wind.flatten()), ws[time_index,:,:].flatten(), (bin_x_mesh, bin_y_mesh), method='cubic')
+        sst_interp[i,:,:] = griddata((UTM_x_wind.flatten(), UTM_y_wind.flatten()), sst[time_index,:,:].flatten(), (bin_x_mesh, bin_y_mesh), method='nearest')
+    #store the interpolated wind fields and sst fields in a pickle file
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'wb') as f:
+        pickle.dump([ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix], f)
+    return None
 
 #################################
 ########## INITIATION ###########
@@ -622,7 +663,7 @@ run_everything = True# True
 if run_everything == True:
     
     ###### SET UP GRIDS FOR THE MODEL ######
-
+    print('Creating the output grid...')
     #MODEELING OUTPUT GRID
     GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
                                                 [np.max([100000-dxy_grid-1,np.min(particles['UTM_x'].compressed())]),np.min([np.max(particles['UTM_x'].compressed()),1000000-dxy_grid-1])],
@@ -638,8 +679,6 @@ if run_everything == True:
     GRID_mox = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
     #Total atmoshperic flux vector (as function of time, in mol/hr)
     total_atm_flux = np.zeros(len(bin_time))
-
-    
 
     #Create coordinates for plotting
     bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
@@ -684,187 +723,40 @@ if run_everything == True:
     grid_resolution = [dxy_grid,dxy_grid,dz_grid] #in meters
     V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 
-    ################################################
-    ### WE DONT NEED THIS PART WITH KDE ESTIMATE ###
-    ################################################
-    #Have a sparse matrix which keeps track of the number of particles in each grid cell. 
-    #GRID_part = GRID
-    #Establish a matrix for atmospheric flux which is the same size as GRID only with one depth layer
-    #GRID_atm_flux = np.array(GRID)[:,0] #this can be just an np array. 
-    ################################################
-    ################################################
-    ################################################
-
-    ############################
-    ### LOAD WIND FIELD DATA ###
-    ############################
+    ###############################################
+    ### LOAD AND/OR FIT WIND AND SST FIELD DATA ###
+    ###############################################
 
     if fit_wind_data == True:
-
-        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'rb') as f:
-            lons, lats, times, sst, u10, v10, ws = pickle.load(f)
-
-        #reverse the lats coordinates and associated matrices (sst, u10, v10, ws)
-        lats = lats[::-1]
-        #the matrices should be reversed only in the first dimension
-        sst = sst[:,::-1,:]
-        u10 = u10[:,::-1,:]
-        v10 = v10[:,::-1,:]
-        ws = ws[:,::-1,:]
-
-        #create a time vector on unix timestamps
-        #create datetime vector
-        datetime_vector = pd.to_datetime(times)
-
-        # Convert datetime array to Unix timestamps
-        wind_time_unix = (datetime_vector.astype(np.int64) // 10**9).values
-
-        #create a time vector that starts on May 20 if using the test data
-        if run_test == True:
-            ocean_time_unix = bin_time - pd.to_datetime('2020-01-01').timestamp() + pd.to_datetime('2018-05-20').timestamp()
-
-        ### FIT THE WIND DATASET ONTO THE MODEL GRID ###
-
-        #create a lon/lat meshgrid
-        lon_mesh,lat_mesh = np.meshgrid(lons,lats)
-
-        # Create empty arrays for UTM coordinates
-        UTM_x_wind = np.empty_like(lon_mesh)
-        UTM_y_wind = np.empty_like(lat_mesh)
-
-        utm_zone = 33 #force zone number to be 33
-
-        # Convert each point in the grid to UTM
-        for i in range(lon_mesh.shape[0]):
-            for j in range(lon_mesh.shape[1]):
-                UTM_x_wind[i, j], UTM_y_wind[i, j], _, _ = utm.from_latlon(lat_mesh[i, j], lon_mesh[i, j],force_zone_number=utm_zone)
-
-        #interpolate onto the GRID grid where the grid is determined by bin_x and bin_y
-        #and the wind field is given by UTM_x_wind and UTM_y_wind
-        #interpolate onto the grid
-
-        #create meshgrids for bin_x and bin_y
-        bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
-
-        #Loop over and 
-        #1. Create objects to store wind fields and sst fields for each model timestep
-        #2. Find the closest neighbour in time in the wind field
-        #3. Interpolate the wind field onto the model grid
-        #4. Interpolate the sst field onto the model grid
-        #5. Store in a pickle file
-
-        #create objects to store wind fields and sst fields for each model timestep
-        ws_interp = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
-        sst_interp = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
-
-        for i in range(0,len(bin_time)):
-            print(i)
-            #find the closest neighbour in time in the wind field
-            time_diff = np.abs(ocean_time_unix[i] - wind_time_unix)
-            time_index = np.argmin(time_diff)
-            #interpolate ws and sst onto the model grid
-            ws_interp[i,:,:] = griddata((UTM_x_wind.flatten(), UTM_y_wind.flatten()), ws[time_index,:,:].flatten(), (bin_x_mesh, bin_y_mesh), method='cubic')
-            sst_interp[i,:,:] = griddata((UTM_x_wind.flatten(), UTM_y_wind.flatten()), sst[time_index,:,:].flatten(), (bin_x_mesh, bin_y_mesh), method='nearest')
-        
-        #store the interpolated wind fields and sst fields in a pickle file
-        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'wb') as f:
-            pickle.dump([ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix], f)
-    else:
-        #LOAD THE PICKLE FILE
+        fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=True)
+        #LOAD THE PICKLE FILE (no matter what)
         with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
             ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
 
-    #---------------------------------------------#
-    ### PLOT THE WIND AND SST DATA AND MAKE GIF ### 
-    #---------------------------------------------#
+    #########################################################
+    ######### CALCULATE GAS TRANSFER VELOCITY FIELDS ########
+    #########################################################
 
-    if plot_wind_field == True:
-        levels_w = np.arange(-1, 24, 2)
-        levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
+    #Calculate the gas transfer velocity
+    if fit_gt_vel == True:
+        print('Fitting gas transfer velocity')
+        GRID_gt_vel = calc_gt_vel(u10=ws_interp,
+                                    temperature=sst_interp-273.15,
+                                    gas='methane')
+    
+        #save the GRID_gt_vel
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'wb') as f:
+            pickle.dump(GRID_gt_vel, f)
+    else:#load the GRID_gt_vel
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'rb') as f:
+            GRID_gt_vel = pickle.load(f)
+        
+    if plot_gt_vel == True:
+        levels_gt = np.arange(np.round(np.nanmin(GRID_gt_vel))-0.2, np.round(np.nanmax(GRID_gt_vel))+0.2, 0.2)
         #do the same plot but just on lon lat coordinates
         #convert bin_x_mesh and bin_y_mesh to lon/lat
-        lon_mesh,lat_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+        lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
         colormap = 'magma'
-
-        import imageio
-        import matplotlib.gridspec as gridspec
-
-        images_wind = []
-        images_sst = []
-        time_steps = len(bin_time)
-
-        #datetimevector
-        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-
-        for i in range(time_steps):
-            #WIND FIELD PLOT
-            fig = plt.figure(figsize=(7, 7))
-            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
-
-            lons_zoomed = lon_mesh
-            lats_zoomed = lat_mesh
-            ws_zoomed = ws_interp[i,:,:]
-
-            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
-            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_w,cmap=colormap)
-            cbar = plt.colorbar(contourf, ax=ax1)
-            cbar.set_label('[m/s]')
-            cbar.set_ticks(levels_w[1:-1])
-            ax1.set_title('Wind speed, '+str(times[i])[:10])
-            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_w, colors = 'w', linewidths = 0.2)
-            ax1.clabel(contour, inline=True, fontsize=8)
-            ax1.set_xlabel('Longitude')
-            ax1.set_ylabel('Latitude')
-
-            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-            ax2.set_position([0.12,0.12,0.6246,0.03])
-            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
-            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
-            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
-            ax2.set_yticks([])  # Hide the y-axis ticks
-            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
-            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
-
-            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png')
-            images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
-            plt.close()
-
-            #SST PLOT
-            fig = plt.figure(figsize=(7, 7))
-            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
-
-            lons_zoomed = lon_mesh
-            lats_zoomed = lat_mesh
-            ws_zoomed = sst_interp[i,:,:]
-
-            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
-            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_sst,cmap = colormap)
-            cbar = plt.colorbar(contourf, ax=ax1)
-            cbar.set_label('[m/s]')
-            cbar.set_ticks(levels_sst[1:-1])
-            ax1.set_title('Wind speed, '+str(times[i])[:10])
-            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_sst, colors = 'w', linewidths = 0.2)
-            ax1.clabel(contour, inline=True, fontsize=8)
-            ax1.set_xlabel('Longitude')
-            ax1.set_ylabel('Latitude')
-
-            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-            ax2.set_position([0.12,0.12,0.6246,0.03])
-            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
-            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
-            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
-            ax2.set_yticks([])  # Hide the y-axis ticks
-            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
-            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
-
-            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png')
-            images_sst.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png'))
-            plt.close()
-
-        #create a gif
-        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field.gif', images_wind, duration=0.5)
-        #and for sst
-        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)
 
     ################################################################
     ### ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT AND BANDWIDTH ###
@@ -895,76 +787,6 @@ if run_everything == True:
     particles['age'] = np.ma.zeros(particles['z'].shape)
     #add mask
     particles['age'].mask = particles['z'].mask
-    
-    #########################################################
-    ######### CALCULATE GAS TRANSFER VELOCITY FIELDS ########
-    #########################################################
-
-    #Calculate the gas transfer velocity
-    calculate_new = False
-    if calculate_new == True:
-        GRID_gt_vel = calc_gt_vel(u10=ws_interp,
-                                    temperature=sst_interp-273.15,
-                                    gas='methane')
-    
-        #save the GRID_gt_vel
-        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'wb') as f:
-            pickle.dump(GRID_gt_vel, f)
-    else:#load the GRID_gt_vel
-        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'rb') as f:
-            GRID_gt_vel = pickle.load(f)
-        
-    if plot_gt_vel == True:
-        levels_gt = np.arange(np.round(np.nanmin(GRID_gt_vel))-0.2, np.round(np.nanmax(GRID_gt_vel))+0.2, 0.2)
-        #do the same plot but just on lon lat coordinates
-        #convert bin_x_mesh and bin_y_mesh to lon/lat
-        lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
-        colormap = 'magma'
-
-        import imageio
-        import matplotlib.gridspec as gridspec
-
-        images_gt_vel = []
-        time_steps = len(bin_time)
-
-        #datetimevector
-        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-
-        for i in range(time_steps):
-            #Gas transfer velocity plot
-            fig = plt.figure(figsize=(7, 7))
-            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
-
-            lons_zoomed = lon_mesh
-            lats_zoomed = lat_mesh
-            ws_zoomed = GRID_gt_vel[i,:,:]
-
-            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
-            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_gt,cmap=colormap)
-            cbar = plt.colorbar(contourf, ax=ax1)
-            cbar.set_label('[$(m^2d)^{-1}$]')
-            cbar.set_ticks(levels_gt[1:-1])
-            ax1.set_title('Gas transfer velocity, '+str(times[i])[:10])
-            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_gt, colors = 'w', linewidths = 0.2)
-            ax1.clabel(contour, inline=True, fontsize=8)
-            ax1.set_xlabel('Longitude')
-            ax1.set_ylabel('Latitude')
-
-            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-            ax2.set_position([0.12,0.12,0.6246,0.03])
-            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
-            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
-            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
-            ax2.set_yticks([])  # Hide the y-axis ticks
-            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
-            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
-
-            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png')
-            images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
-            plt.close()        
-
-        #create gif
-        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
 
     #############################################################################################
     ################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
@@ -976,17 +798,15 @@ if run_everything == True:
     ### AKA THIS IS WHERE THE ACTUAL MODELING HAPPENS ###
     #####################################################
     #---------------------------------------------------#
-
+    print('Starting to loop through all timesteps...')
     for j in range(1,len(particles['time'])-1): 
-        
+
         print(j)
 
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
 
-        #Do some binning
-        #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
         # Get the indices where particles['age'][:,j] is not masked
         unmasked_indices = np.where(particles['z'][:,j].mask == False)
         #do some binning on those
@@ -1011,10 +831,7 @@ if run_everything == True:
         #add the weight of the particle to the current timestep 
         if already_active.any():
             particles['weight'][already_active,j] = particles['weight'][already_active,j-1]-(particles['weight'][already_active,j-1]*R_ox*103600) #mol/hr
-            #Find all particles located in the surface layer
-            surface_layer_idx = np.where(np.abs(particles['z'][already_active,j-1])<bin_z[1])[0] #Those who where there on the PREVIOUS time step.
-            #Distribute the atmospheric loss on these particles depending on their weight and the GT velocity at previous timestep
-            particles['weight'][already_active,j-1][surface_layer_idx] = particles['weight'][already_active,j-1][surface_layer_idx] - ((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])*total_atm_flux[j-1])/np.nansum((particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
+            #Adjusting weights for atmospheric flux is done under atmospheric flux estimation
             #remove particles with weight less than 0
             particles['weight'][already_active,j][particles['weight'][already_active,j]<0] = 0
             #add the bandwidth of the particle to the current timestep
@@ -1083,6 +900,17 @@ if run_everything == True:
             #NEED TO ADD SOMETHING HERE THAT TAKES INTO ACCOUNT LOSS TO ATMOSPHERE AT 
             #THE PREVIOUS TIMESTEP
 
+            #Set any particle that has left the model domain to have zero weight and location
+            #at the model boundary
+            parts_active_z[4][parts_active_z[0] < np.min(bin_x)] = 0
+            parts_active_z[4][parts_active_z[0] > np.max(bin_x)] = 0
+            parts_active_z[4][parts_active_z[1] < np.min(bin_y)] = 0
+            parts_active_z[4][parts_active_z[1] > np.max(bin_y)] = 0
+            parts_active_z[0][parts_active_z[0] < np.min(bin_x)] = np.min(bin_x)+1
+            parts_active_z[0][parts_active_z[0] > np.max(bin_x)] = np.max(bin_x)-1
+            parts_active_z[1][parts_active_z[1] < np.min(bin_y)] = np.min(bin_y)+1
+            parts_active_z[1][parts_active_z[1] > np.max(bin_y)] = np.max(bin_y)-1
+
             GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
                                         parts_active_z[1],
                                         bin_x,
@@ -1091,14 +919,6 @@ if run_everything == True:
                                         parts_active_z[4])
 
             GRID_active = GRID_active/(V_grid) #Dividing by V_grid to get concentration in mol/m^3
-            #GRID_active = GRID_active.T #This just works
-
-            #If the depth layer is the surface layer, store a vector that contains the gt velocity at each particle position
-            #to be used when weighing the weightloss of each particle that contributed to the atmospheric flux
-            if i == 0: 
-                idxx = np.digitize(parts_active_z[0],bin_x)
-                idxy = np.digitize(parts_active_z[1],bin_y)
-                gt_vel_loss = GRID_gt_vel[j,idxy,idxx]
 
             #----------------------------#
             #PLOT THE CONCENTRATION FIELD#
@@ -1117,7 +937,7 @@ if run_everything == True:
                 gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
 
                 #obtain lon_mesh from bin_x_mesh and bin_y_mesh
-                lon_mesh,lat_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+                lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
 
                 lons_zoomed = lon_mesh
                 lats_zoomed = lat_mesh
@@ -1179,9 +999,6 @@ if run_everything == True:
             #-------------------------------#
             #CALCULATE ATMOSPHERIC FLUX/LOSS#
             #-------------------------------#
-
-            #GRID_gt_vel = calc_gt_vel(u10=U_constant,temperature=T_constant,gas='methane')
-            #CALCULATE ATMOSPHERIC FLUX (AFTER PREVIOUS TIMESTEP - OCCURS BETWEEN TIMESTEPS)
             
             if j != 0 and i == 0:
                 GRID_atm_flux[j,:,:] = np.multiply(GRID_gt_vel[j,:,:].T,
@@ -1189,7 +1006,27 @@ if run_everything == True:
                     )*(1/24)*dxy_grid**2 #This is in mol/hr for each gridcell. The gt_vel is PER DAY
                 GRID_active = GRID_active - GRID_atm_flux[j,:,:]/V_grid
                 total_atm_flux[j] = np.nansum(GRID_atm_flux[j,:,:])
-                
+            
+            #modify weight of particles in the surface layer according to their contribution to the flux
+            if j != 0 and i == 0:
+                #Find all particles located in the surface layer
+                surface_layer_idx = np.where(np.abs(parts_active_z[2])<bin_z[1])[0]
+                if surface_layer_idx.any():
+                    #Grab the gt velocity at the particles locations to use for weighing the weight loss according to the atmospheric flux
+                    gt_vel_loss = GRID_gt_vel[j,np.digitize(parts_active_z[1],bin_y),np.digitize(parts_active_z[0],bin_x)]
+                    #Distribute the atmospheric loss on these particles depending on their weight and the GT velocity at previous timestep
+                    parts_active_z[4][surface_layer_idx] = parts_active_z[4][surface_layer_idx] - ((gt_vel_loss*parts_active_z[4][surface_layer_idx])*total_atm_flux[j-1])/np.nansum((parts_active_z[4][surface_layer_idx])) #mol/hr
+                    #resort the particles to original sorting and update the weight in the particles dictionary using the bin_z_number
+                    #This applies to both activated and already active particles since it happens after the atmospheric flux occurs
+                    parts_active[4][sort_indices[change_indices[i]:change_indices[i+1]+1]] = parts_active_z[4]
+                    if activated_indices.any() and already_active.any():
+                        both_idx = np.concatenate((already_active,activated_indices))
+                        particles['weight'][both_idx,j] = parts_active[4][np.argsort(sort_indices)]
+                    elif already_active.any() and not activated_indices.any():
+                        particles['weight'][already_active,j] = parts_active[4][np.argsort(sort_indices)]
+                    elif activated_indices.any() and not already_active.any():
+                        particles['weight'][activated_indices,j] = parts_active[4][np.argsort(sort_indices)]
+  
             #-----------------------------------------#
             #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
             #-----------------------------------------#
@@ -1208,49 +1045,33 @@ if run_everything == True:
             #need this to adjust the weights for next loop
             GRID_active = GRID_active - GRID_mox[j,:,:]
             Mox_loss_this_ts = np.nansum(GRID_mox[j,:,:])
-            
-            #-----------------------------------#
-            #ASSUME COMPLETE MIXING IN GRID CELL#
-            #-----------------------------------#
+            #update the weights of the particles due to microbial oxidation is done globally at each timestep since
+            #the loss is not dependent on the depth layer (this is more efficient)
 
-            ### TRY WITHOUT THIS PART FIRST (BUT SHOULD BE ADDED IN LATER) ###
-            #Set the weight to the average of the weights of the particles in the previous grid cell. 
-            #if j != 0 and GRID_part[j-1][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] > 1:
-            #    particles['weight'][i,j] = (V_grid * 
-            #                                GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]])/(
-            #                                    GRID_part[j-1] [bin_z_number[i]][bin_x_number[i],bin_y_number[i]]
-            #                                )
-            ###################################
-            
-            #-----------------------------------------#
-            #CALCULATE CONCENTRATION IN THE GRID CELLS#
-            #-----------------------------------------#
+    #-----------------------------------#
+    #SAVE STUFF TO PICKLE FILES FOR LATER#
+    #-----------------------------------#
 
-            #GRID[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += particles['weight'][i,j]/V_grid
-            #Add the number of particles to the particles matrix (which keeps track of the amount of particles per grid cell). 
-            #GRID_part[j][bin_z_number[i]][bin_x_number[i],bin_y_number[i]] += 1
-        
-        #Calculate the totaø atmospheric flux. 
-        #GRID_atm_flux[j][1][:,:] = (GRID[j][1][:,:]-atmospheric_conc)*0.4
-
-        #bin_z_number_old = bin_z_number
-
-    #create a gif
-    #imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\horizontal_field_gif.gif', images_conc, duration=0.5)
-
-
-######################################################################################################
-#----------------------------------------------------------------------------------------------------#
-#####PLOTTINGSAVINGPLOTTINGSAVINGPLOTTINGSAVINGPLOTTINGSAVINGPLOTTINGSAVINGPLOTTINGSAVINGPLOTTING#####
-#----------------------------------------------------------------------------------------------------#
-######################################################################################################
-    
-#
-
-    #Save GRID_atm_flux
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\\GRID_atm_flux.pickle', 'wb') as f:
-        pickle.dump(GRID_atm_flux, f)
-
+    #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
+        pickle.dump(GRID, f)
+        #create a sparse matrix first
+    #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
+    GRID_atm_sparse = GRID_atm_flux
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'wb') as f:
+        pickle.dump(GRID_atm_sparse, f)
+    #GRID_mox_sparse = csr_matrix(GRID_mox)
+    GRID_mox_sparse = GRID_mox
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
+        pickle.dump(GRID_mox_sparse, f)
+    #and wind, sst, and gt_vel fields
+    if fit_wind_data == True:
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\ws_interp.pickle', 'wb') as f:
+            pickle.dump(ws_interp, f)
+        with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\sst_interp.pickle', 'wb') as f:
+            pickle.dump(sst_interp, f)
+        with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'wb') as f:
+            pickle.dump(GRID_gt_vel, f)
     #save a short textfile with the settings
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
         f.write('Settings for the test run\n')
@@ -1270,6 +1091,18 @@ if run_everything == True:
         f.write('Background ocean concentration: '+str(background_ocean_conc)+'\n')
         f.write('--------------------------------\n')
 
+######################################################################################################
+#----------------------------------------------------------------------------------------------------#
+###PLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTINGPLOTTING###
+#----------------------------------------------------------------------------------------------------#
+######################################################################################################
+    
+    #Get grid on lon/lat
+    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+
+    lons_zoomed = lon_mesh
+    lats_zoomed = lat_mesh
+ 
     #-------------------------------#
     #PLOT THE ATMOSPHERIC FLUX FIELD#
     #-------------------------------#
@@ -1364,29 +1197,43 @@ if run_everything == True:
 
     #Calculate the sum of all timesteps in GRID_atm_flux
     GRID_atm_flux_sum = np.nansum(GRID_atm_flux_mm_m2,axis=0)*10**-6 #in moles
+    #set all negative values in GRID_atm_flux_sum to zero
+    #GRID_atm_flux_sum[GRID_atm_flux_sum<0] = 0
     #total sum
     total_sum = np.nansum(np.nansum(GRID_atm_flux_sum*dxy_grid**2))
 
     #GRID_atm_flux_sum = np.flip(GRID_atm_flux_sum,axis=1)
 
     levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),8)
-    levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)
+    #levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)
     lons_zoomed = lon_mesh
     lats_zoomed = lat_mesh
     ws_zoomed = GRID_atm_flux_sum
+
+    percent_of_release = np.round(total_sum/total_seabed_release*100,3)
 
     fig = plt.figure(figsize=(14, 10))
     gs = gridspec.GridSpec(1, 1)  # Create a GridSpec object
     ax = fig.add_subplot(gs[0],projection=projection)
 
+    min_lon = np.min(lon_mesh)
+    max_lon = np.max(lon_mesh)
+    min_lat = np.min(lat_mesh)
+    max_lat = np.max(lat_mesh)
+
+    #min_lon = 12
+    #max_lon = 24.5
+    #min_lat = 68.5
+    #max_lat = 71.5
+
     # Add a filled contour plot with a lower zorder
-    contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
+    contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed.T, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0,extend='max')
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(r'Methane [mol m$^{-2}$]', fontsize=16)
     cbar.set_ticks(levels[1:-1])
     cbar.ax.tick_params(labelsize=14)
-    ax.set_title(r'Released methane [mol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol $\sim$'+str(np.round(str(np.round(total_sum,2)/total_seabed_release)))+'\%$',fontsize=16)
-    contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+    ax.set_title(r'Released methane [mol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
+    #contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed.T, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
     # Add the land feature with a higher zorder
     ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
     # Add the coastline with a higher zorder
@@ -1400,9 +1247,9 @@ if run_everything == True:
     #add text in lower right corner with the total sum
     #ax.text(18.5,68.5,'Total release= '+str(np.round(total_sum,2))+' mol',transform=ccrs.PlateCarree(),color='white',fontsize=14)
     #add dot where the release is (at 14.29,68.9179949)
-    ax.plot(14.29,68.9179949,marker='o',color='red',markersize=5,transform=ccrs.PlateCarree())
+    ax.plot(14.29,68.9179949,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
     #add text in lower right corner with the total sum
-    ax.text(14.39,68.8479949,'Seabed release',transform=ccrs.PlateCarree(),color='wite',fontsize=12)
+    ax.text(14.39,68.8479949,'Seabed release',transform=ccrs.PlateCarree(),color='white',fontsize=12)
 
     #Try to fix labels
     gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
@@ -1512,4 +1359,188 @@ if run_everything == True:
     U_constant = 5 #m/s
     T_constant = 10 #degrees celcius
 
+        if plot_wind_field == True:
+        levels_w = np.arange(-1, 24, 2)
+        levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
+        #do the same plot but just on lon lat coordinates
+        #convert bin_x_mesh and bin_y_mesh to lon/lat
+        lon_mesh,lat_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+        colormap = 'magma'
+
+        import imageio
+        import matplotlib.gridspec as gridspec
+
+        images_wind = []
+        images_sst = []
+        time_steps = len(bin_time)
+
+        #datetimevector
+        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+
+        for i in range(time_steps):
+            #WIND FIELD PLOT
+            fig = plt.figure(figsize=(7, 7))
+            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
+
+            lons_zoomed = lon_mesh
+            lats_zoomed = lat_mesh
+            ws_zoomed = ws_interp[i,:,:]
+
+            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_w,cmap=colormap)
+            cbar = plt.colorbar(contourf, ax=ax1)
+            cbar.set_label('[m/s]')
+            cbar.set_ticks(levels_w[1:-1])
+            ax1.set_title('Wind speed, '+str(times[i])[:10])
+            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_w, colors = 'w', linewidths = 0.2)
+            ax1.clabel(contour, inline=True, fontsize=8)
+            ax1.set_xlabel('Longitude')
+            ax1.set_ylabel('Latitude')
+
+            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+            ax2.set_position([0.12,0.12,0.6246,0.03])
+            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+            ax2.set_yticks([])  # Hide the y-axis ticks
+            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png')
+            images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
+            plt.close()
+
+            #SST PLOT
+            fig = plt.figure(figsize=(7, 7))
+            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
+
+            lons_zoomed = lon_mesh
+            lats_zoomed = lat_mesh
+            ws_zoomed = sst_interp[i,:,:]
+
+            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_sst,cmap = colormap)
+            cbar = plt.colorbar(contourf, ax=ax1)
+            cbar.set_label('[m/s]')
+            cbar.set_ticks(levels_sst[1:-1])
+            ax1.set_title('Wind speed, '+str(times[i])[:10])
+            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_sst, colors = 'w', linewidths = 0.2)
+            ax1.clabel(contour, inline=True, fontsize=8)
+            ax1.set_xlabel('Longitude')
+            ax1.set_ylabel('Latitude')
+
+            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+            ax2.set_position([0.12,0.12,0.6246,0.03])
+            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+            ax2.set_yticks([])  # Hide the y-axis ticks
+            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png')
+            images_sst.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png'))
+            plt.close()
+
+        #create a gif
+        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field.gif', images_wind, duration=0.5)
+        #and for sst
+        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)
+
+
 '''
+plot_wind_field = True
+
+#load the wind data
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
+    ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
+
+levels_w = np.arange(-1, 24, 2)
+levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
+#do the same plot but just on lon lat coordinates
+#convert bin_x_mesh and bin_y_mesh to lon/la
+lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+#datetimevector
+times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+
+if plot_wind_field == True:
+
+    images_wind = []
+    images_sst = []
+    time_steps = len(bin_time)
+
+    for i in range(time_steps):
+        plot_2d_data_map_loop(ws_interp,lon_mesh,
+                        lat_mesh,times,
+                        colormap,'Wind speed, '+str(times[i])[:10]',
+                        'm s$^{-1}$',
+                        savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png')
+
+        #WIND FIELD PLOT
+        fig = plt.figure(figsize=(7, 7))
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
+
+        lons_zoomed = lon_mesh
+        lats_zoomed = lat_mesh
+        ws_zoomed = ws_interp[i,:,:]
+
+        ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+        contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_w,cmap=colormap)
+        cbar = plt.colorbar(contourf, ax=ax1)
+        cbar.set_label('[m/s]')
+        cbar.set_ticks(levels_w[1:-1])
+        ax1.set_title('Wind speed, '+str(times[i])[:10])
+        contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_w, colors = 'w', linewidths = 0.2)
+        ax1.clabel(contour, inline=True, fontsize=8)
+        ax1.set_xlabel('Longitude')
+        ax1.set_ylabel('Latitude')
+
+        ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+        ax2.set_position([0.12,0.12,0.6246,0.03])
+        ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+        #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+        ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+        ax2.set_yticks([])  # Hide the y-axis ticks
+        ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+        ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+        plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png')
+        images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png'))
+        plt.close()
+
+        #SST PLOT
+        fig = plt.figure(figsize=(7, 7))
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
+
+        lons_zoomed = lon_mesh
+        lats_zoomed = lat_mesh
+        ws_zoomed = sst_interp[i,:,:]
+
+        ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
+        contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_sst,cmap = colormap)
+        cbar = plt.colorbar(contourf, ax=ax1)
+        cbar.set_label('[m/s]')
+        cbar.set_ticks(levels_sst[1:-1])
+        ax1.set_title('Wind speed, '+str(times[i])[:10])
+        contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_sst, colors = 'w', linewidths = 0.2)
+        ax1.clabel(contour, inline=True, fontsize=8)
+        ax1.set_xlabel('Longitude')
+        ax1.set_ylabel('Latitude')
+
+        ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+        ax2.set_position([0.12,0.12,0.6246,0.03])
+        ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+        #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+        ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
+        ax2.set_yticks([])  # Hide the y-axis ticks
+        ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
+        ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
+
+        plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png')
+        images_sst.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png'))
+        plt.close()
+
+    #create a gif
+    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field.gif', images_wind, duration=0.5)
+    #and for sst
+    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)

@@ -639,6 +639,8 @@ if run_everything == True:
     #Total atmoshperic flux vector (as function of time, in mol/hr)
     total_atm_flux = np.zeros(len(bin_time))
 
+    
+
     #Create coordinates for plotting
     bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
     #And lon lat coordinates
@@ -984,10 +986,11 @@ if run_everything == True:
         #--------------------------------------#
 
         #Do some binning
-        bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-
+        #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
         # Get the indices where particles['age'][:,j] is not masked
         unmasked_indices = np.where(particles['z'][:,j].mask == False)
+        #do some binning on those
+        bin_z_number = np.digitize(np.abs(particles['z'][:,j][unmasked_indices]),bin_z)
         # Get the indices where particles['age'][:,j] is not masked and equal to 0
         activated_indices = unmasked_indices[0][particles['age'][:,j][unmasked_indices] == 0]
         #already active indices
@@ -1009,9 +1012,9 @@ if run_everything == True:
         if already_active.any():
             particles['weight'][already_active,j] = particles['weight'][already_active,j-1]-(particles['weight'][already_active,j-1]*R_ox*103600) #mol/hr
             #Find all particles located in the surface layer
-            surface_layer_idx = np.where(np.abs(particles['z'][already_active,j-1])<bin_z[1]) #Those who where there on the PREVIOUS time step.
-            #Distribute the atmospheric loss on these particles depending on their weight
-            particles['weight'][already_active,j][surface_layer_idx] = particles['weight'][already_active,j][surface_layer_idx] - (particles['weight'][already_active,j-1][surface_layer_idx]*total_atm_flux[j-1])/np.nansum((particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
+            surface_layer_idx = np.where(np.abs(particles['z'][already_active,j-1])<bin_z[1])[0] #Those who where there on the PREVIOUS time step.
+            #Distribute the atmospheric loss on these particles depending on their weight and the GT velocity at previous timestep
+            particles['weight'][already_active,j-1][surface_layer_idx] = particles['weight'][already_active,j-1][surface_layer_idx] - ((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])*total_atm_flux[j-1])/np.nansum((particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
             #remove particles with weight less than 0
             particles['weight'][already_active,j][particles['weight'][already_active,j]<0] = 0
             #add the bandwidth of the particle to the current timestep
@@ -1025,13 +1028,16 @@ if run_everything == True:
         #--------------------------------------------------#
         #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
         #--------------------------------------------------#
+        
+        #.... And create a sorted matrix for all the active particles according to
+        #which depth layer they are currently located in. 
 
         #Get sort indices
         sort_indices = np.argsort(bin_z_number)
         #sort
-        bin_z_number = bin_z_number[sort_indices]
+        #bin_z_number = bin_z_number[sort_indices]
         #get indices where bin_z_number changes
-        change_indices = np.where(np.diff(bin_z_number) != 0)[0]
+        change_indices = np.where(np.diff(bin_z_number[sort_indices]) != 0)[0]
         #Trigger if you want to loop through all depth layers
         if use_all_depth_layers == True:
             change_indices = np.array([0,len(bin_z_number)])
@@ -1044,12 +1050,15 @@ if run_everything == True:
                         particles['weight'][:,j].compressed()[sort_indices],
                         particles['bw'][:,j].compressed()[sort_indices]]
 
+        #add one right hands side limit to change_indices
+
         #-----------------------------------#
         #INITIATE FOR LOOP OVER DEPTH LAYERS#
         #-----------------------------------#
 
-        #add one right hands side limit to change_indices
-        change_indices = np.append(change_indices,len(bin_z_number))
+        change_indices = np.append(change_indices,len(bin_z_number)-1)
+        #add a zero at the begining
+        change_indices = np.insert(change_indices,0,0)
         for i in range(0,len(change_indices)-1): #This essentially loops over all particles
             
             #-----------------------------------------------------------#
@@ -1060,12 +1069,12 @@ if run_everything == True:
             GRID_active = GRID[j][i][:,:].toarray()
 
             #Define active particle matrix in depth layer i
-            parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]],
-                            parts_active[1][change_indices[i]:change_indices[i+1]],
-                            parts_active[2][change_indices[i]:change_indices[i+1]],
-                            parts_active[3][change_indices[i]:change_indices[i+1]],
-                            parts_active[4][change_indices[i]:change_indices[i+1]],
-                            parts_active[5][change_indices[i]:change_indices[i+1]]]
+            parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[1][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[2][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[3][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[4][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[5][change_indices[i]:change_indices[i+1]+1]]
 
             #-----------------------------------------------------#
             #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
@@ -1073,8 +1082,6 @@ if run_everything == True:
 
             #NEED TO ADD SOMETHING HERE THAT TAKES INTO ACCOUNT LOSS TO ATMOSPHERE AT 
             #THE PREVIOUS TIMESTEP
-
-
 
             GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
                                         parts_active_z[1],
@@ -1085,6 +1092,13 @@ if run_everything == True:
 
             GRID_active = GRID_active/(V_grid) #Dividing by V_grid to get concentration in mol/m^3
             #GRID_active = GRID_active.T #This just works
+
+            #If the depth layer is the surface layer, store a vector that contains the gt velocity at each particle position
+            #to be used when weighing the weightloss of each particle that contributed to the atmospheric flux
+            if i == 0: 
+                idxx = np.digitize(parts_active_z[0],bin_x)
+                idxy = np.digitize(parts_active_z[1],bin_y)
+                gt_vel_loss = GRID_gt_vel[j,idxy,idxx]
 
             #----------------------------#
             #PLOT THE CONCENTRATION FIELD#
@@ -1380,11 +1394,15 @@ if run_everything == True:
     # Set the geographical extent of the plot
     ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
     #Plot a red dot at the location of tromsø
-    ax.plot(18.9553,69.6496,marker='o',color='red',markersize=5,transform=ccrs.PlateCarree())
+    ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
     #with a text label
     ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=12)
     #add text in lower right corner with the total sum
     #ax.text(18.5,68.5,'Total release= '+str(np.round(total_sum,2))+' mol',transform=ccrs.PlateCarree(),color='white',fontsize=14)
+    #add dot where the release is (at 14.29,68.9179949)
+    ax.plot(14.29,68.9179949,marker='o',color='red',markersize=5,transform=ccrs.PlateCarree())
+    #add text in lower right corner with the total sum
+    ax.text(14.39,68.8479949,'Seabed release',transform=ccrs.PlateCarree(),color='wite',fontsize=12)
 
     #Try to fix labels
     gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
@@ -1393,11 +1411,25 @@ if run_everything == True:
     gl.xlabel_style = {'size':14}
     gl.ylabel_style = {'size':14}
 
+    plt.show()
+
     #save figure
     plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux_sum.png')
 
     plt.show()
 
+    #plot total_atm_flux in a nice figure with nice labels etc
+    #create datetime vector
+    times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+    fig = plt.figure(figsize=(16, 10))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.plot(times,total_atm_flux)
+    ax.set_ylabel('Total atmospheric flux [mol/hr]',fontdict={'fontsize':16})
+    ax.set_title('Total atmospheric flux',fontdict={'fontsize':16})
+    #set fontsize for the xticks
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
+    #save figure
+    plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux.png')
 
 
 ####################################################################################################

@@ -33,9 +33,9 @@ plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
-fit_wind_data = False
+fit_wind_data = True
 #fit gas transfer velocity
-fit_gt_vel = False
+fit_gt_vel = True
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -57,14 +57,14 @@ oswald_solu_coeff = 0.28 #(for methane)
 #Set projection
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
-dxy_grid = 5000. #m
-dz_grid = 25. #m
+dxy_grid = 1600. #m
+dz_grid = 20. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
-age_constant = 125 #m per hour, see figure.
+age_constant = 150 #m per hour, see figure.
 #Initial bandwidth
-initial_bandwidth = 250 #m
+initial_bandwidth = 200 #m
 #set colormap
 #colromap = 'magma'
 colormap = sns.color_palette("rocket", as_cmap=True)
@@ -74,6 +74,8 @@ R_ox = 10**-7 #s^-1
 total_seabed_release = 20833
 #only for top layer trigger
 kde_all = False
+#Weight full sim
+weights_full_sim = 0.0408 #mol/hr
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -196,7 +198,6 @@ def create_grid(time,
         print(i)
         GRID.append([])
         #Bin all the particles at time j into different depth levels
-        z_indices = np.digitize(particles['z'][:,i],bin_z) 
         for j in range(0,bin_z.shape[0]):
             #Create a sparse matrix for each time step
             GRID[i].append([])
@@ -633,49 +634,59 @@ run_full = False
 if run_full == True:
     datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
     ODdata = nc.Dataset(datapath)
-    #get all variables that are not masked at the first timestep
-    first_timestep_lon = ODdata.variables['lon'][:, 0]
+    #number of particles
+    n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0]
+    #Create an empty particles dictionary with size n_particlesx2 (one for current and one for previous timestep)
+    particles = {'lon':np.ma.zeros((len(n_particles),2)),
+                'lat':np.ma.zeros((len(n_particles),2)),
+                'z':np.ma.zeros((len(n_particles),2)),}
+    #first timestep:
+    particles['lon'][:,0] = ODdata.variables['lon'][:, 0]
+    particles['lat'][:,0] = ODdata.variables['lat'][:, 0]
+    particles['z'][:,0] = ODdata.variables['z'][:, 0]
+    particles['time'] = ODdata.variables['time'][:]
+    #second timestep:
+    particles['lon'][:,1] = ODdata.variables['lon'][:, 1]
+    particles['lat'][:,1] = ODdata.variables['lat'][:, 1]
+    particles['z'][:,1] = ODdata.variables['z'][:, 1]
+    #add utm
+    particles = add_utm(particles)
     #unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
-    unmasked_indices = np.where(~first_timestep_lon.mask)
-    unmasked_indices = np.array(unmasked_indices)[0] #fix shape/type problem
+    #set limits for grid manually since we dont know how this will evolv
+    #loop over all timesteps to check the limits of the grid
 
-    timestep_num = 744
-    #loop over and store the lon/lat positions of the particles indicated by
-    #the unmasked indices array
-    ### CALCULATE AGING FUNCTION ###
-    calc_age = False
-    if calc_age == True:
-        lon = np.zeros((len(unmasked_indices),timestep_num))
-        lat = np.zeros((len(unmasked_indices),timestep_num))
-        for i in range(0,timestep_num):
-            lon[:,i] = ODdata.variables['lon'][unmasked_indices,i]
-            lat[:,i] = ODdata.variables['lat'][unmasked_indices,i]
-            print(i)
+    for i in range(0,ODdata.variables['lon'].shape[1]):
+        #get max and min unmasked lat/lon values
+        print(i)
+        if i == 0:
+            minlon = np.min(ODdata.variables['lon'][:,i].compressed())
+            maxlon = np.max(ODdata.variables['lon'][:,i].compressed())
+            minlat = np.min(ODdata.variables['lat'][:,i].compressed())
+            maxlat = np.max(ODdata.variables['lat'][:,i].compressed())
+            maxdepth = np.max(np.abs(ODdata.variables['z'][:,i].compressed()))
+        else:
+            minlon = np.min([np.min(ODdata.variables['lon'][:,i].compressed()),minlon])
+            maxlon = np.max([np.max(ODdata.variables['lon'][:,i].compressed()),maxlon])
+            minlat = np.min([np.min(ODdata.variables['lat'][:,i].compressed()),minlat])
+            maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
+            maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
+ 
+    #get the min/max values for the UTM coordinates using the utm package and the minlon/maxlon/minlat/maxlat values
+    minUTMxminUTMy = utm.from_latlon(minlat,minlon)
+    minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
+    maxUTMxminUTMy = utm.from_latlon(maxlat,minlon)
+    maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon)
+    
 
-        #find and set to nan all values that are outside the UTM domain,
-        #that is above 71 degrees north and below 65 degrees north 
-        #and west of 20 degrees east and east of 0 degrees east
-        #remove everything above 71 degrees north and 20 degrees east
-        lon[lat > 71] = np.nan
-        lat[lat > 71] = np.nan
 
-        #Calculate the UTM coordinates
-        lon_masked = np.ma.masked_invalid(lon)
-        lat_masked = np.ma.masked_invalid(lat)
-        UTM = utm.from_latlon(lon_masked,lat_masked)
-        utm_x = UTM[0]
-        utm_y = UTM[1]
 
-        #create a masked utm_x/utm_y array
-        utm_x_masked = np.ma.masked_invalid(utm_x)
-        utm_y_masked = np.ma.masked_invalid(utm_y)
+    
+    
+    
 
-        for i in range(0,len(utm_x_masked)):
-            diff_x[i,:] = utm_x_masked[i,j] - utm_x_masked[:,j]
-            diff_y[i,:] = utm_y_masked[i,j] - utm_y_masked[:,j]
-        
-            #calculate the distance between all particles
-        distance = np.sqrt(diff_x**2 + diff_y**2)
+
+
+
 
         #find all indices in distance where the difference in horizontal distance is less than 
         #100 meters
@@ -686,17 +697,30 @@ if run_full == True:
     #                'z':ODdata.variables['z'][unmasked_indices],
     #                'time':ODdata.variables['time'][unmasked_indices],
     #                'status':ODdata.variables['status'][unmasked_indices]}
-    
+
+    #force zone number to be 33
+    minUTMxminUTMy = utm.from_latlon(minlat,minlon,force_zone_number=33)
+    minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon,force_zone_number=33)
+    maxUTMxminUTMy = utm.from_latlon(maxlat,minlon,force_zone_number=33)
+    maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon,force_zone_number=33)
 
 ###### SET UP GRIDS FOR THE MODEL ######
 print('Creating the output grid...')
 #MODEELING OUTPUT GRID
-GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
-                                            [np.max([100000-dxy_grid-1,np.min(particles['UTM_x'].compressed())]),np.min([np.max(particles['UTM_x'].compressed()),1000000-dxy_grid-1])],
-                                            [np.max([dxy_grid+1,np.min(particles['UTM_y'].compressed())]),np.min([np.max(particles['UTM_y'].compressed()),10000000-dxy_grid-1])],
-                                            np.max(np.abs(particles['z'])),
-                                            savefile_path=False,
-                                            resolution=np.array([dxy_grid,dz_grid]))
+if run_test == True:
+    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
+                                                [np.max([100000-dxy_grid-1,np.min(particles['UTM_x'].compressed())]),np.min([np.max(particles['UTM_x'].compressed()),1000000-dxy_grid-1])],
+                                                [np.max([dxy_grid+1,np.min(particles['UTM_y'].compressed())]),np.min([np.max(particles['UTM_y'].compressed()),10000000-dxy_grid-1])],
+                                                np.max(np.abs(particles['z'])),
+                                                savefile_path=False,
+                                                resolution=np.array([dxy_grid,dz_grid]))
+elif run_full == True:
+    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
+                                                [np.max([100000-dxy_grid-1,minUTMxminUTMy[0]]),np.min([1000000-dxy_grid-1,maxUTMxmaxUTMy[0]])],
+                                                [np.max([dxy_grid+1,minUTMxminUTMy[1]]),np.min([10000000-dxy_grid-1,maxUTMxmaxUTMy[1]])],
+                                                maxdepth+25,
+                                                savefile_path=False,
+                                                resolution=np.array([dxy_grid,dz_grid]))
 #CREATE ONE ACTIVE HORIZONTAL MODEL FIELD
 GRID_active = np.zeros((len(bin_x),len(bin_y)))
 #ATMOSPHERIC FLUX GRID
@@ -705,6 +729,12 @@ GRID_atm_flux = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_mox = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 #Total atmoshperic flux vector (as function of time, in mol/hr)
 total_atm_flux = np.zeros(len(bin_time))
+#Total MoX consumption vector (as function of time, in mol/hr)
+total_mox = np.zeros(len(bin_time))
+#particle weightloss history
+particles_atm_loss = np.zeros((len(bin_time)))
+#particle mox loss history
+particles_mox_loss = np.zeros((len(bin_time)))
 
 #Create coordinates for plotting
 bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
@@ -735,19 +765,6 @@ bin_x_number = np.digitize(x.compressed(),bin_x)
 bin_y_number = np.digitize(y.compressed(),bin_y)
 bin_z_number = np.digitize(z.compressed(),bin_z)
 
-#########################################
-### ADD WEIGHTS TO THE FIRST TIMESTEP ###
-#########################################
-
-vertical_profile = np.ones(bin_z.shape[0])
-#Should be an exponential with around 100 at the bottom and 10 at the surface
-vertical_profile = np.round(np.exp(np.arange(0,np.max(np.abs(particles['z'][:,0])+10),1)/44)) #This is for test run
-#Create a matrix with the same size as particles['z'] and fill with the vertical profile depending
-#on the depth level where the particle was in its first active timestep
-#It's the same initial weight of all particles. 
-
-weights_full_sim = 0.0408 #mol/hr
-
 ##################################
 ### CALCULATE GRID CELL VOLUME ###
 ##################################
@@ -773,13 +790,25 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 ws_interp = np.ma.filled(ws_interp,np.nan)
 sst_interp = np.ma.filled(sst_interp,np.nan)
 
-
 #Calculate the gas transfer velocity
 if fit_gt_vel == True:
     print('Fitting gas transfer velocity')
     GRID_gt_vel = calc_gt_vel(u10=ws_interp,
                                 temperature=sst_interp-273.15,
                                 gas='methane')
+    #replace any nans in the grid with nearest neighbour values in the grid using the nearest neighbour interpolation
+    # Get the indices of the valid (non-NaN) and invalid (NaN) points
+    valid_mask = ~np.isnan(GRID_gt_vel)
+    invalid_mask = np.isnan(GRID_gt_vel)
+    # Get the coordinates of the valid points
+    valid_coords = np.array(np.nonzero(valid_mask)).T
+    # Get the coordinates of the invalid points
+    invalid_coords = np.array(np.nonzero(invalid_mask)).T
+    # Get the values of the valid points
+    valid_values = GRID_gt_vel[valid_mask]
+    # Use griddata to interpolate the NaN values
+    GRID_gt_vel[invalid_mask] = griddata(valid_coords, valid_values, invalid_coords, method='nearest')
+
     #save the GRID_gt_vel
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'wb') as f:
         pickle.dump(GRID_gt_vel, f)
@@ -850,6 +879,31 @@ for j in range(1,len(particles['time'])-1):
 
     print(j)
 
+    #----------------------------------------------------#
+    #IF RUNNING THE WHOLE SIMULATION LOAD TIMESTEP J DATA#
+    #----------------------------------------------------#
+    
+    if run_full == True:
+        #LAZY LOAD FROM THE NC FILE
+        #Remove previous previous timestep data from the dict
+        particles['lon'][:,j-2] = []
+        particles['lat'][:,j-2] = []
+        particles['z'][:,j-2] = []
+        particles['time'][:,j-2] = []
+        particles['status'][:,j-2] = []
+        #Load the new timestep data
+        particles['lon'][:,j] = ODdata.variables['lon'][unmasked_indices,j]
+        particles['lat'][:,j] = ODdata.variables['lat'][unmasked_indices,j]
+        particles['z'][:,j] = ODdata.variables['z'][unmasked_indices,j]
+        #particles['time'][:,j] = ODdata.variables['time'][unmasked_indices,j]
+        #particles['status'][:,j] = ODdata.variables['status'][unmasked_indices,j]
+        #Get the utm coordinates of the particles in the first time step
+        
+
+
+
+
+
     #--------------------------------------#
     #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
     #--------------------------------------#
@@ -858,9 +912,14 @@ for j in range(1,len(particles['time'])-1):
     #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
     #np.digitize(np.abs(particles['z'][:,j]),bin_z)
 
+    #Unmask particles that were masked in the previous timestep
+    #particles['z'][:,j].mask = particles['z'][:,j-1].mask
     # Get the indices where particles['age'][:,j] is not masked
     unmasked_indices = np.where(
         particles['z'][:,j].mask == False)
+    #set the mask for weights to the same as mask for z
+    if j == 234:
+        print('stop')
     #do some binning on those
     bin_z_number = np.digitize(
         np.abs(particles['z'][:,j][unmasked_indices]),bin_z)
@@ -870,6 +929,7 @@ for j in range(1,len(particles['time'])-1):
     #already active indices
     already_active = unmasked_indices[0][
         particles['age'][:,j][unmasked_indices] != 0]
+    
 
     ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
     if run_test == True:
@@ -878,6 +938,9 @@ for j in range(1,len(particles['time'])-1):
             particles['weight'][activated_indices,j] = (np.round(
                 np.exp((np.abs(particles['z'][:,j][activated_indices]
                                 )+10)/44)))*0.037586 #moles per particle
+            #Make the mask false for all subsquent timesteps
+            particles['weight'][activated_indices,j].mask = False
+            #do this for all the maske
             #same for bandwidth
             particles['bw'][activated_indices,j] = initial_bandwidth
     elif run_full == True:
@@ -894,26 +957,32 @@ for j in range(1,len(particles['time'])-1):
         particles['weight'][already_active,j] = particles[
             'weight'][already_active,j-1]-(particles['weight'][
                 already_active,j-1]*R_ox*3600) #mol/hr
-        #Find all particles located in the surface layer
-        surface_layer_idx = np.where(np.abs(particles['z'][
-            already_active,j-1])<bin_z[1]) #Those who where there on the PREVIOUS time step.
-        #find the gt_vel for the surface_layer_idxs
-        gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active,j-1][surface_layer_idx]),bin_y)
-        gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active,j-1][surface_layer_idx]),bin_x)
+        particles_mox_loss[j] = np.nansum(particles['weight'][already_active,j-1]*R_ox*3600)
+        #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
+        already_active_surface = already_active[np.where(np.abs(particles['z'][
+            already_active,j-1])<bin_z[1])] #Those who where there on the PREVIOUS time step.
+       #find the gt_vel for the surface_layer_idxs
+        gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active_surface,j-1]),bin_y)
+        gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active_surface,j-1]),bin_x)
         #make sure all gt_idys and gt_idxs are within the grid
         gt_idys[gt_idys >= len(bin_y)] = len(bin_y)-1
         gt_idxs[gt_idxs >= len(bin_x)] = len(bin_x)-1
         #Distribute the atmospheric loss on these particles depending on their weight
+        #replace any nans in GRID_gt_cel[j-1][gt_idys,gt_idxs] with the nearest non nan value in the grid
+        #GRID_gt_vel[j-1][gt_idys,gt_idxs] = np.nan_to_num(GRID_gt_vel[j-1][gt_idys,gt_idxs])
         #Each particle have contributed with a certain amount gt_vel*weight
-        particleweight = (particles['weight'][already_active,j-1][surface_layer_idx]*GRID_gt_vel[j-1][gt_idys,gt_idxs])/np.nansum(
-            particles['weight'][already_active,j-1][surface_layer_idx]*GRID_gt_vel[j-1][gt_idys,gt_idxs])
+        particleweighing = (particles['weight'][already_active_surface,j-1]*GRID_gt_vel[j-1][gt_idys,gt_idxs])/np.nansum(
+            particles['weight'][already_active_surface,j-1]*GRID_gt_vel[j-1][gt_idys,gt_idxs])
         #particles['weight'][already_active,j][surface_layer_idx] = particles['weight'][already_active,j][surface_layer_idx] - (gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx]*total_atm_flux[j-1])/np.nansum((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
-        particles['weight'][already_active,j][
-            surface_layer_idx] = particles['weight'][already_active,j][
-                surface_layer_idx] - (particleweight*total_atm_flux[j-1])/np.nansum(particleweight) #mol/hr
+        particles['weight'][already_active_surface,j] = particles['weight'][already_active_surface,j] - (
+            particleweighing*total_atm_flux[j-1])/np.nansum(particleweighing) #mol/hr
+        particles_atm_loss[j] = np.nansum((particleweighing*total_atm_flux[j-1])/np.nansum(particleweighing))
         #weigh this with the gt_vel
         #USING THE TOTAL ATM FLUX HERE.. 
         #remove particles with weight less than 0
+        #if particles['weight'][already_active,j][particles['weight'][already_active,j]<0].any():
+        #    break
+        particles['weight'][already_active,j][particles['weight'][already_active,j]<0] = 0
         particles['weight'][already_active,j][particles['weight'][already_active,j]<0] = 0
         #add the bandwidth of the particle to the current timestep
         particles['bw'][already_active,j] = particles['bw'][already_active,j] + age_constant
@@ -1077,8 +1146,8 @@ for j in range(1,len(particles['time'])-1):
                 GRID_atm_flux[j,:,:] = np.multiply(GRID_gt_vel[j,:,:].T,
                     (((GRID_active+background_ocean_conc)-atmospheric_conc))
                     )*0.01*dxy_grid**2 #This is in mol/hr for each gridcell. The gt_vel is PER DAY
-                #GRID_active = (GRID_active*V_grid - GRID_atm_flux[j,:,:])/V_grid #We do this through weighing of particles
-                total_atm_flux[j] = np.nansum(GRID_atm_flux[j,:,:])
+                GRID_active = (GRID_active*V_grid - GRID_atm_flux[j,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
+                total_atm_flux[j] = np.nansum(GRID_atm_flux[j,:,:])#....but not in the atmospheric flux.. 
 
             #-----------------------------------------#
             #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
@@ -1094,10 +1163,10 @@ for j in range(1,len(particles['time'])-1):
             #R_ox = (10**-7) #half life per second
             #R_ox = (10**-7)*3600 #half life per hour
 
-            GRID_mox[j,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop
+            GRID_mox[j,:,:] = GRID_active*(R_ox*3600*V_grid ) #need this to adjust the weights for next loop
             #need this to adjust the weights for next loop
-            GRID_active = GRID_active# - GRID_mox[j,:,:] #I adjust the weights instead. 
-            Mox_loss_this_ts = np.nansum(GRID_mox[j,:,:])
+            GRID_active = GRID_active - GRID_mox[j,:,:] #I adjust the weights instead. 
+            total_mox[j] = np.nansum(GRID_mox[j,:,:])
             #update the weights of the particles due to microbial oxidation is done globally at each timestep since
             #the loss is not dependent on the depth layer (this is more efficient)
 
@@ -1214,8 +1283,6 @@ GRID_atm_flux_sum = np.nansum(GRID_atm_flux,axis=0) #in moles
 #GRID_atm_flux_sum[GRID_atm_flux_sum<0] = 0
 #total sum
 total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#*dxy_grid
-
-#GRID_atm_flux_sum = np.flip(GRID_atm_flux_sum,axis=1)
 
 levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),8)
 #levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)

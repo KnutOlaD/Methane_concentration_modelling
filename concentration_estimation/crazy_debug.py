@@ -1371,7 +1371,7 @@ if run_everything == True:
     cbar.set_label(r'Methane [mol m$^{-2}$]', fontsize=16)
     cbar.set_ticks(levels[1:-1])
     cbar.ax.tick_params(labelsize=14)
-    ax.set_title(r'Released methane [mol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol $\sim$'+str(np.round(str(np.round(total_sum,2)/total_seabed_release)))+'\%$',fontsize=16)
+    ax.set_title(r'Released methane [mol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol $\sim$'+str(np.round((np.round(total_sum,10)/total_seabed_release),2)*100)+'\%$',fontsize=16)
     contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
     # Add the land feature with a higher zorder
     ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)

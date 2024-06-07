@@ -252,11 +252,12 @@ def add_utm(particles):
         #set all values outside of the UTM domain to nan
         #...
         #Find the UTM coordinates
-    valid_indices = ~particles['lat'][:,i].mask
-    utm.from_latlon(particles['lat'][valid_indices,i], particles['lon'][valid_indices,i])
+        valid_indices = ~particles['lat'][:,i].mask & ~particles['lon'][:,i].mask
+        UTM_x[valid_indices,i], UTM_y[valid_indices,i], _, _ = utm.from_latlon(particles['lat'][valid_indices,i], particles['lon'][valid_indices,i])
     
-#    particles['UTM_x'] = UTM_x
-#    particles['UTM_y'] = UTM_y
+        particles['UTM_x'] = UTM_x
+        particles['UTM_y'] = UTM_y
+
 
     return particles
 
@@ -951,7 +952,7 @@ for kkk in range(1,time_steps_full-1):
         particles['weight'][already_active,j] = particles[
             'weight'][already_active,j-1]-(particles['weight'][
                 already_active,j-1]*R_ox*3600) #mol/hr
-        particles_mox_loss[j] = np.nansum(particles['weight'][already_active,j-1]*R_ox*3600)
+        particles_mox_loss[kkk] = np.nansum(particles['weight'][already_active,j-1]*R_ox*3600)
         #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
         already_active_surface = already_active[np.where(np.abs(particles['z'][
             already_active,j-1])<bin_z[1])] #Those who where there on the PREVIOUS time step.
@@ -1176,7 +1177,7 @@ if fit_wind_data == True:
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
     f.write('Settings for the test run\n')
     f.write('--------------------------------\n')
-    f.write('Number of particles: '+str(6200)+'\n')
+    f.write('Number of particles: '+str(...)+'\n')
     f.write('Number of timesteps: '+str(744)+'\n')
     f.write('Grid horizontal resolution: '+str(dxy_grid)+'\n')
     f.write('Grid vertical resolution: '+str(dz_grid)+'\n')

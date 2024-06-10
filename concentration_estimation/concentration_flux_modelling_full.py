@@ -48,7 +48,7 @@ plot_gt_vel = False
 use_all_depth_layers = False
 ### CONSTANTS ###
 #max kernel bandwidth
-max_ker_bw = 25000
+max_ker_bw = 17500
 #atmospheric background concentration
 #atmospheric_conc = ((44.64*2)/1000000) #mol/m3 #1911.8 ± 0.6 ppb #44.64 #From Helge
 atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
@@ -64,7 +64,7 @@ dz_grid = 20. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
-age_constant = 120 #m per hour, see figure.
+age_constant = 100 #m per hour, see figure.
 #Initial bandwidth
 initial_bandwidth = 150 #m
 #set colormap
@@ -823,12 +823,11 @@ particles['bw'][:,0] = initial_bandwidth
 particles['bw'].mask = particles['lon'].mask
 
 
-
 #-----------------------------------------#
 #CREATE A MATRIX FOR REMOVING THE DIAGONAL#
 #-----------------------------------------#
 
-#For test run only
+#For test run only. This is to remove the diagonal and the artifact area
 if run_test == True: 
     diag_rm_mat = np.ones(np.shape(GRID[0][0][:,:]))   
     #remove diagonal and artifact area..... 
@@ -868,7 +867,7 @@ if run_test == True:
 elif run_full == True:
     time_steps_full = len(ODdata.variables['time'])
 
-j=1
+#age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
 for kkk in range(1,time_steps_full-1): 
 
@@ -883,6 +882,8 @@ for kkk in range(1,time_steps_full-1):
     particles['time'][0] = particles['time'][1]
     particles['weight'][:,0] = particles['weight'][:,1]
     particles['bw'][:,0] = particles['bw'][:,1]
+    #Define the age vector for timestep 0
+    #age_vector = particles['z'][:,1].mask
     #and replace the 1st index with the j=j index
     particles['lon'][:,1] = ODdata.variables['lon'][:, kkk]
     particles['lat'][:,1] = ODdata.variables['lat'][:, kkk]
@@ -893,7 +894,6 @@ for kkk in range(1,time_steps_full-1):
     particles['bw'][:,1].mask = particles['z'][:,1].mask
     #particles['weight'][:,1] = particles['z'][:,1]
     #particles['bw'][:,1] = particles['z'][:,1]
-    age_vector = np.zeros(len(particles['z']), dtype=bool)
     #add utm
     particles = add_utm(particles)
     #add aging
@@ -917,74 +917,77 @@ for kkk in range(1,time_steps_full-1):
     bin_z_number = np.digitize(
         np.abs(particles['z'][:,1][unmasked_indices]),bin_z)
     # Get the indices where particles['age'][:,j] is not masked and equal to 0
-    activated_indices = np.where(particles['z'][:,1].mask & ~age_vector)
-    already_active = age_vector
+    activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
+    already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
     #activated_indices = unmasked_indices[0][
     #    particles['age'][:,1][unmasked_indices] == 0]
     #already active indices
     #already_active = unmasked_indices[0][
     #    particles['age'][:,1][unmasked_indices] != 0]
     
+    #print the number of true 
+
 
     ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
     if run_test == True:
         if activated_indices.any(): #If there are new particles added at this timestep
             # Use these indices to modify the original particles['weight'] array
-            particles['weight'][activated_indices,j] = (np.round(
-                np.exp((np.abs(particles['z'][:,j][activated_indices]
+            particles['weight'][activated_indices,1] = (np.round(
+                np.exp((np.abs(particles['z'][:,1][activated_indices]
                                 )+10)/44)))*0.037586 #moles per particle
             #Make the mask false for all subsquent timesteps
-            particles['weight'][activated_indices,j].mask = False
+            particles['weight'][activated_indices,1].mask = False
             #do this for all the maske
             #same for bandwidth
-            particles['bw'][activated_indices,j] = initial_bandwidth
+            particles['bw'][activated_indices,1] = initial_bandwidth
     elif run_full == True:
-        particles['weight'][activated_indices,j].mask = False
-        particles['weight'][activated_indices,j] = weights_full_sim
-        particles['bw'][activated_indices,j].mask = False
-        particles['bw'][activated_indices,j] = initial_bandwidth
+        particles['weight'][activated_indices,1].mask = False
+        particles['weight'][activated_indices,1] = weights_full_sim
+        particles['bw'][activated_indices,1].mask = False
+        particles['bw'][activated_indices,1] = initial_bandwidth
 
     ### MODIFY ALREADY ACTIVE ###
     #add the weight of the particle to the current timestep 
     ### MODIFY ALREADY ACTIVE ###
     #add the weight of the particle to the current timestep 
     if already_active.any():
-        particles['weight'][already_active,j] = particles[
-            'weight'][already_active,j-1]-(particles['weight'][
-                already_active,j-1]*R_ox*3600) #mol/hr
-        particles_mox_loss[kkk] = np.nansum(particles['weight'][already_active,j-1]*R_ox*3600)
+        ##### MOX LOSS #####
+        particles['weight'][already_active,1] = particles[
+            'weight'][already_active,0]-(particles['weight'][
+                already_active,0]*R_ox*3600) #mol/hr
+        particles_mox_loss[kkk] = np.nansum(particles['weight'][already_active,0]*R_ox*3600)
+        
+        ##### ATM LOSS #####
+        #This calculates the loss to the atmosphere for the methane released in the previous timestep... (mostly uses j-1 idx)
         #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
-        already_active_surface = already_active[np.where(np.abs(particles['z'][
-            already_active,j-1])<bin_z[1])] #Those who where there on the PREVIOUS time step.
+        already_active_surface = already_active[np.where(np.abs(particles['z'][already_active,0])<bin_z[1])[0]] #all particles with surface z
        #find the gt_vel for the surface_layer_idxs
-        gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active_surface,j-1]),bin_y)
-        gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active_surface,j-1]),bin_x)
+        gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active_surface,0]),bin_y)
+        gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active_surface,0]),bin_x)
         #make sure all gt_idys and gt_idxs are within the grid
         gt_idys[gt_idys >= len(bin_y)] = len(bin_y)-1
         gt_idxs[gt_idxs >= len(bin_x)] = len(bin_x)-1
         #Distribute the atmospheric loss on these particles depending on their weight
         #replace any nans in GRID_gt_cel[j-1][gt_idys,gt_idxs] with the nearest non nan value in the grid
         #GRID_gt_vel[j-1][gt_idys,gt_idxs] = np.nan_to_num(GRID_gt_vel[j-1][gt_idys,gt_idxs])
-        #Each particle have contributed with a certain amount gt_vel*weight
-        particleweighing = (particles['weight'][already_active_surface,j-1]*GRID_gt_vel[j-1][gt_idys,gt_idxs])/np.nansum(
-            particles['weight'][already_active_surface,j-1]*GRID_gt_vel[j-1][gt_idys,gt_idxs])
+        #Each particle have contributed with a certain amount gt_vel*weight in the PREVIOUS timestep
+        particleweighing = (particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])/np.nansum(
+            particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])
         #particles['weight'][already_active,j][surface_layer_idx] = particles['weight'][already_active,j][surface_layer_idx] - (gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx]*total_atm_flux[j-1])/np.nansum((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
         particles['weight'][already_active_surface,j] = particles['weight'][already_active_surface,j] - (
-            particleweighing*total_atm_flux[j-1])/np.nansum(particleweighing) #mol/hr
-        particles_atm_loss[j] = np.nansum((particleweighing*total_atm_flux[j-1])/np.nansum(particleweighing))
+            particleweighing*total_atm_flux[kkk-1]) #mol/hr
+        particles_atm_loss[kkk] = np.nansum((particleweighing*total_atm_flux[0])/np.nansum(particleweighing))
         #weigh this with the gt_vel
         #USING THE TOTAL ATM FLUX HERE.. 
         #remove particles with weight less than 0
         #if particles['weight'][already_active,j][particles['weight'][already_active,j]<0].any():
         #    break
-        particles['weight'][already_active,j][particles['weight'][already_active,j]<0] = 0
+        particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
         #add the bandwidth of the particle to the current timestep
-        particles['bw'][already_active,j] = particles['bw'][already_active,j] + age_constant
+        particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
         #limit the bandwidth to a maximum value
-        particles['bw'][already_active,j][particles['bw'][already_active,j]>max_ker_bw] = max_ker_bw
+        particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
 
-    #modify the age_vector
-    age_vector = particles['z'][:,1].mask
 
     #--------------------------------------------------#
     #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
@@ -1004,15 +1007,15 @@ for kkk in range(1,time_steps_full-1):
         change_indices = np.array([0,len(bin_z_number)])
     
     #Define the [location_x,location_y,location_z,weight,bw] for the particle. This is the active particle matrix
-    parts_active = [particles['UTM_x'][:,j].compressed()[sort_indices],
-                    particles['UTM_y'][:,j].compressed()[sort_indices],
-                    particles['z'][:,j].compressed()[sort_indices],
+    parts_active = [particles['UTM_x'][:,1].compressed()[sort_indices],
+                    particles['UTM_y'][:,1].compressed()[sort_indices],
+                    particles['z'][:,1].compressed()[sort_indices],
                     bin_z_number,
-                    particles['weight'][:,j].compressed()[sort_indices],
-                    particles['bw'][:,j].compressed()[sort_indices]]
+                    particles['weight'][:,1].compressed()[sort_indices],
+                    particles['bw'][:,1].compressed()[sort_indices]]
     
     #keep track of number of particles
-    total_parts[j] = len(parts_active[0])
+    total_parts[kkk] = len(parts_active[0])
     
     #-----------------------------------#
     #INITIATE FOR LOOP OVER DEPTH LAYERS#
@@ -1025,14 +1028,14 @@ for kkk in range(1,time_steps_full-1):
     #############################################
     ###########################################
 
-    for i in range(0,len(change_indices)-1): #This essentially loops over all particles
+    for i in range(0,len(change_indices)-1): #This essentially loops over all particles (does it???)
         
         #-----------------------------------------------------------#
         #DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER#
         #-----------------------------------------------------------#
 
         #Define GRID_active by decompressing GRID[j][i][:,:] 
-        GRID_active = GRID[j][i][:,:].toarray()
+        GRID_active = GRID[kkk][i][:,:].toarray()
 
         #Define active particle matrix in depth layer i
         parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]+1],
@@ -1101,11 +1104,11 @@ for kkk in range(1,time_steps_full-1):
                                         lat = lat_mesh,
                                         projection = ccrs.PlateCarree(),
                                         levels = levels_atm,
-                                        timepassed = [j,time_steps],
+                                        timepassed = [1,time_steps],
                                         colormap = colormap,
                                         title = 'Concentration in surface layer [nmol/kg]',
                                         unit = 'nmol/kg',
-                                        savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\concentration\\create_gif\\concentration'+str(j)+'.png',
+                                        savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\concentration\\create_gif\\concentration'+str(kkk)+'.png',
                                         show = False,
                                         dpi = 90)
                         
@@ -1117,12 +1120,12 @@ for kkk in range(1,time_steps_full-1):
             #CALCULATE ATMOSPHERIC FLUX/LOSS#
             #-------------------------------#
             
-            if j != 0 and i == 0:
-                GRID_atm_flux[j,:,:] = np.multiply(GRID_gt_vel[j,:,:].T,
+            if i == 0:
+                GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,
                     (((GRID_active+background_ocean_conc)-atmospheric_conc))
                     )*0.01*dxy_grid**2 #This is in mol/hr for each gridcell. The gt_vel is PER DAY
-                GRID_active = (GRID_active*V_grid - GRID_atm_flux[j,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
-                total_atm_flux[j] = np.nansum(GRID_atm_flux[j,:,:])#....but not in the atmospheric flux.. 
+                GRID_active = (GRID_active*V_grid - GRID_atm_flux[kkk,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
+                total_atm_flux[kkk] = np.nansum(GRID_atm_flux[kkk,:,:])#....but not in the atmospheric flux.. 
 
             #-----------------------------------------#
             #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
@@ -1138,12 +1141,14 @@ for kkk in range(1,time_steps_full-1):
             #R_ox = (10**-7) #half life per second
             #R_ox = (10**-7)*3600 #half life per hour
 
-            GRID_mox[j,:,:] = GRID_active*(R_ox*3600*V_grid ) #need this to adjust the weights for next loop
+            GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid ) #need this to adjust the weights for next loop
             #need this to adjust the weights for next loop
-            GRID_active = GRID_active - GRID_mox[j,:,:] #I adjust the weights instead. 
-            total_mox[j] = np.nansum(GRID_mox[j,:,:])
+            GRID_active = GRID_active - GRID_mox[kkk,:,:] #I adjust the weights instead. 
+            total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
             #update the weights of the particles due to microbial oxidation is done globally at each timestep since
             #the loss is not dependent on the depth layer (this is more efficient)
+
+
 
 if plotting == True:
     #create a gif from the images

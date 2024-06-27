@@ -1,0 +1,466 @@
+'''
+Script to determine the bandwidth to be used in the kde implementation in the concentration model
+
+'''
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import datetime as dt
+import netCDF4 as nc
+import utm
+from scipy.sparse import csr_matrix as csr_matrix
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from numpy.ma import masked_invalid
+import imageio
+import matplotlib.gridspec as gridspec
+from scipy.ndimage import gaussian_filter
+import seaborn as sns
+
+def plot_2d_data_map_loop(data,
+                          lon,
+                          lat,
+                          projection,
+                          levels,
+                          colormap,
+                          title,
+                          unit,
+                          timepassed = None,
+                          savefile_path=False,
+                          show=False,
+                          adj_lon = [0,0],
+                          adj_lat = [0,0],
+                          bar_position = [0.195,0.12,0.54558,0.03],
+                          dpi=150,
+                          log_scale=False):
+    '''
+    Plots 2d data on a map with time progression bar
+
+    Input:
+    data: 2d data
+    lon: longitude
+    lat: latitude
+    timepassed: i and length of time vector
+    projection: projection
+    levels: levels for the contour plot
+    colormap: colormap
+    title: title of the plot
+    unit: unit of the data
+    savefile_path: path to where the plot should be saved
+    show: boolean. If True, the plot will be shown
+
+    Output:
+    fig: figure object
+    '''
+    #Check if coordinate input is mesh or vector
+    if np.shape(lon) != np.shape(data):
+        lon, lat = np.meshgrid(lon, lat)
+    
+    #get map extent
+    min_lon = np.min(lon)+adj_lon[0]
+    max_lon = np.max(lon)+adj_lon[1]
+    min_lat = np.min(lat)+adj_lat[0]
+    max_lat = np.max(lat)+adj_lat[1]
+    
+    fig = plt.figure(figsize=(14, 10))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object  # Create a GridSpec object
+    ax = fig.add_subplot(gs[0],projection=projection)
+
+    if log_scale:
+        norm = LogNorm()
+        levels = np.logspace(np.log10(np.min(data)), np.log10(np.max(data)/2), num=10)  # Generate levels logarithmically
+    else:
+        norm = None
+    contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, norm=norm, transform=ccrs.PlateCarree(), zorder=0, extend='max')
+    
+    # Add a filled contour plot with a lower zorder
+    contourf = ax.contourf(lon, lat, data, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0, extend='max')
+    cbar = plt.colorbar(contourf, ax=ax)
+    cbar.set_label(unit, fontsize=16)
+    cbar.set_ticks(levels[1:-1])
+    cbar.ax.tick_params(labelsize=14)
+    ax.set_title(title,fontsize=16)
+    contour = ax.contour(lon, lat, data, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+    # Add the land feature with a higher zorder
+    ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
+    # Add the coastline with a higher zorder
+    ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
+    # Set the geographical extent of the plot
+    ax.set_extent([min_lon, max_lon, min_lat, max_lat])
+    #Plot a red dot at the location of tromsø
+    ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
+    #with a text label
+    ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=12)
+    #add location marker for seepage
+    ax.plot(14.29,68.9179949,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
+    #add text in lower right corner with the total sum
+    ax.text(14.39,68.8479949,'Methane seeps',transform=ccrs.PlateCarree(),color='white',fontsize=12)
+
+    #add text in lower right corner with the total sum
+    #Try to fix labels
+    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
+    gl.top_labels = True
+    gl.left_labels = True
+    gl.xlabel_style = {'size':14}
+    gl.ylabel_style = {'size':14}
+    #savefigure if savefile_path is given
+
+    #Do this only if timepassed is something
+    if timepassed != None:
+        ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+        fig.subplots_adjust(hspace=0.2)
+        ax2.set_position(bar_position)
+        ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
+        #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+        ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
+        ax2.set_yticks([])  # Hide the y-axis ticks
+        ax2.set_xticks([0,timepassed[1]])  # Set the x-axis ticks at the start and end
+        ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'],fontsize=16)  # Set the x-axis tick labels to the start and end time
+#    else: #Delete ax2
+#        fig.delaxes(ax2)   
+
+    if savefile_path != False:
+        plt.savefig(savefile_path,dpi=dpi)
+    #show figure if show is True
+    if show == True:
+        plt.show()
+
+    return fig
+
+def load_nc_data(filename):
+    '''
+    Load netcdf file and return a dictionary with the variables
+    '''
+    #load data
+    ODdata = nc.Dataset(filename)
+
+    #check the variables in the file
+    print(ODdata.variables.keys())
+
+    #Create a dictionary with the variables (just more used to working with dictionaries)
+    particles = {'lon':ODdata.variables['lon'][:],
+                        'lat':ODdata.variables['lat'][:],
+                        'z':ODdata.variables['z'][:],
+                        'time':ODdata.variables['time'][:],
+                        'status':ODdata.variables['status'][:],
+                        'trajectory':ODdata.variables['trajectory'][:]} #this is 
+
+    #example of usage
+    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
+    #particles = load_nc_data(datapath)
+    return particles
+
+def add_utm(particles):
+    '''
+    Adds utm coordinates to the particles dictionary
+    
+    Input:
+    particles: dictionary containing the variables from the netcdf file. Must contain the lat/lon coordinates
+
+    Output:
+    particles: dictionary containing the variables from the netcdf file. Now also contains the UTM coordinates
+    
+    '''
+    #get utm coordinates:
+    UTM_x = np.ma.zeros(particles['lon'].shape)
+    UTM_x.mask = particles['lon'].mask
+    UTM_y = np.ma.zeros(particles['lon'].shape)
+    UTM_y.mask = particles['lon'].mask
+    #Loop over all time steps
+    for i in range(particles['lon'].shape[1]):
+        #set all values outside of the UTM domain to nan
+        #...
+        #Find the UTM coordinates
+        valid_indices = ~particles['lat'][:,i].mask & ~particles['lon'][:,i].mask
+        UTM_x[valid_indices,i], UTM_y[valid_indices,i], _, _ = utm.from_latlon(particles['lat'][valid_indices,i], particles['lon'][valid_indices,i])
+    
+        particles['UTM_x'] = UTM_x
+        particles['UTM_y'] = UTM_y
+
+
+    return particles
+
+
+#load data
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
+ODdata = nc.Dataset(datapath)
+#number of particles
+vert_grid = np.arange(0,250,15) #the vertical grid 
+#Create grid
+
+for i in range(0,ODdata.variables['lon'].shape[1]):
+    #get max and min unmasked lat/lon values
+    print(i)
+    if i == 0:
+        minlon = np.min(ODdata.variables['lon'][:,i].compressed())
+        maxlon = np.max(ODdata.variables['lon'][:,i].compressed())
+        minlat = np.min(ODdata.variables['lat'][:,i].compressed())
+        maxlat = np.max(ODdata.variables['lat'][:,i].compressed())
+        maxdepth = np.max(np.abs(ODdata.variables['z'][:,i].compressed()))
+    else:
+        minlon = np.min([np.min(ODdata.variables['lon'][:,i].compressed()),minlon])
+        maxlon = np.max([np.max(ODdata.variables['lon'][:,i].compressed()),maxlon])
+        minlat = np.min([np.min(ODdata.variables['lat'][:,i].compressed()),minlat])
+        maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
+        maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
+ 
+#get the min/max values for the UTM coordinates using the utm package and the minlon/maxlon/minlat/maxlat values
+minUTMxminUTMy = utm.from_latlon(minlat,minlon)
+minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
+maxUTMxminUTMy = utm.from_latlon(maxlat,minlon)
+maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon)
+
+
+#Create a grid using min/max values
+x = np.linspace(minUTMxminUTMy[0],maxUTMxmaxUTMy[0],200)
+y = np.linspace(minUTMxminUTMy[1],maxUTMxmaxUTMy[1],350)
+z = np.abs(np.linspace(0,maxdepth,5))
+
+
+#Create a list of 3 dimensional matrices with one zero xyz grid for each timestep
+meanmat_x = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+meanmat_y = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+varmat_x = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+varmat_y = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+varmat_z = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+
+original_shape = meanmat_x.shape
+
+meanmat_x_store = list()
+meanmat_y_store = list()
+varmat_x_store = list()
+varmat_y_store = list()
+varmat_z_store = list()
+
+loop = True
+
+if loop == True:
+    #loop throuh and lazy load each timestep
+    for n in range(2, len(ODdata.variables['time'])-1):
+        print(n)
+
+        particles1 = {'lon':ODdata.variables['lon'][:,n],
+                            'lat':ODdata.variables['lat'][:,n],
+                            'z':ODdata.variables['z'][:,n],
+                            'time':ODdata.variables['time'][n],
+                            'status':ODdata.variables['status'][:,n]}
+        
+        particles0 = {'lon':ODdata.variables['lon'][:,n-1],
+                            'lat':ODdata.variables['lat'][:,n-1],
+                            'z':ODdata.variables['z'][:,n-1],
+                            'time':ODdata.variables['time'][n-1],
+                            'status':ODdata.variables['status'][:,n-1]}
+        
+        #squeeze out all the masked values
+        #particles0 = {key: value.compressed() for key, value in particles0.items()}
+        #particles1 = {key: value.compressed() for key, value in particles1.items()}
+        #particles_min_1 = {key: value.compressed() for key, value in particles_min_1.items()}
+
+        #just use the utm package functin
+        #try to do it and run an exceptio if it fails where I just continue, or can I force datum?
+        try:
+            UTM_x, UTM_y, _, _ = utm.from_latlon(particles1['lat'], particles1['lon'], force_zone_number=33, force_zone_letter='W')
+            UTM_x0, UTM_y0, _, _ = utm.from_latlon(particles0['lat'], particles0['lon'], force_zone_number=33, force_zone_letter='W')
+        except:
+            continue
+        z_data = np.abs(particles1['z'])
+        z_data_0 = np.abs(particles0['z'])
+
+        #use hitgoramdd to find out which cells has stuff in them
+        H, edges = np.histogramdd((UTM_x0, UTM_y0, z_data_0), bins=(x,y,z))
+
+        #Find all sets of indices where H is larger than 10
+        grid_indices = np.where(H>30)
+
+        indices = []
+        #find all UTM_x_Utm_y_z coordinates that share the same grid cell in grid_indices
+        for nn in range(0,len(grid_indices[0])):
+            ii = grid_indices[0][nn]
+            jj = grid_indices[1][nn]
+            kk = grid_indices[2][nn]
+            indices.append(np.where((UTM_x0 >= x[ii]) & (UTM_x0 <= x[ii+1]) & (UTM_y0 >= y[jj]) & (UTM_y0 <= y[jj+1]) & (z_data_0 >= z[kk]) & (z_data_0 <= z[kk+1])))
+
+        #Calculate the average difference between the two timesteps for each grid cell
+        means_x = np.zeros(len(indices))
+        means_y = np.zeros(len(indices))
+        vars_x = np.zeros(len(indices))
+        vars_y = np.zeros(len(indices))
+        vars_z = np.zeros(len(indices))
+        for nn in range(0,len(indices)):
+            means_x[nn] = np.mean(UTM_x[indices[nn]]-UTM_x0[indices[nn]])
+            means_y[nn] = np.mean(UTM_y[indices[nn]]-UTM_y0[indices[nn]])
+            vars_x[nn] = np.var([np.sqrt((UTM_x[indices[nn]]-UTM_x0[indices[nn]])**2)])
+            vars_y[nn] = np.var([np.sqrt((UTM_y[indices[nn]]-UTM_y0[indices[nn]])**2)])
+            vars_z[nn] = np.var([np.sqrt((z_data[indices[nn]]-z_data_0[indices[nn]])**2)])
+                #store in meanmat/varmat matrix
+            meanmat_x[grid_indices[0][nn],grid_indices[1][nn],grid_indices[2][nn]] = means_x[nn]
+            meanmat_y[grid_indices[0][nn],grid_indices[1][nn],grid_indices[2][nn]] = means_y[nn]
+            varmat_x[grid_indices[0][nn],grid_indices[1][nn],grid_indices[2][nn]] = vars_x[nn]
+            varmat_y[grid_indices[0][nn],grid_indices[1][nn],grid_indices[2][nn]] = vars_y[nn]
+            varmat_z[grid_indices[0][nn],grid_indices[1][nn],grid_indices[2][nn]] = vars_z[nn]
+          
+        #create and append a sparse version of meanmat/varmat
+        meanmat_x_store.append(csr_matrix(meanmat_x.reshape(meanmat_x.shape[0], -1)))
+        meanmat_y_store.append(csr_matrix(meanmat_y.reshape(meanmat_y.shape[0], -1)))   
+        varmat_x_store.append(csr_matrix(varmat_x.reshape(varmat_x.shape[0], -1)))  
+        varmat_y_store.append(csr_matrix(varmat_y.reshape(varmat_y.shape[0], -1))) 
+        varmat_z_store.append(csr_matrix(varmat_z.reshape(varmat_z.shape[0], -1)))
+
+        #to get back to original form do: meanmat_x.reshape(original_shape)
+
+        meanmat_x = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+        meanmat_y = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+        varmat_x = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+        varmat_y = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+        varmat_z = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+        
+    #save meanmat_stor and varmat_store to a file
+    np.save('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\src\\Dispersion_modelling\\concentration_estimation\\kde_estimate\\meanmat_x_store.npy',meanmat_x_store)
+    np.save('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\src\\Dispersion_modelling\\concentration_estimation\\kde_estimate\\meanmat_y_store.npy',meanmat_y_store)
+    np.save('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\src\\Dispersion_modelling\\concentration_estimation\\kde_estimate\\varmat_x_store.npy',varmat_x_store)
+    np.save('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\src\\Dispersion_modelling\\concentration_estimation\\kde_estimate\\varmat_y_store.npy',varmat_y_store)
+    np.save('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\src\\Dispersion_modelling\\concentration_estimation\\kde_estimate\\varmat_z_store.npy',varmat_z_store)
+
+    #make a 3 d grid full of nans
+    meanmat_x = np.zeros((len(x)-1,len(y)-1,len(z)-1))
+    #calculate average difference between timestep i and i-a indices at each depth level    
+    #Check how the variances and means are distributed
+    
+    varxs_all = np.array([])
+    varys_all = np.array([])
+    meanxs_all = np.array([])
+    meanys_all = np.array([])
+
+    for nn in range(0,len(varmat_x_store)):
+        print(nn)
+        varxs_all = np.concatenate((varxs_all, varmat_x_store[nn].data.flatten()))
+        varys_all = np.concatenate((varys_all, varmat_y_store[nn].data.flatten()))
+        meanxs_all = np.concatenate((meanxs_all, meanmat_x_store[nn].data.flatten()))
+        meanys_all = np.concatenate((meanys_all, meanmat_y_store[nn].data.flatten()))
+
+
+
+#####################################################################
+### Make a histogram of the means and variances in a 2by2 subplot ###
+#####################################################################
+
+font_size = 14
+set_color = '#7d7f7c'
+bin_edges = np.linspace(0,20000,500)
+bin_edges_mean = np.linspace(-4000,4000,500)
+fig, axs = plt.subplots(2,2, figsize=(10,8))
+
+# Increase the fontsize for the ticks
+plt.rc('xtick', labelsize=font_size) 
+plt.rc('ytick', labelsize=font_size) 
+
+# Plot for Average East displacement
+axs[0,0].hist(meanxs_all, bins=bin_edges_mean, color=set_color)
+axs[0,0].set_title('Average East displacement [$m$]', fontsize=font_size)
+mean_value_x = np.nanmean(meanxs_all)
+axs[0,0].axvline(x=mean_value_x, color='k', linestyle='--')
+axs[0,0].text(mean_value_x + 200, 200, f'mean= {mean_value_x:.0f}', rotation=90, fontsize=font_size)
+#add median too
+median_value_x = np.nanmedian(meanxs_all)
+axs[0,0].axvline(x=median_value_x, color='k', linestyle='--')
+axs[0,0].text(median_value_x - 600, 200, f'median= {median_value_x:.0f}', rotation=90, fontsize=font_size)
+
+# Plot for Average North displacement
+axs[0,1].hist(meanys_all, bins=bin_edges_mean, color=set_color)
+axs[0,1].set_title('Average North displacement [$m$]', fontsize=font_size)
+mean_value_y = np.nanmean(meanys_all)
+axs[0,1].axvline(x=mean_value_y, color='k', linestyle='--')
+axs[0,1].text(mean_value_y + 200, 200, f'mean= {mean_value_y:.0f}', rotation=90, fontsize=font_size)
+#add median too
+median_value_y = np.nanmedian(meanys_all)
+axs[0,1].axvline(x=median_value_y, color='k', linestyle='--')
+axs[0,1].text(median_value_y - 600, 200, f'median= {median_value_y:.0f}', rotation=90, fontsize=font_size)
+
+# Plot for Variance in East displacement
+axs[1,0].hist(varxs_all, bins=bin_edges, color=set_color)
+axs[1,0].set_title('Variance in East displacement [$m^2$]', fontsize=font_size)
+axs[1,0].set_xlim([0,20000])
+
+# Plot vertical lines at mean and median
+mean_value = np.mean(varxs_all)
+median_value = np.median(varxs_all)
+axs[1,0].axvline(x=mean_value, color='k', linestyle='--')
+axs[1,0].axvline(x=median_value, color='k', linestyle='--')
+
+# Add text that runs along the vertical lines saying whether they are means or medians
+axs[1,0].text(mean_value + 200, 5000, f'mean= {mean_value:.0f}', rotation=90, fontsize=font_size)   
+axs[1,0].text(median_value + 200, 5000, f'median= {median_value:.0f}', rotation=90, fontsize=font_size) 
+
+# Plot for Variance in North displacement
+axs[1,1].hist(varys_all, bins=bin_edges, color=set_color)
+axs[1,1].set_title('Variance in North displacement [$m^2$]', fontsize=font_size)
+axs[1,1].set_xlim([0,20000])
+
+# Plot vertical lines at mean and median
+mean_value = np.mean(varys_all)
+median_value = np.median(varys_all)
+axs[1,1].axvline(x=mean_value, color='k', linestyle='--')
+axs[1,1].axvline(x=median_value, color='k', linestyle='--')
+
+# Add text that runs along the vertical lines saying whether they are means or medians
+axs[1,1].text(mean_value + 200, 5000, f'mean= {mean_value:.0f}', rotation=90, fontsize=font_size)
+axs[1,1].text(median_value + 200, 5000, f'median= {median_value:.0f}', rotation=90, fontsize=font_size)
+
+plt.tight_layout()
+plt.show()
+
+#######################################################
+### MAKE A CONTOUR PLOT USING PLOT_2D_DATA_MAP_LOOP ###
+#######################################################
+
+#Looop over the mean and variance sparse matrices and calculate the average
+meanmat_x = np.zeros(original_shape)
+meanmat_y = np.zeros(original_shape)
+varmat_x = np.zeros(original_shape)
+varmat_y = np.zeros(original_shape)
+
+for nn in range(0,len(meanmat_x_store)):
+    print(nn)
+    meanmat_x += meanmat_x_store[nn].toarray().reshape(original_shape)
+    meanmat_y += meanmat_y_store[nn].toarray().reshape(original_shape)
+    varmat_x += varmat_x_store[nn].toarray().reshape(original_shape)
+    varmat_y += varmat_y_store[nn].toarray().reshape(original_shape)
+
+meanmat_x = meanmat_x/len(meanmat_x_store)
+meanmat_y = meanmat_y/len(meanmat_y_store)
+varmat_x = varmat_x/len(varmat_x_store)
+varmat_y = varmat_y/len(varmat_y_store)
+
+projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
+levels = np.linspace(0, 500, 10)
+
+x_center = (x[1:] + x[:-1]) / 2
+y_center = (y[1:] + y[:-1]) / 2
+
+#transform x_center and y_center to lat/lon
+lat_center, lon_center = utm.to_latlon(x_center, y_center, 33, 'W')
+
+fig = plot_2d_data_map_loop(varmat_x[:,:,1],
+                            lon_center,
+                            lat_center,
+                            projection,
+                            levels,
+                            'viridis',
+                            'Average East displacement',
+                            'm',
+                            timepassed = None,
+                            savefile_path=False,
+                            show=True,
+                            adj_lon = [0,0],
+                            adj_lat = [0,0],
+                            bar_position = [0.195,0.12,0.54558,0.03],
+                            dpi=150,
+                            log_scale=False)
+
+
+
+
+
+

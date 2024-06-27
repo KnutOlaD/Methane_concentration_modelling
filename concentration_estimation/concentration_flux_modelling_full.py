@@ -60,13 +60,13 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 1600. #m
-dz_grid = 20. #m
+dz_grid = 15. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
-age_constant = 100 #m per hour, see figure.
+age_constant = 25 #m per hour, see figure.
 #Initial bandwidth
-initial_bandwidth = 150 #m
+initial_bandwidth = 50 #m
 #set colormap
 #colromap = 'magma'
 colormap = sns.color_palette("rocket", as_cmap=True)
@@ -462,6 +462,8 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
 
     return GRID_active
 
+from matplotlib.colors import LogNorm
+
 def plot_2d_data_map_loop(data,
                           lon,
                           lat,
@@ -473,7 +475,11 @@ def plot_2d_data_map_loop(data,
                           unit,
                           savefile_path=False,
                           show=False,
-                          dpi=150):
+                          adj_lon = [0,0],
+                          adj_lat = [0,0],
+                          bar_position = [0.195,0.12,0.54558,0.03],
+                          dpi=150,
+                          log_scale=False):
     '''
     Plots 2d data on a map with time progression bar
 
@@ -498,17 +504,24 @@ def plot_2d_data_map_loop(data,
         lon, lat = np.meshgrid(lon, lat)
     
     #get map extent
-    min_lon = np.min(lon)
-    max_lon = np.max(lon)
-    min_lat = np.min(lat)
-    max_lat = np.max(lat)
+    min_lon = np.min(lon)+adj_lon[0]
+    max_lon = np.max(lon)+adj_lon[1]
+    min_lat = np.min(lat)+adj_lat[0]
+    max_lat = np.max(lat)+adj_lat[1]
     
     fig = plt.figure(figsize=(14, 10))
     gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object  # Create a GridSpec object
     ax = fig.add_subplot(gs[0],projection=projection)
 
+    if log_scale:
+        norm = LogNorm()
+        levels = np.logspace(np.log10(np.min(data)), np.log10(np.max(data)/2), num=10)  # Generate levels logarithmically
+    else:
+        norm = None
+    contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, norm=norm, transform=ccrs.PlateCarree(), zorder=0, extend='max')
+    
     # Add a filled contour plot with a lower zorder
-    contourf = ax.contourf(lon, lat, data, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0)
+    contourf = ax.contourf(lon, lat, data, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0, extend='max')
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(unit, fontsize=16)
     cbar.set_ticks(levels[1:-1])
@@ -520,7 +533,7 @@ def plot_2d_data_map_loop(data,
     # Add the coastline with a higher zorder
     ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
     # Set the geographical extent of the plot
-    ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
+    ax.set_extent([min_lon, max_lon, min_lat, max_lat])
     #Plot a red dot at the location of tromsø
     ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
     #with a text label
@@ -541,7 +554,7 @@ def plot_2d_data_map_loop(data,
 
     ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
     fig.subplots_adjust(hspace=0.2)
-    ax2.set_position([0.195,0.12,0.54558,0.03])
+    ax2.set_position(bar_position)
     ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
     #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
     ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
@@ -572,8 +585,7 @@ def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
     # Convert datetime array to Unix timestamps
     wind_time_unix = (datetime_vector.astype(np.int64) // 10**9).values
     #create a time vector that starts on May 20 if using the test data
-    if run_test == True:
-        ocean_time_unix = bin_time - pd.to_datetime('2020-01-01').timestamp() + pd.to_datetime('2018-05-20').timestamp()
+    ocean_time_unix = bin_time
     #reverse the lats coordinates and associated matrices (sst, u10, v10, ws)
     lats = lats[::-1]
     #the matrices should be reversed only in the first dimension
@@ -762,7 +774,7 @@ V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 ###############################################
 
 if fit_wind_data == True:
-    fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=True)
+    fit_wind_sst_data(bin_x,bin_y,bin_time)
     #LOAD THE PICKLE FILE (no matter what)
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
     ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
@@ -774,6 +786,9 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 #interpolate nans in the wind field and sst field
 ws_interp = np.ma.filled(ws_interp,np.nan)
 sst_interp = np.ma.filled(sst_interp,np.nan)
+
+
+fit_gt_vel = False
 
 #Calculate the gas transfer velocity
 if fit_gt_vel == True:
@@ -869,303 +884,314 @@ elif run_full == True:
 
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
-for kkk in range(1,time_steps_full-1): 
+run_all = False
 
-    print(kkk)
-    #------------------------------------------------------#
-    #LAZY LOAD THE PARTICLES FOR THE CURRENT TIMESTEP (j=n)#
-    #------------------------------------------------------#
-    #and replace the 0th index with the 1st index
-    particles['lon'][:,0] = particles['lon'][:,1]
-    particles['lat'][:,0] = particles['lat'][:,1]
-    particles['z'][:,0] = particles['z'][:,1]
-    particles['time'][0] = particles['time'][1]
-    particles['weight'][:,0] = particles['weight'][:,1]
-    particles['bw'][:,0] = particles['bw'][:,1]
-    #Define the age vector for timestep 0
-    #age_vector = particles['z'][:,1].mask
-    #and replace the 1st index with the j=j index
-    particles['lon'][:,1] = ODdata.variables['lon'][:, kkk]
-    particles['lat'][:,1] = ODdata.variables['lat'][:, kkk]
-    particles['z'][:,1] = ODdata.variables['z'][:, kkk]
-    #and current time step
-    particles['time'][1] = ODdata.variables['time'][kkk]
-    particles['weight'][:,1].mask = particles['z'][:,1].mask
-    particles['bw'][:,1].mask = particles['z'][:,1].mask
-    #particles['weight'][:,1] = particles['z'][:,1]
-    #particles['bw'][:,1] = particles['z'][:,1]
-    #add utm
-    particles = add_utm(particles)
-    #add aging
-    ### ADD AGE TO THE NEXT TIMESTEP ###
-    #particles['age'][:,0] = particles['age'][:,1] 
-    
-    #--------------------------------------#
-    #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
-    #--------------------------------------#
+if run_all == True:
+    for kkk in range(1,time_steps_full-1): 
 
-    #do some binning
-    #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-    #np.digitize(np.abs(particles['z'][:,j]),bin_z)
+        print(kkk)
+        #------------------------------------------------------#
+        #LAZY LOAD THE PARTICLES FOR THE CURRENT TIMESTEP (j=n)#
+        #------------------------------------------------------#
+        #and replace the 0th index with the 1st index
+        particles['lon'][:,0] = particles['lon'][:,1]
+        particles['lat'][:,0] = particles['lat'][:,1]
+        particles['z'][:,0] = particles['z'][:,1]
+        particles['time'][0] = particles['time'][1]
+        #particles['weight'][:,0] = particles['weight'][:,1]
+        particles['bw'][:,0] = particles['bw'][:,1]
+        #Define the age vector for timestep     
+        #age_vector = particles['z'][:,1].mask
+        #and replace the 1st index with the j=j index
+        particles['lon'][:,1] = ODdata.variables['lon'][:, kkk]
+        particles['lat'][:,1] = ODdata.variables['lat'][:, kkk]
+        particles['z'][:,1] = ODdata.variables['z'][:, kkk]
+        #and current time step
+        particles['time'][1] = ODdata.variables['time'][kkk]
+        particles['weight'][:,1].mask = particles['z'][:,1].mask
+        particles['bw'][:,1].mask = particles['z'][:,1].mask
+        #particles['weight'][:,1] = particles['z'][:,1]
+        #Add weights if it's the first timestep
+        if kkk == 1:
+            particles['weight'][:,1][np.where(particles['weight'][:,1].mask == False)] = weights_full_sim
+            particles['weight'][:,0] = particles['weight'][:,1]
+        #particles['bw'][:,1] = particles['z'][:,1]
+        #add utm
+        particles = add_utm(particles)
+        #add aging
+        ### ADD AGE TO THE NEXT TIMESTEP ###
+        #particles['age'][:,0] = particles['age'][:,1] 
+        
+        #--------------------------------------#
+        #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
+        #--------------------------------------#
 
-    #Unmask particles that were masked in the previous timestep
-    #particles['z'][:,j].mask = particles['z'][:,j-1].mask
-    # Get the indices where particles['age'][:,j] is not masked
-    unmasked_indices = np.where(
-        particles['z'][:,1].mask == False)
-    #do some binning on those
-    bin_z_number = np.digitize(
-        np.abs(particles['z'][:,1][unmasked_indices]),bin_z)
-    # Get the indices where particles['age'][:,j] is not masked and equal to 0
-    activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
-    already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
-    #activated_indices = unmasked_indices[0][
-    #    particles['age'][:,1][unmasked_indices] == 0]
-    #already active indices
-    #already_active = unmasked_indices[0][
-    #    particles['age'][:,1][unmasked_indices] != 0]
-    
-    #print the number of true 
+        #do some binning
+        #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
+        #np.digitize(np.abs(particles['z'][:,j]),bin_z)
+
+        #Unmask particles that were masked in the previous timestep
+        #particles['z'][:,j].mask = particles['z'][:,j-1].mask
+        # Get the indices where particles['age'][:,j] is not masked
+        #do some binning on those
+        bin_z_number = np.digitize(
+        np.abs(particles['z'][:,1][np.where(
+            particles['z'][:,1].mask == False)]),bin_z)
+        # Get the indices where particles['age'][:,j] is not masked and equal to 0
+        activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
+        already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
+        #activated_indices = unmasked_indices[0][
+        #    particles['age'][:,1][unmasked_indices] == 0]
+        #already active indices
+        #already_active = unmasked_indices[0][
+        #    particles['age'][:,1][unmasked_indices] != 0]
+        
+        #print the number of true 
 
 
-    ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
-    if run_test == True:
-        if activated_indices.any(): #If there are new particles added at this timestep
-            # Use these indices to modify the original particles['weight'] array
-            particles['weight'][activated_indices,1] = (np.round(
-                np.exp((np.abs(particles['z'][:,1][activated_indices]
-                                )+10)/44)))*0.037586 #moles per particle
-            #Make the mask false for all subsquent timesteps
+        ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
+        if run_test == True:
+            if activated_indices.any(): #If there are new particles added at this timestep
+                # Use these indices to modify the original particles['weight'] array
+                particles['weight'][activated_indices,1] = (np.round(
+                    np.exp((np.abs(particles['z'][:,1][activated_indices]
+                                    )+10)/44)))*0.037586 #moles per particle
+                #Make the mask false for all subsquent timesteps
+                particles['weight'][activated_indices,1].mask = False
+                #do this for all the maske
+                #same for bandwidth
+                particles['bw'][activated_indices,1] = initial_bandwidth
+        elif run_full == True:
             particles['weight'][activated_indices,1].mask = False
-            #do this for all the maske
-            #same for bandwidth
+            particles['weight'][activated_indices,1] = weights_full_sim
+            particles['bw'][activated_indices,1].mask = False
             particles['bw'][activated_indices,1] = initial_bandwidth
-    elif run_full == True:
-        particles['weight'][activated_indices,1].mask = False
-        particles['weight'][activated_indices,1] = weights_full_sim
-        particles['bw'][activated_indices,1].mask = False
-        particles['bw'][activated_indices,1] = initial_bandwidth
 
-    ### MODIFY ALREADY ACTIVE ###
-    #add the weight of the particle to the current timestep 
-    ### MODIFY ALREADY ACTIVE ###
-    #add the weight of the particle to the current timestep 
-    if already_active.any():
-        ##### MOX LOSS #####
-        particles['weight'][already_active,1] = particles[
-            'weight'][already_active,0]-(particles['weight'][
-                already_active,0]*R_ox*3600) #mol/hr
-        particles_mox_loss[kkk] = np.nansum(particles['weight'][already_active,0]*R_ox*3600)
-        
-        ##### ATM LOSS #####
-        #This calculates the loss to the atmosphere for the methane released in the previous timestep... (mostly uses j-1 idx)
-        #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
-        already_active_surface = already_active[np.where(np.abs(particles['z'][already_active,0])<bin_z[1])[0]] #all particles with surface z
-       #find the gt_vel for the surface_layer_idxs
-        gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active_surface,0]),bin_y)
-        gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active_surface,0]),bin_x)
-        #make sure all gt_idys and gt_idxs are within the grid
-        gt_idys[gt_idys >= len(bin_y)] = len(bin_y)-1
-        gt_idxs[gt_idxs >= len(bin_x)] = len(bin_x)-1
-        #Distribute the atmospheric loss on these particles depending on their weight
-        #replace any nans in GRID_gt_cel[j-1][gt_idys,gt_idxs] with the nearest non nan value in the grid
-        #GRID_gt_vel[j-1][gt_idys,gt_idxs] = np.nan_to_num(GRID_gt_vel[j-1][gt_idys,gt_idxs])
-        #Each particle have contributed with a certain amount gt_vel*weight in the PREVIOUS timestep
-        particleweighing = (particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])/np.nansum(
-            particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])
-        #particles['weight'][already_active,j][surface_layer_idx] = particles['weight'][already_active,j][surface_layer_idx] - (gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx]*total_atm_flux[j-1])/np.nansum((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
-        particles['weight'][already_active_surface,j] = particles['weight'][already_active_surface,j] - (
-            particleweighing*total_atm_flux[kkk-1]) #mol/hr
-        particles_atm_loss[kkk] = np.nansum((particleweighing*total_atm_flux[0])/np.nansum(particleweighing))
-        #weigh this with the gt_vel
-        #USING THE TOTAL ATM FLUX HERE.. 
-        #remove particles with weight less than 0
-        #if particles['weight'][already_active,j][particles['weight'][already_active,j]<0].any():
-        #    break
-        particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
-        #add the bandwidth of the particle to the current timestep
-        particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
-        #limit the bandwidth to a maximum value
-        particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
-
-
-    #--------------------------------------------------#
-    #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
-    #--------------------------------------------------#
-    
-    #.... And create a sorted matrix for all the active particles according to
-    #which depth layer they are currently located in. 
-
-    #Get sort indices
-    sort_indices = np.argsort(bin_z_number)
-    #sort
-    bin_z_number = bin_z_number[sort_indices]
-    #get indices where bin_z_number changes
-    change_indices = np.where(np.diff(bin_z_number) != 0)[0]
-    #Trigger if you want to loop through all depth layers
-    if use_all_depth_layers == True:
-        change_indices = np.array([0,len(bin_z_number)])
-    
-    #Define the [location_x,location_y,location_z,weight,bw] for the particle. This is the active particle matrix
-    parts_active = [particles['UTM_x'][:,1].compressed()[sort_indices],
-                    particles['UTM_y'][:,1].compressed()[sort_indices],
-                    particles['z'][:,1].compressed()[sort_indices],
-                    bin_z_number,
-                    particles['weight'][:,1].compressed()[sort_indices],
-                    particles['bw'][:,1].compressed()[sort_indices]]
-    
-    #keep track of number of particles
-    total_parts[kkk] = len(parts_active[0])
-    
-    #-----------------------------------#
-    #INITIATE FOR LOOP OVER DEPTH LAYERS#
-    #-----------------------------------#
-
-    #add one right hands side limit to change_indices
-    change_indices = np.append(change_indices,len(bin_z_number))
-
-    ###########################################
-    #############################################
-    ###########################################
-
-    for i in range(0,len(change_indices)-1): #This essentially loops over all particles (does it???)
-        
-        #-----------------------------------------------------------#
-        #DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER#
-        #-----------------------------------------------------------#
-
-        #Define GRID_active by decompressing GRID[j][i][:,:] 
-        GRID_active = GRID[kkk][i][:,:].toarray()
-
-        #Define active particle matrix in depth layer i
-        parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]+1],
-                        parts_active[1][change_indices[i]:change_indices[i+1]+1],
-                        parts_active[2][change_indices[i]:change_indices[i+1]+1],
-                        parts_active[3][change_indices[i]:change_indices[i+1]+1],
-                        parts_active[4][change_indices[i]:change_indices[i+1]+1],
-                        parts_active[5][change_indices[i]:change_indices[i+1]+1]]
-
-        #-----------------------------------------------------#
-        #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
-        #-----------------------------------------------------#
-
-        #NEED TO ADD SOMETHING HERE THAT TAKES INTO ACCOUNT LOSS TO ATMOSPHERE AT 
-        #THE PREVIOUS TIMESTEP
-
-        #Set any particle that has left the model domain to have zero weight and location
-        #at the model boundary
-        parts_active_z[4][parts_active_z[0] < np.min(bin_x)] = 0
-        parts_active_z[4][parts_active_z[0] > np.max(bin_x)] = 0
-        parts_active_z[4][parts_active_z[1] < np.min(bin_y)] = 0
-        parts_active_z[4][parts_active_z[1] > np.max(bin_y)] = 0
-        parts_active_z[0][parts_active_z[0] < np.min(bin_x)] = np.min(bin_x)+1
-        parts_active_z[0][parts_active_z[0] > np.max(bin_x)] = np.max(bin_x)-1
-        parts_active_z[1][parts_active_z[1] < np.min(bin_y)] = np.min(bin_y)+1
-        parts_active_z[1][parts_active_z[1] > np.max(bin_y)] = np.max(bin_y)-1
-
-        if kde_all == True or i==0:
-            GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
-                                        parts_active_z[1],
-                                        bin_x,
-                                        bin_y,
-                                        parts_active_z[5],
-                                        parts_active_z[4])
+        ### MODIFY ALREADY ACTIVE ###
+        #add the weight of the particle to the current timestep 
+        ### MODIFY ALREADY ACTIVE ###
+        #add the weight of the particle to the current timestep 
+        if already_active.any():
+            ##### MOX LOSS #####
+            particles['weight'][already_active,1] = particles[
+                'weight'][already_active,0]-(particles['weight'][
+                    already_active,0]*R_ox*3600) #mol/hr
+            particles_mox_loss[kkk] = np.nansum(particles['weight'][already_active,0]*R_ox*3600)
             
-            if run_test == True:
-                GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3
-            elif run_full == True:
-                GRID_active = GRID_active/(V_grid)
+            ##### ATM LOSS #####
+            #This calculates the loss to the atmosphere for the methane released in the previous timestep... (mostly uses j-1 idx)
+            #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
+            already_active_surface = already_active[np.where(np.abs(particles['z'][already_active,0])<bin_z[1])[0]] #all particles with surface z
+        #find the gt_vel for the surface_layer_idxs
+            gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active_surface,0]),bin_y)
+            gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active_surface,0]),bin_x)
+            #make sure all gt_idys and gt_idxs are within the grid
+            gt_idys[gt_idys >= len(bin_y)] = len(bin_y)-1
+            gt_idxs[gt_idxs >= len(bin_x)] = len(bin_x)-1
+            #Distribute the atmospheric loss on these particles depending on their weight
+            #replace any nans in GRID_gt_cel[j-1][gt_idys,gt_idxs] with the nearest non nan value in the grid
+            #GRID_gt_vel[j-1][gt_idys,gt_idxs] = np.nan_to_num(GRID_gt_vel[j-1][gt_idys,gt_idxs])
+            #Each particle have contributed with a certain amount gt_vel*weight in the PREVIOUS timestep
+            particleweighing = (particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])/np.nansum(
+                particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])
+            #particles['weight'][already_active,j][surface_layer_idx] = particles['weight'][already_active,j][surface_layer_idx] - (gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx]*total_atm_flux[j-1])/np.nansum((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
+            particles['weight'][already_active_surface,1] = particles['weight'][already_active_surface,0] - (
+                particleweighing*total_atm_flux[kkk-1]) #mol/hr
+            particles_atm_loss[kkk] = np.nansum((particleweighing*total_atm_flux[kkk-1])/np.nansum(particleweighing))
+            #weigh this with the gt_vel
+            #USING THE TOTAL ATM FLUX HERE.. 
+            #remove particles with weight less than 0
+            #if particles['weight'][already_active,j][particles['weight'][already_active,j]<0].any():
+            #    break
+            particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
+            #add the bandwidth of the particle to the current timestep
+            particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
+            #limit the bandwidth to a maximum value
+            particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
 
-            #----------------------------#
-            #PLOT THE CONCENTRATION FIELD#
-            #----------------------------#
-
-            bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
-            #and for GRID_active
-            images_conc = []
-            levels_atm = np.linspace(0, 5*10**-9, 8)
-            time_steps = len(bin_time)
-
-            GRID_active = np.zeros(GRID_active.shape)
-    
+        #finished with modifying weights, replace weights[0] with weights[1] for next step
+        particles['weight'][:,0] = particles['weight'][:,1]
 
 
-            ### PLOTTING ###
-            if plotting == True:
+        #--------------------------------------------------#
+        #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
+        #--------------------------------------------------#
+        
+        #.... And create a sorted matrix for all the active particles according to
+        #which depth layer they are currently located in. 
+
+        #Get sort indices
+        sort_indices = np.argsort(bin_z_number)
+        #sort
+        bin_z_number = bin_z_number[sort_indices]
+        #get indices where bin_z_number changes
+        change_indices = np.where(np.diff(bin_z_number) != 0)[0]
+        #Trigger if you want to loop through all depth layers
+        if use_all_depth_layers == True:
+            change_indices = np.array([0,len(bin_z_number)])
+        
+        #Define the [location_x,location_y,location_z,weight,bw] for the particle. This is the active particle matrix
+        parts_active = [particles['UTM_x'][:,1].compressed()[sort_indices],
+                        particles['UTM_y'][:,1].compressed()[sort_indices],
+                        particles['z'][:,1].compressed()[sort_indices],
+                        bin_z_number,
+                        particles['weight'][:,1].compressed()[sort_indices],
+                        particles['bw'][:,1].compressed()[sort_indices]]
+        
+        #keep track of number of particles
+        total_parts[kkk] = len(parts_active[0])
+        
+        #-----------------------------------#
+        #INITIATE FOR LOOP OVER DEPTH LAYERS#
+        #-----------------------------------#
+
+        #add one right hands side limit to change_indices
+        change_indices = np.append(change_indices,len(bin_z_number))
+
+        ###########################################
+        #############################################
+        ###########################################
+
+        for i in range(0,len(change_indices)-1): #This essentially loops over all particles (does it???)
+            
+            #-----------------------------------------------------------#
+            #DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER#
+            #-----------------------------------------------------------#
+
+            #Define GRID_active by decompressing GRID[j][i][:,:] 
+            GRID_active = GRID[kkk][i][:,:].toarray()
+
+            #Define active particle matrix in depth layer i
+            parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[1][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[2][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[3][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[4][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[5][change_indices[i]:change_indices[i+1]+1]]
+
+            #-----------------------------------------------------#
+            #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
+            #-----------------------------------------------------#
+
+            #NEED TO ADD SOMETHING HERE THAT TAKES INTO ACCOUNT LOSS TO ATMOSPHERE AT 
+            #THE PREVIOUS TIMESTEP
+
+            #Set any particle that has left the model domain to have zero weight and location
+            #at the model boundary
+            parts_active_z[4][parts_active_z[0] < np.min(bin_x)] = 0
+            parts_active_z[4][parts_active_z[0] > np.max(bin_x)] = 0
+            parts_active_z[4][parts_active_z[1] < np.min(bin_y)] = 0
+            parts_active_z[4][parts_active_z[1] > np.max(bin_y)] = 0
+            parts_active_z[0][parts_active_z[0] < np.min(bin_x)] = np.min(bin_x)+1
+            parts_active_z[0][parts_active_z[0] > np.max(bin_x)] = np.max(bin_x)-1
+            parts_active_z[1][parts_active_z[1] < np.min(bin_y)] = np.min(bin_y)+1
+            parts_active_z[1][parts_active_z[1] > np.max(bin_y)] = np.max(bin_y)-1
+
+            if kde_all == True or i==0:
+                GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
+                                            parts_active_z[1],
+                                            bin_x,
+                                            bin_y,
+                                            parts_active_z[5],
+                                            parts_active_z[4])
+                
+                if run_test == True:
+                    GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3
+                elif run_full == True:
+                    GRID_active = GRID_active/(V_grid)
+
+                #----------------------------#
+                #PLOT THE CONCENTRATION FIELD#
+                #----------------------------#
+
+                bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
+                #and for GRID_active
                 images_conc = []
-                for n in range(1,148):
-                    GRID_active = np.zeros(GRID_active.shape)
-                    tmp = GRID[n]
-                    for i in range(0,11):
-                        GRID_active = GRID_active + tmp[n][:,:].toarray()
-                    
-                        plot_2d_data_map_loop(data = GRID_active.T*10**12,#converting to nmol/kg
-                                        lon = lon_mesh,
-                                        lat = lat_mesh,
-                                        projection = ccrs.PlateCarree(),
-                                        levels = levels_atm,
-                                        timepassed = [1,time_steps],
-                                        colormap = colormap,
-                                        title = 'Concentration in surface layer [nmol/kg]',
-                                        unit = 'nmol/kg',
-                                        savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\concentration\\create_gif\\concentration'+str(kkk)+'.png',
-                                        show = False,
-                                        dpi = 90)
+                levels_atm = np.linspace(0, 5*10**-9, 8)
+                time_steps = len(bin_time)
+        
+                ### PLOTTING ###
+                if plotting == True:
+                    images_conc = []
+                    for n in range(1,148):
+                        GRID_active = np.zeros(GRID_active.shape)
+                        tmp = GRID[n]
+                        for i in range(0,11):
+                            GRID_active = GRID_active + tmp[n][:,:].toarray()
                         
-                        #add the figure to the list of images
-                        images_conc.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration'+str(j)+'.png'))
-                        plt.close(fig)
+                            plot_2d_data_map_loop(data = GRID_active.T*10**12,#converting to nmol/kg
+                                            lon = lon_mesh,
+                                            lat = lat_mesh,
+                                            projection = ccrs.PlateCarree(),
+                                            levels = levels_atm,
+                                            timepassed = [1,time_steps],
+                                            colormap = colormap,
+                                            title = 'Concentration in surface layer [nmol/kg]',
+                                            unit = 'nmol/kg',
+                                            savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\concentration\\create_gif\\concentration'+str(kkk)+'.png',
+                                            show = False,
+                                            dpi = 90)
+                            
+                            #add the figure to the list of images
+                            images_conc.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration'+str(j)+'.png'))
+                            plt.close(fig)
 
-            #-------------------------------#
-            #CALCULATE ATMOSPHERIC FLUX/LOSS#
-            #-------------------------------#
-            
-            if i == 0:
-                GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,
-                    (((GRID_active+background_ocean_conc)-atmospheric_conc))
-                    )*0.01*dxy_grid**2 #This is in mol/hr for each gridcell. The gt_vel is PER DAY
-                GRID_active = (GRID_active*V_grid - GRID_atm_flux[kkk,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
-                total_atm_flux[kkk] = np.nansum(GRID_atm_flux[kkk,:,:])#....but not in the atmospheric flux.. 
+                #-------------------------------#
+                #CALCULATE ATMOSPHERIC FLUX/LOSS#
+                #-------------------------------#
+                
+                if i == 0:
+                    GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,
+                        (((GRID_active+background_ocean_conc)-atmospheric_conc))
+                        )*0.01*dxy_grid**2 #This is in mol/hr for each gridcell. The gt_vel is cm/hr, multiply with 0.01 to get m/hr
+                    GRID_active = (GRID_active*V_grid - GRID_atm_flux[kkk,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
+                    total_atm_flux[kkk] = np.nansum(GRID_atm_flux[kkk,:,:])#....but not in the atmospheric flux.. 
 
-            #-----------------------------------------#
-            #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
-            #-----------------------------------------#
+                #-----------------------------------------#
+                #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
+                #-----------------------------------------#
 
-            #Half life rates with sources per day:
-            # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
-            # 0.05 Mau et al., 2017 West of Svalbard
-            # <0.085 Gr~undker et al., 2021
-            
-            #0.02/(3600*24)
-            #use just e-7 per second, that's kind of in the middle of the pack
-            #R_ox = (10**-7) #half life per second
-            #R_ox = (10**-7)*3600 #half life per hour
+                #Half life rates with sources per day:
+                # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
+                # 0.05 Mau et al., 2017 West of Svalbard
+                # <0.085 Gr~undker et al., 2021
+                
+                #0.02/(3600*24)
+                #use just e-7 per second, that's kind of in the middle of the pack
+                #R_ox = (10**-7) #half life per second
+                #R_ox = (10**-7)*3600 #half life per hour
+                #Store the active grid into the GRID sparse matrix
+                GRID[kkk][i]=csr_matrix(GRID_active)
 
-            GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid ) #need this to adjust the weights for next loop
-            #need this to adjust the weights for next loop
-            GRID_active = GRID_active - GRID_mox[kkk,:,:] #I adjust the weights instead. 
-            total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
-            #update the weights of the particles due to microbial oxidation is done globally at each timestep since
-            #the loss is not dependent on the depth layer (this is more efficient)
-
-
+                GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop
+                #need this to adjust the weights for next loop
+                GRID_active = GRID_active - GRID_mox[kkk,:,:] #I adjust the weights instead. 
+                total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
+                #update the weights of the particles due to microbial oxidation is done globally at each timestep since
+                #the loss is not dependent on the depth layer (this is more efficient)
 
 if plotting == True:
     #create a gif from the images
     imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration.gif', images_conc, duration=0.5)
 
-#-----------------------------------#
+#------------------------------------#
 #SAVE STUFF TO PICKLE FILES FOR LATER#
-#-----------------------------------#
+#------------------------------------#
 
 #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
     pickle.dump(GRID, f)
     #create a sparse matrix first
+#load the GRID file
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
+    GRID_mox = pickle.load(f)
+
 #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
 GRID_atm_sparse = GRID_atm_flux
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'wb') as f:
     pickle.dump(GRID_atm_sparse, f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
+    GRID_atm = pickle.load(f)
 #GRID_mox_sparse = csr_matrix(GRID_mox)
 GRID_mox_sparse = GRID_mox
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
@@ -1232,7 +1258,7 @@ time_steps = len(bin_time)
 levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_mm_m2)),np.nanmax(np.nanmax(GRID_atm_flux_mm_m2)),8)
 
 #datetimevector for the progress bar
-times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
 do = False
 if do == True:
@@ -1264,11 +1290,18 @@ GRID_atm_flux_sum = np.nansum(GRID_atm_flux,axis=0) #in moles
 #total sum
 total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#*dxy_grid
 
-levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),8)
 #levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)
 lons_zoomed = lon_mesh
 lats_zoomed = lat_mesh
-ws_zoomed = GRID_atm_flux_sum
+ws_zoomed = GRID_atm_flux_sum*1000 #convert to nmol
+#ws_zoomed = GRID_gt_vel[500,:,:].T
+#ws_zoomed = GRID[450][5].toarray()
+#set plotting style w
+plt.style.use('dark_background')
+
+
+levels = np.linspace(np.nanmin(np.nanmin(ws_zoomed)),np.nanmax(np.nanmax(ws_zoomed))/15,60)
+levels = levels[:-50]
 
 percent_of_release = np.round(total_sum/total_seabed_release*100,3)
 
@@ -1282,19 +1315,22 @@ ax = fig.add_subplot(gs[0],projection=projection)
 #max_lat = 71.5
 
 # Add a filled contour plot with a lower zorder
-contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed.T, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0,extend='max')
+contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed.T, levels=levels,cmap=colormap,
+                       transform=ccrs.PlateCarree(), zorder=0,extend='max')
 cbar = plt.colorbar(contourf, ax=ax)
-cbar.set_label(r'Methane [mmol m$^{-2}$]', fontsize=16)
-cbar.set_ticks(np.round(levels[1:-1],2))
+cbar.set_label(r'Methane [nmol m$^{-2}$]', fontsize=16)
+cbar.set_ticks(np.unique(np.round(levels[:-1])))
 cbar.ax.tick_params(labelsize=14)
-ax.set_title(r'Released methane [mmol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
-contour = ax.contour(lons_zoomed, lats_zoomed, ws_zoomed.T, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+ax.set_title(r'Released methane [nmol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
+contour = ax.contour(lons_zoomed, lats_zoomed, 
+                     ws_zoomed.T, levels = levels, colors = '0.9', 
+                     linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
 # Add the land feature with a higher zorder
 ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
 # Add the coastline with a higher zorder
 ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
 # Set the geographical extent of the plot
-ax.set_extent([min_lon, max_lon-5, min_lat+0.5, max_lat-1.5])
+ax.set_extent([min_lon+1.5, max_lon, min_lat+0.5, max_lat-3])
 #Plot a red dot at the location of tromsø
 ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
 #with a text label
@@ -1315,6 +1351,9 @@ gl.ylabel_style = {'size':14}
 
 plt.show()
 
+#take nansum of GRIG_gt_vel to check if it's changing
+total_gt_vel = np.nansum(GRID_gt_vel,axis=2)
+
 #save figure
 #plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux_sum.png')
 
@@ -1322,21 +1361,130 @@ plt.show()
 
 #plot total_atm_flux in a nice figure with nice labels etc
 #create datetime vector
-times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+if run_test == True:
+    times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+elif run_full == True:
+    times = pd.to_datetime(bin_time,unit='s')
 fig = plt.figure(figsize=(16, 10))
 ax = fig.add_subplot(1, 1, 1)
-ax.plot(times,total_atm_flux,label='Total atmospheric flux',color='blue')
+ax.plot(times_new[170:-170],total_atm_flux_new[170:-170],label='Total atmospheric flux',color='blue')
 ax.set_ylabel('Total atmospheric flux [mol/hr]',fontdict={'fontsize':16})
 ax.set_title('Total atmospheric flux',fontdict={'fontsize':16})
 #set fontsize for the xticks
 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
 #add yy axis showing the number of active particles
 ax2 = ax.twinx()
-ax2.plot(times,total_parts,color='0.4',label='Number of active particles')
+ax2.plot(times_new[170:-170],total_mox_new[170:-170],color='0.4',label='Number of active particles')
 ax2.set_ylabel('Number of active particles',fontdict={'fontsize':16})
 ax2.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
 #save figure
 plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux.png')
+
+
+#Check what's going on in the top layer, i.e. we need to loop through 
+#GRID and sum all the top layers
+
+time_steps = len(bin_time)
+
+
+
+images_field_test = []
+for n in range(0,744):
+    print(n)
+    #GRID_top_sum = np.sum((GRID[n][:].toarray()))
+    GRID_top_sum = GRID_mox[n,:,:]
+    levels = np.linspace(0, np.max(maxmed)+20**-5, 20)
+    levels = levels[:-10]
+    #plot an imshow in the figure
+    #plt.imshow(GRID[n][0].toarray())
+    #skip timestep if GRID_top_sum only has zeros.. 
+    #if np.sum(GRID_top_sum) == 0:
+    #    continue
+    fig = plot_2d_data_map_loop(data = GRID_top_sum,
+                            lon = lon_mesh[0,:],
+                            lat = lat_mesh[:,0],
+                            projection = projection,
+                            levels = levels,
+                            timepassed = [n,time_steps],
+                            colormap = colormap,
+                            title = 'concentration [mol]'+str(times[n]),
+                            unit = 'mol',
+                            savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png',
+                            show = False,
+                            adj_lon = [0,0],
+                            adj_lat = [0,-2.5],
+                            bar_position = [0.315,0.12,0.49558,0.03],
+                            dpi = 90,
+                            log_scale = False)
+    images_field_test.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png'))
+    plt.close(fig)
+    
+#Create a field with all the layers summed up
+GRID_sum = np.zeros(GRID[0][0].toarray().shape)
+for n in range(0,744):
+    print(n)
+    GRID_sum = GRID_sum + np.sum(GRID[n][:].toarray(),axis=0)
+
+#first loop through to find max median
+maxmed = []
+maxmed = np.max(np.max(GRID_mox))
+for n in range(0,744):
+    print(n)
+    maxmed = np.append(maxmed,np.max(GRID_mox, axis=0))
+
+
+    
+
+
+plt.plot(GRID_top_sum)
+
+#fill in the gasp in total_mox and total_atm_flux (just remove all zeros)
+
+total_mox_new = total_mox[total_mox != 0]
+total_atm_flux_new = total_atm_flux[total_atm_flux != 0]
+#make a time vector where the same zero indices are removed
+times_new = times[total_mox != 0]
+
+#set the ylimits
+ylims = [0,np.max([np.max(total_mox_new),np.max(total_atm_flux_new)])]
+
+#make a yy plot of both of them on the same figure
+fig, ax1 = plt.subplots()
+ax1.plot(times_new[170:-170],total_mox_new[170:-170],color='blue',label='Total microbial oxidation')
+ax1.set_ylabel('Total microbial oxidation [mol/hr]', color='blue')
+ax1.set_xlabel('Time')
+ax1.set_title('Total microbial oxidation and total atmospheric flux')
+#set ylims
+ax1.set_ylim(ylims)
+ax2 = ax1.twinx()
+ax2.plot(times_new[170:-170],total_atm_flux_new[170:-170],color='red',label='Total atmospheric flux')
+ax2.set_ylabel('Total atmospheric flux [mol/hr]', color='red')
+#set ylims
+ax2.set_ylim(ylims)
+#set xticks such that only 4 ticks are shown
+#ax1.set_xticks(np.linspace(0,len(times_new[170:-170]),5))
+fig.tight_layout()
+plt.show()
+
+fig = plt.figure(figsize=(16, 10))
+ax = fig.add_subplot(1, 1, 1)
+ax.plot(times_new[170:-170],total_atm_flux_new[170:-170],label='Total atmospheric flux',color='blue')
+ax.set_ylabel('Total atmospheric flux [mol/hr]',fontdict={'fontsize':16})
+ax.set_title('Total MOx and atmospheric flux, approx. 1 to 10 relationship',fontdict={'fontsize':16})
+ax.set_ylim([0,np.max(total_mox_new)])
+#set fontsize for the xticks
+ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
+#add yy axis showing the number of active particles
+ax2 = ax.twinx()
+ax2.plot(times_new[170:-170],total_mox_new[170:-170],color='0.4',label='Number of active particles')
+ax2.set_ylabel('Total MOx [mol/hr]',fontdict={'fontsize':16})
+ax2.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
+ax2.set_ylim([0,np.max(total_mox_new)])
+#save figure
+plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux_sameaxis.png')
+
+
+
 
 
 ####################################################################################################
@@ -1527,22 +1675,25 @@ if plot_wind_field == True:
     #convert bin_x_mesh and bin_y_mesh to lon/la
     lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
     #datetimevector
-    times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+    if run_test == True:
+        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+    else:
+        times = pd.to_datetime(bin_time,unit='s')
 
     images_wind = []
     images_sst = []
     time_steps = len(bin_time)
 
     for i in range(time_steps):
-        #fig = plot_2d_data_map_loop(ws_interp[i,:,:],lon_mesh,
-        #                lat_mesh,projection,levels_w,[i,time_steps],
-        #                colormap,'Wind speed, '+str(times[i])[:10],
-        #                'm s$^{-1}$',
-        #                savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png',
-        #                dpi=90)
+        fig = plot_2d_data_map_loop(ws_interp[i,:,:],lon_mesh,
+                        lat_mesh,projection,levels_w,[i,time_steps],
+                        colormap,'Wind speed, '+str(times[i])[:10],
+                        'm s$^{-1}$',
+                        savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png',
+                        dpi=90)
         #append to gif list
-        #images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png'))
-        #plt.close(fig)
+        images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png'))
+        plt.close(fig)
 
         #SST PLOT
         fig = plot_2d_data_map_loop(sst_interp[i,:,:]-273.15,lon_mesh,
@@ -1585,3 +1736,5 @@ if plot_gt_vel == True:
 
     #create a gif
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\gt_vel.gif', images_gt_vel, duration=0.5)
+
+

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from functools import cached_property
 from netCDF4 import Dataset, num2date
 from pyproj import Proj
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 def get_roms_grid(mother, projection = None, offset = 7500):
     '''
@@ -745,12 +745,12 @@ class ROMSTimeStep:
     Fields we expect in other routines from this field
     '''
     netcdf_target_index: int
-    salt: np.array = np.empty(0)
-    temp: np.array = np.empty(0)
-    u: np.array = np.empty(0)
-    v: np.array = np.empty(0)
-    ua: np.array = np.empty(0)
-    va: np.array = np.empty(0)
+    salt: np.array = field(default_factory=lambda: np.empty(0))
+    temp: np.array = field(default_factory=lambda: np.empty(0))
+    u: np.array = field(default_factory=lambda: np.empty(0))
+    v: np.array = field(default_factory=lambda: np.empty(0))
+    ua: np.array = field(default_factory=lambda: np.empty(0))
+    va: np.array = field(default_factory=lambda: np.empty(0))
 
 class NoAvailableData(Exception): pass
 class InputError(Exception): pass

@@ -10,7 +10,7 @@
 module load IPython/7.18.1-GCCcore-10.2.0
 module load GEOS/3.9.1-GCC-10.2.0
 
-run_script=run_python.py
+run_script=run_python_vdiff.py
 
 source ~/pyipy/bin/activate
-python ${run_script} > log_vdiff.txt
+python ${run_script}

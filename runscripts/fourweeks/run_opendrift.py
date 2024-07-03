@@ -38,7 +38,7 @@ def run(hours_pr_release = 1):
 
     # Ok, and then we need to identify readable files
     start = datetime(2018, 4, 20)
-    stop  = datetime(2018, 6, 26)
+    stop  = datetime(2018, 6, 25)
     dates = [start + timedelta(days = n) for n in range((stop+timedelta(days=2)-start).days)]
 
     M = rg.get_roms_grid('MET-NK', pyproj.Proj('EPSG:32633')) # her kan du også hente data fra andre havmodeller hos met, feks NorShelf - 'NS'

@@ -37,22 +37,42 @@ def run(hours_pr_release = 1):
     o = OceanDrift(loglevel=20)
 
     # Ok, and then we need to identify readable files
-    start = datetime(2018, 5, 20)
-    stop  = datetime(2018, 7, 20)
+    start = datetime(2018, 4, 20)
+    stop  = datetime(2018, 6, 26)
     dates = [start + timedelta(days = n) for n in range((stop+timedelta(days=2)-start).days)]
 
     M = rg.get_roms_grid('MET-NK', pyproj.Proj('EPSG:32633')) # her kan du også hente data fra andre havmodeller hos met, feks NorShelf - 'NS'
     M.load_grid()
+
+    # Opening consequtive ROMS files using MFDataset. Making sure not to do so over gaps
     roms_files = []
+    print('Finding ROMS files')
     for d in dates:
         try:
-            roms_files.append(M.test_day(d))
+            fil = M.test_day(d)
+            roms_files.append(fil)
+            print(f'- Found {fil}')
+
         except:
             print(f'- {d} is not available')
+            if any(roms_files):
+                o.add_reader(reader_ROMS_native.Reader(roms_files))
+                roms_files = []
 
     # Read NorKyst data, add as reader
-    reader_norkyst = reader_ROMS_native.Reader(roms_files)
-    o.add_reader(reader_norkyst)
+    if any(roms_files):
+        reader_norkyst = reader_ROMS_native.Reader(roms_files)
+        o.add_reader(reader_norkyst)
+
+    # Fill missing days using NorShelf
+    print('\n- Adding May 2, 3 and 5 th')
+    may2 = reader_ROMS_native.Reader('https://thredds.met.no/thredds/dodsC/sea_norshelf_files/2018/05/norshelf_qck_an_20180502T00Z.nc')
+    may3 = reader_ROMS_native.Reader('https://thredds.met.no/thredds/dodsC/sea_norshelf_files/2018/05/norshelf_qck_an_20180503T00Z.nc')
+    may5 = reader_ROMS_native.Reader('https://thredds.met.no/thredds/dodsC/sea_norshelf_files/2018/05/norshelf_qck_an_20180505T00Z.nc')
+    
+    o.add_reader(may2)
+    o.add_reader(may3)
+    o.add_reader(may5)
 
     # Configure particle behaviour
     o.set_config('drift:horizontal_diffusivity', 10) # Since this is value apparently is common for NorKyst applications

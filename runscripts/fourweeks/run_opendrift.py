@@ -17,7 +17,7 @@ import numpy as np
 
 RADIUS = 100
 
-def run(with_diffusion = False, hours_pr_release = 1):
+def run(with_diffusion = False, hours_pr_release = 1, use_local = False):
     '''
     Release NorKyst particles
     - hours_pr_release : how often to release particles
@@ -40,63 +40,18 @@ def run(with_diffusion = False, hours_pr_release = 1):
     # Ok, and then we need to identify readable files
     start = datetime(2018, 3, 20)
     stop  = datetime(2018, 6, 25)
-    dates = [start + timedelta(days = n) for n in range((stop+timedelta(days=2)-start).days)]
+    dates = [start - timedelta(days = 1) + timedelta(days = n) for n in range((stop + timedelta(days=1) - start).days)]
 
-    M = rg.get_roms_grid('MET-NK', pyproj.Proj('EPSG:32633')) # her kan du også hente data fra andre havmodeller hos met, feks NorShelf - 'NS'
-    M.load_grid()
-
-    N = rg.get_roms_grid('H-NS', pyproj.Proj('EPSG:32633')) # Bruker NorShelf for å fylle hull
-    N.load_grid()
-
-    # Opening consequtive ROMS files using MFDataset. Making sure not to do so over gaps
-    roms_files = []
-    print('Finding ROMS files')
-    for d in dates:
-        try:
-            fil = M.test_day(d)
-            roms_files.append(fil)
-            print(f'- Found {fil}')
-
-        except:
-            # Make a reader out of the available files stored to the roms_files list
-            print(f'- {d} is not available from MET-NorKyst')
-            if any(roms_files):
-                o.add_reader(reader_ROMS_native.Reader(roms_files))
-                roms_files = []
-
-            # Fill date with data from NorShelf
-            try:
-                # This is not ideal, since it could end up making multiple readers for the same day
-                present = N.test_day(d)
-                past    = N.test_day(d-timedelta(days=1))
-                future  = N.test_day(d+timedelta(days=1))
-                o.add_reader(reader_ROMS_native.Reader([past, present, future]))
-                print(f'  - Filled {d} with data from hourly NorShelf')
-
-            except:
-                if d == datetime(2018, 4, 10):
-                    print(f'  - using local files to fill data not covered by MET files at {d}')
-                    o.add_reader(reader_ROMS_native.Reader(['/home/hes/work/norkyst/norkyst_800m_his.nc4_2018040901-2018041000', '/home/hes/work/norkyst/norkyst_800m_his.nc4_2018041001-2018041100']))
-                else:
-                    print(f'  - Could not find any data for {d} at MET-NO servers')
-                    raise NoAvailableData
-
-    # Read NorKyst data, add as reader
-    if any(roms_files):
-        reader_norkyst = reader_ROMS_native.Reader(roms_files)
-        o.add_reader(reader_norkyst)
+    # If using local files
+    if use_local:
+        o = get_local_reader(dates, o)
+    
+    else:
+        o = get_thredds_reader(dates, o)
 
     # Configure particle behaviour, environmental fallback values and vertical mixing parameterization parameters
     # ----
-    o.set_config('drift:horizontal_diffusivity', 10) # Since this is value apparently is common for NorKyst applications
-    o.set_config('general:coastline_action', 'previous') # This way, all particles that do not reach the open boundary, will stay active
-    o.set_config('general:seafloor_action', 'lift_to_seafloor') # It makes sense to not let particles advect through the seafloor
-    #o.set_config('drift:max_age_seconds', timedelta(days = 4*7).total_seconds()) # 4 weeks of data
-    o.set_config('drift:stokes_drift', False)
-    o.set_config('seed:wind_drift_factor', 0.0)
-    o.set_config('environment:fallback:x_sea_water_velocity', None)
-    o.set_config('environment:fallback:y_sea_water_velocity', None)
-    o.set_config('drift:stokes_drift', False)
+    o = set_config(o)
 
     if with_diffusion:
         o.set_config('environment:fallback:ocean_mixed_layer_thickness', 75) # Set the MLD to 50 meters.
@@ -149,6 +104,85 @@ def run(with_diffusion = False, hours_pr_release = 1):
         export_buffer_length=12,
         export_variables=['time', 'lon', 'lat', 'z'],
     )
+
+# Functions to find forcing files
+# ----
+def get_local_reader(dates, o):
+    '''
+    Find local NorKyst files between start and stop stored in a directory
+    '''
+    files = [f'/nird/projects/NS9067K/apn_backup/ROMS/NK800_2018/norkyst_800m_his.nc4_{date.strftime("%Y%m%d")}01-{(date+timedelta(days=1)).strftime("%Y%m%d")}00' 
+             for date in dates]
+    o.add_reader(reader_ROMS_native.Reader(files))
+    return o
+
+def get_thredds_reader(dates, o):
+    '''
+    Get files stored on thredds (and locally for some problematic dates)
+    '''
+    M = rg.get_roms_grid('MET-NK', pyproj.Proj('EPSG:32633')) # her kan du også hente data fra andre havmodeller hos met, feks NorShelf - 'NS'
+    M.load_grid()
+
+    N = rg.get_roms_grid('H-NS', pyproj.Proj('EPSG:32633')) # Bruker NorShelf for å fylle hull
+    N.load_grid()
+
+    # Opening consequtive ROMS files using MFDataset. Making sure not to do so over gaps
+    metnorkyst_files = []
+
+    print('Finding ROMS files')
+    for d in dates:
+        try:
+            fil = M.test_day(d)
+            metnorkyst_files.append(fil)
+            print(f'- Found {fil}')
+
+        except:
+            # Make a reader out of the available files stored to the roms_files list
+            print(f'- {d} is not available from MET-NorKyst')
+            if any(metnorkyst_files):
+                o.add_reader(reader_ROMS_native.Reader(metnorkyst_files))
+                roms_files = []
+
+            # Fill date with data from NorShelf
+            try:
+                # This is not ideal, since it could end up making multiple readers for the same day
+                present = N.test_day(d)
+                past    = N.test_day(d-timedelta(days=1))
+                future  = N.test_day(d+timedelta(days=1))
+                o.add_reader(reader_ROMS_native.Reader([past, present, future]))
+                print(f'  - Filled {d} with data from hourly NorShelf')
+
+            except:
+                if d == datetime(2018, 4, 10):
+                    print(f'  - using local files to fill data not covered by MET files at {d}')
+                    o.add_reader(reader_ROMS_native.Reader(['/home/hes/work/norkyst/norkyst_800m_his.nc4_2018040901-2018041000', '/home/hes/work/norkyst/norkyst_800m_his.nc4_2018041001-2018041100']))
+                else:
+                    print(f'  - Could not find any data for {d} at MET-NO servers, consider downloading more IMR NorKyst files.')
+                    raise NoAvailableData
+
+    # Read NorKyst data, add as reader
+    if any(metnorkyst_files):
+        reader_norkyst = reader_ROMS_native.Reader(metnorkyst_files)
+        o.add_reader(reader_norkyst)
+
+    return o
+
+# Set standard configuration
+# ----
+def set_config(o):
+    '''
+    Set the configuration which is the same for both experiments
+    '''
+    o.set_config('drift:horizontal_diffusivity', 10) # Since this is value apparently is common for NorKyst applications
+    o.set_config('general:coastline_action', 'previous') # This way, all particles that do not reach the open boundary, will stay active
+    o.set_config('general:seafloor_action', 'lift_to_seafloor') # It makes sense to not let particles advect through the seafloor
+    #o.set_config('drift:max_age_seconds', timedelta(days = 4*7).total_seconds()) # 4 weeks of data
+    o.set_config('drift:stokes_drift', False)
+    o.set_config('seed:wind_drift_factor', 0.0)
+    o.set_config('environment:fallback:x_sea_water_velocity', None)
+    o.set_config('environment:fallback:y_sea_water_velocity', None)
+    o.set_config('drift:stokes_drift', False)
+    return o
 
 # Functions used when seeding the particles
 # -----

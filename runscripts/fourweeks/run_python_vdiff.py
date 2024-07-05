@@ -1,2 +1,2 @@
-import run_opendrift_vdiff as ro
-ro.run()
+import run_opendrift as ro
+ro.run(with_diffusion=True)

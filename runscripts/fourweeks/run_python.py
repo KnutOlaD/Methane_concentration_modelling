@@ -1,2 +1,2 @@
 import run_opendrift as ro
-ro.run()
+ro.run(with_diffusion = False)

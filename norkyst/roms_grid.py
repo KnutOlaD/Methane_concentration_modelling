@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from functools import cached_property
 from netCDF4 import Dataset, num2date
 from pyproj import Proj
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 def get_roms_grid(mother, projection = None, offset = 7500):
     '''
@@ -552,7 +552,7 @@ class NorShelf(ROMSbase):
     for accessing NorShelf data
     '''
     def __str__(self):
-        if avg:
+        if self.avg:
             return 'NorShelf daily values'
 
         else:
@@ -560,7 +560,7 @@ class NorShelf(ROMSbase):
 
     def __init__(self, avg):
         self.avg  = avg
-        self.path = 'https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_20210531T00Z.nc'
+        self.path = 'https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_fc_latest.nc'
         self.min_len = 24
         if self.avg:
             self.min_len = 1
@@ -603,9 +603,9 @@ class NorShelf(ROMSbase):
         '''
         date = date-timedelta(days=1) # minus since this is a forecast, see *_dat_* file for best data
         if self.avg:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_fc_"
+            https = f"https://thredds.met.no/thredds/dodsC/sea_norshelf_files/{date.year}/{date.month:02}/norshelf_avg_an_"
         else:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_fc_"
+            https = f"https://thredds.met.no/thredds/dodsC/sea_norshelf_files/{date.year}/{date.month:02}/norshelf_fc_an_"
         return https + "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
     def get_norshelf_day_url(self, date):
@@ -613,9 +613,9 @@ class NorShelf(ROMSbase):
         Give it a date, and you will get the corresponding url in return
         '''
         if self.avg:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_"
+            https = f"https://thredds.met.no/thredds/dodsC/sea_norshelf_files/{date.year}/{date.month:02}/norshelf_avg_an_"
         else:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
+            https = f"https://thredds.met.no/thredds/dodsC/sea_norshelf_files/{date.year}/{date.month:02}/norshelf_qck_an_"
         return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
 # Methods for downloading data from a ROMS output file and preparing them to be interpolated to FVCOM
@@ -745,12 +745,12 @@ class ROMSTimeStep:
     Fields we expect in other routines from this field
     '''
     netcdf_target_index: int
-    salt: np.array = np.empty(0)
-    temp: np.array = np.empty(0)
-    u: np.array = np.empty(0)
-    v: np.array = np.empty(0)
-    ua: np.array = np.empty(0)
-    va: np.array = np.empty(0)
+    salt: np.array = field(default_factory=lambda: np.empty(0))
+    temp: np.array = field(default_factory=lambda: np.empty(0))
+    u: np.array = field(default_factory=lambda: np.empty(0))
+    v: np.array = field(default_factory=lambda: np.empty(0))
+    ua: np.array = field(default_factory=lambda: np.empty(0))
+    va: np.array = field(default_factory=lambda: np.empty(0))
 
 class NoAvailableData(Exception): pass
 class InputError(Exception): pass

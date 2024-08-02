@@ -1,0 +1,11 @@
+name: opendrift
+channels:
+  - conda-forge
+dependencies:
+  - libgdal>=3.1
+  - gdal>=3.1
+  - pip
+  - pip:
+    - -r requirements.txt
+    - motuclient
+    - pytest-sphinx

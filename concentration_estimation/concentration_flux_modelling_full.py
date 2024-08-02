@@ -64,7 +64,7 @@ dz_grid = 15. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
-age_constant = 25 #m per hour, see figure.
+age_constant = 36 #m per hour, see figure.
 #Initial bandwidth
 initial_bandwidth = 50 #m
 #set colormap
@@ -103,12 +103,12 @@ def load_nc_data(filename):
     print(ODdata.variables.keys())
 
     #Create a dictionary with the variables (just more used to working with dictionaries)
-    particles = {'lon':ODdata.variables['lon'][:],
-                        'lat':ODdata.variables['lat'][:],
-                        'z':ODdata.variables['z'][:],
-                        'time':ODdata.variables['time'][:],
-                        'status':ODdata.variables['status'][:],
-                        'trajectory':ODdata.variables['trajectory'][:]} #this is 
+    particles = {'lon':ODdata.variables['lon'][:].copy(),
+                        'lat':ODdata.variables['lat'][:].copy(),
+                        'z':ODdata.variables['z'][:].copy(),
+                        'time':ODdata.variables['time'][:].copy(),
+                        'status':ODdata.variables['status'][:].copy(),
+                        'trajectory':ODdata.variables['trajectory'][:].copy()} #this is 
 
     #example of usage
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'
@@ -647,27 +647,28 @@ if run_test == True:
 
 run_full = True
 if run_full == True:
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
-    ODdata = nc.Dataset(datapath)
+    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
+    ODdata = nc.Dataset(datapath, 'r', mmap=True)
     #number of particles
-    n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0]
+    n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0].copy()
     #Create an empty particles dictionary with size n_particlesx2 (one for current and one for previous timestep)
     particles = {'lon':np.ma.zeros((len(n_particles),2)),
                 'lat':np.ma.zeros((len(n_particles),2)),
                 'z':np.ma.zeros((len(n_particles),2)),
                 'time':np.ma.zeros(2),}
     #first timestep:
-    particles['lon'][:,0] = ODdata.variables['lon'][:, 0]
-    particles['lat'][:,0] = ODdata.variables['lat'][:, 0]
-    particles['z'][:,0] = ODdata.variables['z'][:, 0]
-    particles['timefull'] = ODdata.variables['time'][:]
-    particles['time'][0] = ODdata.variables['time'][0]
+    particles['lon'][:,0] = ODdata.variables['lon'][:, 0].copy()
+    particles['lat'][:,0] = ODdata.variables['lat'][:, 0].copy()
+    particles['z'][:,0] = ODdata.variables['z'][:, 0].copy()
+    particles['timefull'] = ODdata.variables['time'][:].copy()
+    particles['time'][0] = ODdata.variables['time'][0].copy()
     #second timestep:
-    particles['lon'][:,1] = ODdata.variables['lon'][:, 1]
-    particles['lat'][:,1] = ODdata.variables['lat'][:, 1]
-    particles['z'][:,1] = ODdata.variables['z'][:, 1]
+    particles['lon'][:,1] = ODdata.variables['lon'][:, 1].copy()
+    particles['lat'][:,1] = ODdata.variables['lat'][:, 1].copy()
+    particles['z'][:,1] = ODdata.variables['z'][:, 1].copy()
     #and current time step
-    particles['time'][1] = ODdata.variables['time'][1]
+    particles['time'][1] = ODdata.variables['time'][1].copy()
     #add utm
     particles = add_utm(particles)
     #unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
@@ -695,6 +696,13 @@ if run_full == True:
     minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
     maxUTMxminUTMy = utm.from_latlon(maxlat,minlon)
     maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon)
+    # Example: Forcing all coordinates to UTM zone 33N
+    force_zone_number = 33
+
+    minUTMxminUTMy = utm.from_latlon(minlat, minlon, force_zone_number=force_zone_number)
+    minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=force_zone_number)
+    maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=force_zone_number)
+    maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=force_zone_number)
     
 ###### SET UP GRIDS FOR THE MODEL ######
 print('Creating the output grid...')
@@ -903,11 +911,11 @@ if run_all == True:
         #Define the age vector for timestep     
         #age_vector = particles['z'][:,1].mask
         #and replace the 1st index with the j=j index
-        particles['lon'][:,1] = ODdata.variables['lon'][:, kkk]
-        particles['lat'][:,1] = ODdata.variables['lat'][:, kkk]
-        particles['z'][:,1] = ODdata.variables['z'][:, kkk]
+        particles['lon'][:,1] = ODdata.variables['lon'][:, kkk].copy()
+        particles['lat'][:,1] = ODdata.variables['lat'][:, kkk].copy()
+        particles['z'][:,1] = ODdata.variables['z'][:, kkk].copy()
         #and current time step
-        particles['time'][1] = ODdata.variables['time'][kkk]
+        particles['time'][1] = ODdata.variables['time'][kkk].copy()
         particles['weight'][:,1].mask = particles['z'][:,1].mask
         particles['bw'][:,1].mask = particles['z'][:,1].mask
         #particles['weight'][:,1] = particles['z'][:,1]

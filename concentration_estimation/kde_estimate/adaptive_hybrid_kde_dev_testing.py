@@ -22,6 +22,7 @@ grid_size = 150
 grid_size_plot = 100
 x_grid = np.linspace(0, grid_size, grid_size)
 y_grid = np.linspace(0, grid_size, grid_size)
+frac_diff = 1000 #the fractinoal difference between the full dataset and the test dataset
 
 num_particles_per_timestep = 5000 #seeded one after the other
 time_steps = 380
@@ -29,18 +30,6 @@ dt = 0.1
 stdev = 1.4 #Stochastic std
 U_a = np.array([2.5, 2.5]) #Advection velocity
 num_particles = num_particles_per_timestep*time_steps
-# Release position
-release_position = np.array([10, 10])
-#Make U_a a periodic function with size time_steps
-U_a = [0,5] #Initial value
-#Initial magnitude
-magU = np.sqrt(U_a[0]**2+U_a[1]**2)
-U_a = np.tile(U_a, (time_steps, 1))
-for i in range(1, time_steps):
-    U_a[i][:][0] = 2*magU+ np.sin(i/50)*2*magU
-    print(np.sin(i/10))
-    #L2 normalize the velocity
-    U_a[i] = (U_a[i]/(np.sqrt(U_a[i][0]**2+U_a[i][1]**2)))*magU #Concervation of mass
 
 #plt.plot(U_a[:][:,0])
 
@@ -159,26 +148,28 @@ def update_positions(particles, U_a, stdev, dt):
     
     return particles
 
-def compute_rdf(particles, bin_width=1.0, max_distance=50):
-    num_particles = particles.shape[0]
-    distances = np.zeros((num_particles, num_particles))
-    
-    # Calculate distances between all pairs of particles
-    for i in range(num_particles):
-        for j in range(i+1, num_particles):
-            dist = np.linalg.norm(particles[i] - particles[j])
-            distances[i, j] = dist
-            distances[j, i] = dist
-    
-    # Bin the distances to create the RDF
-    bins = np.arange(0, max_distance + bin_width, bin_width)
-    rdf, _ = np.histogram(distances, bins=bins)
-    
-    # Normalize the RDF
-    rdf = rdf / num_particles
-    return rdf, bins[:-1]
+#
+#Create test data function
+#
+def create_test_data(stdev=1.4, num_particles_per_timestep=5000, time_steps=380, dt=0.1, grid_size=150, num_particles=5000):
+    #Creates a bunch of particles and the time dependant bandwidth parameter. 
+    #returns the particle trajectories and the bandwidth vector
+    # Release position
+    release_position = np.array([10, 10])
+    #Make U_a a periodic function with size time_steps
+    U_a = [0,5] #Initial value
+    #Initial magnitude
+    magU = np.sqrt(U_a[0]**2+U_a[1]**2)
+    U_a = np.tile(U_a, (time_steps, 1))
+    for i in range(1, time_steps):
+        U_a[i][:][0] = 2*magU+ np.sin(i/50)*2*magU
+        #make it a bit more complex by adding another sine function with different
+        #frequency
+        #U_a[i][:][1] = 2*magU+ np.sin(i/50)*2*magU + np.sin(i/10)*2*magU
+        print(np.sin(i/10))
+        #L2 normalize the velocity
+        U_a[i] = (U_a[i]/(np.sqrt(U_a[i][0]**2+U_a[i][1]**2)))*magU #Concervation of mass
 
-if create_test_data == True:
     # Simulate particle trajectories
     trajectories = np.zeros((time_steps-1, num_particles, 2))*np.nan
     #create the bandwidth vector for each particle
@@ -217,22 +208,30 @@ if create_test_data == True:
         pickle.dump(trajectories[-1], f)
     with open('bw.pkl', 'wb') as f:
         pickle.dump(bw, f)
+    
+    return trajectories, bw
 
+# ------------------------------------------------------- #
+###########################################################
+##################### INITIATION ##########################
+###########################################################
+# ------------------------------------------------------- #
+
+if create_test_data == True:
+    trajectories, bw = create_test_data()
 
 if load_test_data == True:
     # Load test data
     with open('trajectories_full.pkl', 'rb') as f:
         trajectories_full = pickle.load(f)
     with open('bw.pkl', 'rb') as f:
-        bw = pickle.load(f)
+        bw = pickle.load(f) #This is just the time dependent a priori bandwidth parameter
 else:
     # Create test data
     trajectories_full = trajectories[-1]
 #load test data
 
 ### CREATE TEST DATA ###
-#fractional difference
-frac_diff = 1000
 trajectories = trajectories_full[::frac_diff,:]
 #pick only the right data from the bw vector
 bw = bw[::frac_diff]
@@ -242,16 +241,47 @@ weights = np.ones(len(bw))
 ####### MAKE COLOR PLOT OF PARTICLE DENSITY ########
 ####################################################
 
-histogram_estimator_est = histogram_estimator(trajectories, grid_size)/np.sum(histogram_estimator(trajectories, grid_size))
-#transpose
+#Histogram estimator estimate
+histogram_estimator_est = histogram_estimator(trajectories, grid_size)
+#Kernel density estimator with time dependent bandwidth estimate
 kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories[:,0],trajectories[:,1],x_grid,y_grid,bw,weights)
 kernel_density_estimator_est = kernel_density_estimator_est.T
-#normalize
-kernel_density_estimator_est = kernel_density_estimator_est/np.sum(kernel_density_estimator_est)
 
+#Normalize everything
+histogram_estimator_est = histogram_estimator_est/np.sum(histogram_estimator_est)
+kernel_density_estimator_est = kernel_density_estimator_est/np.sum(kernel_density_estimator_est)
 ground_truth = histogram_estimator(trajectories_full, grid_size)/np.sum(histogram_estimator(trajectories_full, grid_size))
 
 
+
+###############################
+##### CALCULATE PILOT KDE #####
+###############################
+
+#create a 2d grid
+X, Y = np.meshgrid(x_grid, y_grid)
+#...using vstack
+positions = np.vstack([X.ravel(), Y.ravel()])
+
+# Sample particle positions
+values = np.array(trajectories.T)  # Replace with your actual data
+
+kde_pilot = gaussian_kde(values,bw_method = 'silverman',weights = np.ones(len
+(trajectories)))
+
+#with constant bandwidth
+kde_pilot = gaussian_kde(values,bw_method = 0.1,weights = np.ones(len(trajectories)))
+
+kde_pilot = np.reshape(kde_pilot(positions).T, X.shape)
+
+plt.imshow(kde_pilot)
+
+
+
+
+
+
+#####################################################
 #####################################################
 #####################################################
 #################### PLOTTING #######################
@@ -309,7 +339,6 @@ colormap = 'plasma'
 vmin = np.min(ground_truth)
 vmax = np.max(ground_truth)
 
-
 for ax, matrix, title in zip(axes[::2], matrices, titles):
     im = ax.pcolor(matrix, cmap=colormap,vmin=vmin,vmax=vmax)
     ax.set_title(title, fontsize=font_size)
@@ -323,6 +352,22 @@ for ax, matrix, title in zip(axes[::2], matrices, titles):
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.05)
     plt.colorbar(im, cax=cax)
+
+#Plot the Z matrix (the default gaussian_kde solution) in the upper right hand side plot
+#using the same plotting routine as above
+im = axes[1].pcolor(kde_pilot, cmap=colormap,vmin=vmin,vmax=vmax)
+axes[1].set_title('Gaussian KDE using Scott assumption', fontsize=font_size)
+axes[1].set_xlabel('x', fontsize=font_size)
+axes[1].set_ylabel('y', fontsize=font_size)
+axes[1].axis('square')
+axes[1].set_xlim(0, grid_size_plot)
+axes[1].set_ylim(0, grid_size_plot)
+#and same color range and colorbar
+divider = make_axes_locatable(axes[1])
+cax = divider.append_axes("right", size="5%", pad=0.05)
+plt.colorbar(im, cax=cax)
+
+
 
 # Plot the differences in the second column
 diff_matrices = [np.abs(ground_truth - histogram_estimator_est), np.abs(ground_truth - kernel_density_estimator_est)]
@@ -344,6 +389,7 @@ for ax, matrix, title in zip(axes[3::2], diff_matrices, diff_titles):
 
 plt.tight_layout()
 plt.show()
+
 
 
 # Set font size
@@ -379,6 +425,20 @@ for ax, matrix, title in zip(axes[::2], matrices, titles):
     cax = divider.append_axes("right", size="5%", pad=0.05)
     plt.colorbar(im, cax=cax)
 
+#Plot the Z matrix (the default gaussian_kde solution) in the upper right hand side plot
+#using the same plotting routine as above
+im = axes[1].contourf(kde_pilot, cmap=colormap, levels=levels)
+axes[1].set_title('Gaussian KDE using Scott assumption', fontsize=font_size)
+axes[1].set_xlabel('x', fontsize=font_size)
+axes[1].set_ylabel('y', fontsize=font_size)
+axes[1].axis('square')
+axes[1].set_xlim(0, grid_size_plot)
+axes[1].set_ylim(0, grid_size_plot)
+#and same color range and colorbar
+divider = make_axes_locatable(axes[1])
+cax = divider.append_axes("right", size="5%", pad=0.05)
+plt.colorbar(im, cax=cax)
+
 # Plot the differences in the second column
 diff_matrices = [np.abs(ground_truth - histogram_estimator_est), np.abs(ground_truth - kernel_density_estimator_est)]
 diff_titles = ['Difference Histogram Estimator', 'Difference Kernel Density Estimator']
@@ -405,3 +465,4 @@ print('Difference, histogram estimator')
 print(np.sum(np.abs(ground_truth - histogram_estimator_est)))
 print('Difference, kernel density estimator')
 print(np.sum(np.abs(ground_truth - kernel_density_estimator_est)))
+

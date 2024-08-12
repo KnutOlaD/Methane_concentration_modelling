@@ -35,7 +35,7 @@ plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
-fit_wind_data = True
+fit_wind_data = False
 #fit gas transfer velocity
 fit_gt_vel = True
 #set path for wind model pickle file
@@ -78,6 +78,8 @@ total_seabed_release = 20833
 kde_all = True
 #Weight full sim
 weights_full_sim = 0.0408 #mol/hr
+#Set manual border for grid
+manual_border = True
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -673,24 +675,31 @@ if run_full == True:
     particles = add_utm(particles)
     #unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
     #set limits for grid manually since we dont know how this will evolv
-    #loop over all timesteps to check the limits of the grid
-
-    for i in range(0,ODdata.variables['lon'].shape[1]):
-        #get max and min unmasked lat/lon values
-        print(i)
-        if i == 0:
-            minlon = np.min(ODdata.variables['lon'][:,i].compressed())
-            maxlon = np.max(ODdata.variables['lon'][:,i].compressed())
-            minlat = np.min(ODdata.variables['lat'][:,i].compressed())
-            maxlat = np.max(ODdata.variables['lat'][:,i].compressed())
-            maxdepth = np.max(np.abs(ODdata.variables['z'][:,i].compressed()))
-        else:
-            minlon = np.min([np.min(ODdata.variables['lon'][:,i].compressed()),minlon])
-            maxlon = np.max([np.max(ODdata.variables['lon'][:,i].compressed()),maxlon])
-            minlat = np.min([np.min(ODdata.variables['lat'][:,i].compressed()),minlat])
-            maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
-            maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
- 
+    #loop over all timesteps to check the limits of the grid or define boundaries manually
+    force_zone_number = 33
+    if manual_border == True:
+        minlon = 12.5
+        maxlon = 21
+        minlat = 68.5
+        maxlat = 72
+        maxdepth = 15*20
+    else:
+        for i in range(0,ODdata.variables['lon'].shape[1]):
+            #get max and min unmasked lat/lon values
+            print(i)
+            if i == 0:
+                minlon = np.min(ODdata.variables['lon'][:,i].compressed())
+                maxlon = np.max(ODdata.variables['lon'][:,i].compressed())
+                minlat = np.min(ODdata.variables['lat'][:,i].compressed())
+                maxlat = np.max(ODdata.variables['lat'][:,i].compressed())
+                maxdepth = np.max(np.abs(ODdata.variables['z'][:,i].compressed()))
+            else:
+                minlon = np.min([np.min(ODdata.variables['lon'][:,i].compressed()),minlon])
+                maxlon = np.max([np.max(ODdata.variables['lon'][:,i].compressed()),maxlon])
+                minlat = np.min([np.min(ODdata.variables['lat'][:,i].compressed()),minlat])
+                maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
+                maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
+    
     #get the min/max values for the UTM coordinates using the utm package and the minlon/maxlon/minlat/maxlat values
     minUTMxminUTMy = utm.from_latlon(minlat,minlon)
     minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
@@ -795,8 +804,6 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 ws_interp = np.ma.filled(ws_interp,np.nan)
 sst_interp = np.ma.filled(sst_interp,np.nan)
 
-
-fit_gt_vel = False
 
 #Calculate the gas transfer velocity
 if fit_gt_vel == True:
@@ -990,7 +997,7 @@ if run_all == True:
             #This calculates the loss to the atmosphere for the methane released in the previous timestep... (mostly uses j-1 idx)
             #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
             already_active_surface = already_active[np.where(np.abs(particles['z'][already_active,0])<bin_z[1])[0]] #all particles with surface z
-        #find the gt_vel for the surface_layer_idxs
+            #find the gt_vel for the surface_layer_idxs
             gt_idys = np.digitize(np.abs(particles['UTM_y'][already_active_surface,0]),bin_y)
             gt_idxs = np.digitize(np.abs(particles['UTM_x'][already_active_surface,0]),bin_x)
             #make sure all gt_idys and gt_idxs are within the grid

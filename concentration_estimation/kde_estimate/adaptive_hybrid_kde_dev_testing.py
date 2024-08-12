@@ -349,20 +349,21 @@ plt.show()
 # Initialize the result matrix
 A = np.zeros((grid_size, grid_size))
 
-kernel_dim = 4 #The half width dimension of the kernels in grid cells (also sets h = kernel_dim*0.5)
+kernel_dim = 2 #The half width dimension of the kernels in grid cells (also sets h = kernel_dim*0.5)
 
 # Iterate over the grid points
 for i in range(grid_size):
     for j in range(grid_size):
         # Determine the kernel size
         kernel_size = len(gaussian_kernels[kernel_dim]) // 2
-
         kernel = gaussian_kernels[kernel_dim]
         # Define the window boundaries
         i_min = (i - kernel_size)
         i_max = (i + kernel_size + 1)
         j_min = (j - kernel_size)
         j_max = (j + kernel_size + 1)
+        
+           
         #Mirror the kernel if the kernel goes outside the grid
         # crop the kernel and mirror the part that leaked out of the grid
         if i_min < 0:
@@ -396,117 +397,57 @@ A = A / np.sum(A)
 ##### GRID PROJECTED ADAPTIVE KERNEL DENSITY ESTIMATOR #####
 ############################################################
 
-# Initialize the result matrix
-A_adaptive = np.zeros((grid_size, grid_size))
+#We have already precomputed a pilot kde estimate using an initial h = 1.5.
 
-# Find the optimal bandwidth h for each grid point
-#Find all non-zero elements in the histogram estimator
-non_zero_elements_x,non_zero_elements_y = np.where(counts > 0)
-#Loop over the non-zero elements and calculate the optimal bandwidth for each grid point
+def calculate_n_u(grid_size, kde_pilot, gaussian_kernels, sigma_u=3*1.5):
+    n_u = np.zeros((grid_size, grid_size))
+    
+    #Sigma_u the bandwidth gives the size of the gaussian kernels to be used
+    kernel_index = np.argmin(np.abs(bandwidths_h-sigma_u))
+    #choose kernel
+    kernel_size = len(gaussian_kernels[kernel_index]) // 2
+    kernel = gaussian_kernels[kernel_index]
 
+    for i in range(grid_size):
+        for j in range(grid_size):
+            # Define the window boundaries
+            i_min = i - kernel_size
+            i_max = i + kernel_size + 1
+            j_min = j - kernel_size
+            j_max = j + kernel_size + 1
 
-d2Z_dx2 = np.gradient(np.gradient(counts, axis=0), axis=0)
-d2Z_dy2 = np.gradient(np.gradient(counts, axis=1), axis=1)
+            kernel = gaussian_kernels[kernel_index]
 
-#compute roughness of the kernel (isotropic Gaussian kernel)
-R_k = 1/(2*np.pi)
+            # Mirror the kernel if the kernel goes outside the grid
+            if i_min < 0:
+                kernel[-i_min:(-i_min-i_min)] += np.flipud(kernel[0:-i_min])
+                kernel = kernel[-i_min:]
+                i_min = 0
+            if i_max > grid_size:
+                kernel[:i_max-grid_size] += np.flipud(kernel[-i_max+grid_size:])
+                kernel = kernel[:grid_size-i_max]
+                i_max = grid_size
+            if j_min < 0:
+                kernel[:, -j_min:-j_min-j_min] += np.fliplr(kernel[:, 0:-j_min])
+                kernel = kernel[:, -j_min:]
+                j_min = 0
+            if j_max > grid_size:
+                kernel[:, :j_max-grid_size] += np.fliplr(kernel[:, -j_max+grid_size:])
+                kernel = kernel[:, :grid_size-j_max]
+                j_max = grid_size
 
-N = counts[12,12]
+            # Calculate the weighted kernel
+            weighted_kernel = kernel * kde_pilot[i, j]
+            # Add the contribution to the result matrix
+            n_u[i_min:i_max, j_min:j_max] += weighted_kernel
 
-h_opt = np.zeros((grid_size, grid_size))
+    return n_u
 
-h_opt[12,12] = (R_k/(N*(d2Z_dx2[12,12]+d2Z_dy2[12,12])))**(1/6)
+# Example usage
+grid_size = 100  # Example grid size
+kde_pilot = A  
 
-# Iterate over the non_zero_elements and calculate the optimal bandwidth for each grid point
-for i, j in zip(non_zero_elements_x,non_zero_elements_y):
-    # Calculate the optimal bandwidth
-    N = counts[i,j]
-    h_opt[i,j] = (R_k/(N*(d2Z_dx2[i,j]+d2Z_dy2[i,j])))**(1/5)
-    #find nearest discrete value of h_opt
-    h_opt[i,j] = bandwidths_h[np.argmin(np.abs(bandwidths_h-h_opt[i,j]))]
-
-#Different approach 
-
-Z = counts
-
-def get_local_roughness_second_derivative(Z, x_grid, y_grid):
-    d2Z_dx2 = np.gradient(np.gradient(Z, axis=0), axis=0)
-    d2Z_dy2 = np.gradient(np.gradient(Z, axis=1), axis=1)
-    R_fpp_local = d2Z_dx2**2 + d2Z_dy2**2
-    return R_fpp_local
-
-R_fpp_local = get_local_roughness_second_derivative(Z, x_grid, y_grid)
-
-R_K = 1 / (2 * np.sqrt(np.pi))
-
-# Define the bandwidths to test
-bandwidths_h = np.linspace(0, 10.0, num=12)
-
-# Initialize the array to store the optimal bandwidths
-optimal_bandwidths = np.zeros_like(Z)
-
-# Iterate over non-zero elements in the counts matrix
-for i in range(len(x_grid)):
-    for j in range(len(y_grid)):
-        best_h = None
-        best_imse = np.inf
-        for h in bandwidths_h:
-            # Calculate the IMSE for the current bandwidth
-            imse = R_K / (Z[i, j] * h**2) + (1/4) * h**4 * R_fpp_local[i, j]
-            # Update the best bandwidth if the current IMSE is lower
-            if imse < best_imse:
-                best_imse = imse
-                best_h = h
-        # Store the optimal bandwidth for the current grid cell
-        optimal_bandwidths[i, j] = best_h
-
-
-# Iterate over the grid points and calculate the kernel density estimate
-for i in range(grid_size):
-    for j in range(grid_size):
-        # determine the kernel size depending on the optimal bandwidth
-        kernel_dim = int(h_opt[i,j])
-        # Determine the kernel size
-        kernel_size = len(gaussian_kernels[kernel_dim]) // 2
-
-        kernel = gaussian_kernels[kernel_dim]
-        # Define the window boundaries
-        i_min = (i - kernel_size)
-        i_max = (i + kernel_size + 1)
-        j_min = (j - kernel_size)
-        j_max = (j + kernel_size + 1)
-        #Mirror the kernel if the kernel goes outside the grid
-        # crop the kernel and mirror the part that leaked out of the grid
-        if i_min < 0:
-            #add the leaked mass to the edge of the kernel
-            kernel[-i_min:-i_min-i_min] + np.flipud(kernel[0:-i_min])
-            #crop the kernel by distance i_min:0
-            kernel = kernel[-i_min:]  
-            i_min = 0          
-        if i_max > grid_size:
-            kernel[:i_max-grid_size] + np.flipud(kernel[-i_max+grid_size:])
-            kernel = kernel[:grid_size-i_max]
-            i_max = grid_size
-        if j_min < 0:
-            kernel[:,-j_min:-j_min-j_min] + np.fliplr(kernel[:,0:-j_min])
-            kernel = kernel[:,-j_min:]
-            j_min = 0
-        if j_max > grid_size:
-            kernel[:,:j_max-grid_size] + np.fliplr(kernel[:,-j_max+grid_size:])
-            kernel = kernel[:,:grid_size-j_max]
-            j_max = grid_size
-        # Calculate the weighted kernel
-
-        weighted_kernel = kernel * counts[i, j]
-        # Add the contribution to the result matrix
-        A_adaptive[i_min:i_max, j_min:j_max] += weighted
-
-
-
-
-
-
-
+n_u = calculate_n_u(grid_size, kde_pilot, gaussian_kernels)
 
 #####################################################
 #####################################################

@@ -25,6 +25,7 @@ import imageio
 import matplotlib.gridspec as gridspec
 from scipy.ndimage import gaussian_filter
 import seaborn as sns
+import time
 
 
 ###############   
@@ -37,7 +38,7 @@ plt.style.use('dark_background')
 #fit wind data
 fit_wind_data = False
 #fit gas transfer velocity
-fit_gt_vel = True
+fit_gt_vel = False
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -791,7 +792,7 @@ V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 ###############################################
 
 if fit_wind_data == True:
-    fit_wind_sst_data(bin_x,bin_y,bin_time)
+    fit_wind_sst_data(bin_x,bin_y,bin_time) #This functino saves the wind and sst fields in a pickle file
     #LOAD THE PICKLE FILE (no matter what)
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
     ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
@@ -804,25 +805,26 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 ws_interp = np.ma.filled(ws_interp,np.nan)
 sst_interp = np.ma.filled(sst_interp,np.nan)
 
+GRID_gt_vel = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
+
 
 #Calculate the gas transfer velocity
 if fit_gt_vel == True:
     print('Fitting gas transfer velocity')
-    GRID_gt_vel = calc_gt_vel(u10=ws_interp,
-                                temperature=sst_interp-273.15,
-                                gas='methane')
-    #replace any nans in the grid with nearest neighbour values in the grid using the nearest neighbour interpolation
-    # Get the indices of the valid (non-NaN) and invalid (NaN) points
-    valid_mask = ~np.isnan(GRID_gt_vel)
-    invalid_mask = np.isnan(GRID_gt_vel)
-    # Get the coordinates of the valid points
-    valid_coords = np.array(np.nonzero(valid_mask)).T
-    # Get the coordinates of the invalid points
-    invalid_coords = np.array(np.nonzero(invalid_mask)).T
-    # Get the values of the valid points
-    valid_values = GRID_gt_vel[valid_mask]
-    # Use griddata to interpolate the NaN values
-    GRID_gt_vel[invalid_mask] = griddata(valid_coords, valid_values, invalid_coords, method='nearest')
+    for gtvel in range(0,len(bin_time)):
+        print(gtvel)
+        GRID_gt_vel[gtvel,:,:] = calc_gt_vel(u10=ws_interp[gtvel,:,:],temperature=sst_interp[gtvel,:,:],gas='methane')
+
+        tmp = GRID_gt_vel[gtvel,:,:]
+
+        valid_mask = ~np.isnan(tmp)
+        invalid_mask = np.isnan(tmp)
+        valid_coords = np.array(np.nonzero(valid_mask)).T
+        invalid_coords = np.array(np.nonzero(invalid_mask)).T
+        valid_values = tmp[valid_mask]
+        tmp[invalid_mask] = griddata(valid_coords, valid_values, invalid_coords, method='nearest')
+
+        GRID_gt_vel[gtvel,:,:] = tmp
 
     #save the GRID_gt_vel
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'wb') as f:
@@ -899,11 +901,24 @@ elif run_full == True:
 
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
-run_all = False
+run_all = True
 
 if run_all == True:
+    # Open the dataset
+    ODdata = nc.Dataset(datapath, 'r', mmap=True)
+
+    # Number of particles
+    n_particles = ODdata.variables['lon'][:, 0].shape[0]
+
+    
+    # Determine the midpoint
+    midpoint = n_particles // 2 #this is all to speed up things.. 
+
+
     for kkk in range(1,time_steps_full-1): 
 
+        start_time = time.time()
+        
         print(kkk)
         #------------------------------------------------------#
         #LAZY LOAD THE PARTICLES FOR THE CURRENT TIMESTEP (j=n)#
@@ -913,14 +928,20 @@ if run_all == True:
         particles['lat'][:,0] = particles['lat'][:,1]
         particles['z'][:,0] = particles['z'][:,1]
         particles['time'][0] = particles['time'][1]
-        #particles['weight'][:,0] = particles['weight'][:,1]
         particles['bw'][:,0] = particles['bw'][:,1]
+
+
         #Define the age vector for timestep     
         #age_vector = particles['z'][:,1].mask
         #and replace the 1st index with the j=j index
-        particles['lon'][:,1] = ODdata.variables['lon'][:, kkk].copy()
-        particles['lat'][:,1] = ODdata.variables['lat'][:, kkk].copy()
-        particles['z'][:,1] = ODdata.variables['z'][:, kkk].copy()
+        particles['lon'][:midpoint, 1] = ODdata.variables['lon'][:midpoint, kkk].copy()
+        particles['lat'][:midpoint, 1] = ODdata.variables['lat'][:midpoint, kkk].copy()
+        particles['z'][:midpoint, 1] = ODdata.variables['z'][:midpoint, kkk].copy()
+        #load second half
+        particles['lon'][midpoint:, 1] = ODdata.variables['lon'][midpoint:, kkk].copy()
+        particles['lat'][midpoint:, 1] = ODdata.variables['lat'][midpoint:, kkk].copy()
+        particles['z'][midpoint:, 1] = ODdata.variables['z'][midpoint:, kkk].copy()
+        
         #and current time step
         particles['time'][1] = ODdata.variables['time'][kkk].copy()
         particles['weight'][:,1].mask = particles['z'][:,1].mask
@@ -934,12 +955,14 @@ if run_all == True:
         #add utm
         particles = add_utm(particles)
         #add aging
-        ### ADD AGE TO THE NEXT TIMESTEP ###
-        #particles['age'][:,0] = particles['age'][:,1] 
         
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"Time taken for data loading {kkk}: {elapsed_time:.6f} seconds")
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
+      
 
         #do some binning
         #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
@@ -1244,6 +1267,10 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 #----------------------------------------------------------------------------------------------------#
 ######################################################################################################
 
+#Remove the first 
+
+
+
 #Get grid on lon/lat and limits for the figures. 
 lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
 
@@ -1263,7 +1290,7 @@ max_lat = np.max(lat_mesh)
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
 #    GRID_atm_flux = pickle.load(f)
 
-GRID_atm_flux = GRID_atm_flux
+#GRID_atm_flux = GRID_atm_flux[672:,:,:] #remove the first day
 
 #Calculate atmospheric flux field per square meter per hour
 GRID_atm_flux_mm_m2 = (GRID_atm_flux/(dxy_grid**2))*10**6 #convert to mmol/m^2/hr
@@ -1308,14 +1335,14 @@ total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#*dxy_grid
 #levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)
 lons_zoomed = lon_mesh
 lats_zoomed = lat_mesh
-ws_zoomed = GRID_atm_flux_sum*1000 #convert to nmol
+ws_zoomed = GRID_atm_flux_sum/1000000 #convert to nmol
 #ws_zoomed = GRID_gt_vel[500,:,:].T
 #ws_zoomed = GRID[450][5].toarray()
 #set plotting style w
 plt.style.use('dark_background')
 
 
-levels = np.linspace(np.nanmin(np.nanmin(ws_zoomed)),np.nanmax(np.nanmax(ws_zoomed))/15,60)
+levels = np.linspace(np.nanmin(np.nanmin(ws_zoomed)),np.nanmax(np.nanmax(ws_zoomed))/2,60)
 levels = levels[:-50]
 
 percent_of_release = np.round(total_sum/total_seabed_release*100,3)
@@ -1325,7 +1352,7 @@ gs = gridspec.GridSpec(1, 1)  # Create a GridSpec object
 ax = fig.add_subplot(gs[0],projection=projection)
 
 #min_lon = 12
-#max_lon = 24.5
+#max_lon = 22.5
 #min_lat = 68.5
 #max_lat = 71.5
 
@@ -1334,7 +1361,13 @@ contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed.T, levels=levels,cmap
                        transform=ccrs.PlateCarree(), zorder=0,extend='max')
 cbar = plt.colorbar(contourf, ax=ax)
 cbar.set_label(r'Methane [nmol m$^{-2}$]', fontsize=16)
-cbar.set_ticks(np.unique(np.round(levels[:-1])))
+#get a ticklabel vector (should be 7 ticks with even spacing from 0 to max)
+ticklabelvector = np.linspace(0,np.nanmax(np.nanmax(levels))/2,7)
+#cbar.set_ticks(np.unique(np.round(levels[:-1])))
+cbar.set_ticks(ticklabelvector)
+#make the colorbar ticks in scientific notation
+cbar.ax.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+
 cbar.ax.tick_params(labelsize=14)
 ax.set_title(r'Released methane [nmol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
 contour = ax.contour(lons_zoomed, lats_zoomed, 
@@ -1345,7 +1378,7 @@ ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
 # Add the coastline with a higher zorder
 ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
 # Set the geographical extent of the plot
-ax.set_extent([min_lon+1.5, max_lon, min_lat+0.5, max_lat-3])
+ax.set_extent([min_lon+0.5, max_lon-1.5, min_lat+0.25, max_lat-1])
 #Plot a red dot at the location of tromsø
 ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
 #with a text label
@@ -1356,6 +1389,9 @@ ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fo
 ax.plot(14.29,68.9179949,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
 #add text in lower right corner with the total sum
 ax.text(14.39,68.8479949,'Seabed release',transform=ccrs.PlateCarree(),color='white',fontsize=12)
+#set limits
+
+
 
 #Try to fix labels
 gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')

@@ -34,10 +34,14 @@ stdev = 1.4 #Stochastic std
 U_a = np.array([2.5, 2.5]) #Advection velocity
 num_particles = num_particles_per_timestep*time_steps
 
-#plt.plot(U_a[:][:,0])
+
+# ------------------------------------------------------- #
+###########################################################
+##################### FUNCTIONS ###########################
+###########################################################
+# ------------------------------------------------------- #
 
 
-#Let the current be periodic in the x-direction
 @numba.jit(parallel=True)
 def histogram_estimator(particles, grid_size,weights = None):
     '''
@@ -243,7 +247,9 @@ else:
 ### CREATE TEST DATA ###
 trajectories = trajectories_full[::frac_diff,:]
 #pick only the right data from the bw vector
+bw_full = bw
 bw = bw[::frac_diff]
+weights_full = np.ones(len(bw_full))
 weights = np.ones(len(bw))
 
 ####################################################
@@ -362,7 +368,6 @@ for i in range(grid_size):
         i_max = (i + kernel_size + 1)
         j_min = (j - kernel_size)
         j_max = (j + kernel_size + 1)
-        
            
         #Mirror the kernel if the kernel goes outside the grid
         # crop the kernel and mirror the part that leaked out of the grid
@@ -400,6 +405,7 @@ A = A / np.sum(A)
 #We have already precomputed a pilot kde estimate using an initial h = 1.5.
 
 def calculate_n_u(grid_size, kde_pilot, gaussian_kernels, sigma_u=3*1.5):
+    
     n_u = np.zeros((grid_size, grid_size))
     
     #Sigma_u the bandwidth gives the size of the gaussian kernels to be used
@@ -667,4 +673,30 @@ if plotting == True:
     print(np.sum(np.abs(ground_truth - kernel_density_estimator_est)))
     print('Difference, grid projected KDE')
     print(np.sum(np.abs(ground_truth - A)))
+
+    ###############
+    #TEST WHAT'S FASTEST GRID PROJECTED VS kernel_matrix_2d_NOFLAT
+
+    #Create a bw v
+
+    #Test on the big particle dataset
+    import time
+    start = time.time()
+    kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories_full[:,0],trajectories_full[:,1],x_grid,y_grid,bw,weights_test)
+    kernel_density_estimator_est = kernel_density_estimator_est.T
+    end = time.time()
+
+    print('Time for kernel_matrix_2d_NOFLAT')
+    print(end-start)
+
+    start = time.time()
+    #Precompute the pilot KDE
+    kde_pilot = histogram_estimator(trajectories_full, grid_size,weights=weights_test)[1]
+    n_u = calculate_n_u(grid_size, kde_pilot, gaussian_kernels)
+    end = time.time()
+
+    print('Time for grid projected KDE')
+    print(end-start)
+
+
 

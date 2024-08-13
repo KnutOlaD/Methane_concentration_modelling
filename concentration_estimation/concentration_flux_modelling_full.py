@@ -914,6 +914,8 @@ if run_all == True:
     # Determine the midpoint
     midpoint = n_particles // 2 #this is all to speed up things.. 
 
+    #For testing purposes... 
+    kkk = 700
 
     for kkk in range(1,time_steps_full-1): 
 
@@ -985,8 +987,6 @@ if run_all == True:
         #    particles['age'][:,1][unmasked_indices] != 0]
         
         #print the number of true 
-
-
         ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
         if run_test == True:
             if activated_indices.any(): #If there are new particles added at this timestep
@@ -1269,8 +1269,6 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 
 #Remove the first 
 
-
-
 #Get grid on lon/lat and limits for the figures. 
 lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
 
@@ -1360,16 +1358,16 @@ ax = fig.add_subplot(gs[0],projection=projection)
 contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed.T, levels=levels,cmap=colormap,
                        transform=ccrs.PlateCarree(), zorder=0,extend='max')
 cbar = plt.colorbar(contourf, ax=ax)
-cbar.set_label(r'Methane [nmol m$^{-2}$]', fontsize=16)
+cbar.set_label(r'Methane [mol m$^{-2}$]', fontsize=16)
 #get a ticklabel vector (should be 7 ticks with even spacing from 0 to max)
-ticklabelvector = np.linspace(0,np.nanmax(np.nanmax(levels))/2,7)
+ticklabelvector = np.linspace(0,np.nanmax(np.nanmax(levels)),7)
 #cbar.set_ticks(np.unique(np.round(levels[:-1])))
 cbar.set_ticks(ticklabelvector)
 #make the colorbar ticks in scientific notation
 cbar.ax.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
 
 cbar.ax.tick_params(labelsize=14)
-ax.set_title(r'Released methane [nmol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
+ax.set_title(r'Released methane [mol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
 contour = ax.contour(lons_zoomed, lats_zoomed, 
                      ws_zoomed.T, levels = levels, colors = '0.9', 
                      linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)

@@ -42,37 +42,100 @@ num_particles = num_particles_per_timestep*time_steps
 # ------------------------------------------------------- #
 
 
-@numba.jit(parallel=True)
-def histogram_estimator(particles, grid_size,weights = None):
+@numba.jit(parallel=True, nopython=True)
+def histogram_estimator(particles, grid_size, weights=None, bandwidths=None):
     '''
     Input:
     particles: np.array of shape (num_particles, 2)
     grid_size: int
+    weights: np.array of shape (num_particles,)
+    bandwidths: np.array of shape (num_particles,)
     
     Output:
     particle_count: np.array of shape (grid_size, grid_size)
+    total_weight: np.array of shape (grid_size, grid_size)
+    cell_bandwidths: np.array of shape (grid_size, grid_size)
     '''
-
-
-
+    # Initialize the histograms
+    particle_count = np.zeros((grid_size, grid_size), dtype=np.int32)
+    total_weight = np.zeros((grid_size, grid_size), dtype=np.float64)
+    cell_bandwidths = np.zeros((grid_size, grid_size), dtype=np.float64)
+    
+    # Check if weights are provided
+    if weights is None:
+        weights = np.ones(len(particles), dtype=np.float64)
+    # Check if bandwidths are provided
+    if bandwidths is None:
+        bandwidths = np.ones(len(particles), dtype=np.float64)
+    
     # Create a 2D histogram of particle positions
-    particle_count = np.zeros((grid_size, grid_size))
-    total_weight = np.zeros((grid_size, grid_size))
-    for i in range(len(particles)):
-        x, y = particles[i,:]
+    for i in numba.prange(len(particles)):
+        x, y = particles[i, :]
         if np.isnan(x) or np.isnan(y):
             continue
         x = int(x)
         y = int(y)
         if x >= grid_size or y >= grid_size or x < 0 or y < 0:
             continue
-        total_weight[x, y] += 1*weights[i]
-        particle_count[x,y] += 1
+        total_weight[y, x] += weights[i]
+        particle_count[y, x] += 1
+        cell_bandwidths[y,x] += bandwidths[i]
+    
+    #Divide cell_bandwidth with particle count to obtain the average bandwidth
+    cell_bandwidths = cell_bandwidths/particle_count
 
-    particle_count = particle_count.T
-    total_weight = total_weight.T
+    return total_weight, particle_count, cell_bandwidths
 
-    return total_weight,particle_count
+
+#Function to calculate the grid projected kernel density estimator
+def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell_bandwidths):
+    """
+    Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
+
+    Parameters:
+    grid_size (int): The size of the grid (grid_size x grid_size).
+    kde_pilot (np.array): The pilot KDE values on the grid.
+    gaussian_kernels (list): List of Gaussian kernel matrices.
+    kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
+    grid_cell_bandwidths (np.array): Array of bandwidths of the particles.
+
+    Returns:
+    np.array: The resulting KDE projected onto the grid.
+    """
+    #ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
+    
+    n_u = np.zeros((grid_size, grid_size))
+
+    # Get the indices of non-zero kde_pilot values
+    non_zero_indices = np.argwhere(kde_pilot > 0)
+   
+    # Find the closest kernel indices for each particle bandwidth
+    kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newais] - cell_bandwidths[non_zero_indices]), axis=0)
+    
+    
+    for idx in non_zero_indices:
+        i, j = idx
+        # Get the appropriate kernel for the current particle bandwidth
+        kernel_index = kernel_indices[i * grid_size + j]
+        kernel = gaussian_kernels[kernel_index]
+        kernel_size = len(kernel) // 2
+
+        # Define the window boundaries
+        i_min = max(i - kernel_size, 0)
+        i_max = min(i + kernel_size + 1, grid_size)
+        j_min = max(j - kernel_size, 0)
+        j_max = min(j + kernel_size + 1, grid_size)
+
+        # Calculate the weighted kernel
+        weighted_kernel = kernel * kde_pilot[i, j]
+
+        # Add the contribution to the result matrix
+        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
+            max(0, kernel_size - i):kernel_size + min(grid_size - i, kernel_size + 1),
+            max(0, kernel_size - j):kernel_size + min(grid_size - j, kernel_size + 1)
+        ]
+
+    return n_u
 
 
 def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
@@ -159,6 +222,47 @@ def update_positions(particles, U_a, stdev, dt):
     #particles = np.mod(particles, grid_size)
     
     return particles
+
+    
+def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
+    """
+    Generates Gaussian kernels and their bandwidths.
+
+    Parameters:
+    x_grid (np.array): The grid on which the kernels are defined.
+    num_kernels (int): The number of kernels to generate.
+    ratio (float): The ratio between the kernel bandwidth and integration support.
+    stretch (float): The stretch factor of the kernels. Defined as the ratio between the bandwidth in the x and y directions.
+
+    Returns:
+    gaussian_kernels (list): List of Gaussian kernels.
+    bandwidths_h (np.array): Array of bandwidths associated with each kernel.
+    kernel_origin (list): List of kernel origins.
+    """
+
+    del_grid = x_grid[1] - x_grid[0]
+
+    gaussian_kernels = [np.array([[1]])]
+    bandwidths_h = np.zeros(num_kernels)
+    kernel_origin = [np.array([0, 0])]
+
+    for i in range(1, num_kernels):
+        a = np.arange(-i, i + 1, 1).reshape(-1, 1)
+        b = np.arange(-i, i + 1, 1).reshape(1, -1)
+        h = (len(a) * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
+        #impose stretch and calculate the kernel
+        h_a = h*stretch
+        h_b = h
+        kernel_matrix = ((1 / (2 * np.pi * h_a * h_b)) * np.exp(-0.5 * ((a / h_a) ** 2 + (b / h_b) ** 2)))
+        gaussian_kernels.append(kernel_matrix)
+        bandwidths_h[i] = h
+        kernel_origin.append(np.array([0, 0]))
+
+    #set the smallest bandwidth to 0.5 of the first calculated bandwidth (gaussian_kernels[1])
+    bandwidths_h[0] = bandwidths_h[1] * 0.5
+
+    return gaussian_kernels, bandwidths_h, kernel_origin
+
 
 #
 #Create test data function
@@ -264,7 +368,7 @@ weights = weights[::-1]
 weights_test = weights[::frac_diff]
 
 #Histogram estimator estimate
-histogram_estimator_est,counts = histogram_estimator(trajectories, grid_size,weights=weights_test)
+histogram_estimator_est,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
 #Kernel density estimator with time dependent bandwidth estimate
 kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories[:,0],trajectories[:,1],x_grid,y_grid,bw,weights_test)
 kernel_density_estimator_est = kernel_density_estimator_est.T
@@ -272,7 +376,7 @@ kernel_density_estimator_est = kernel_density_estimator_est.T
 #Normalize everything
 histogram_estimator_est = histogram_estimator_est/np.sum(histogram_estimator_est)
 kernel_density_estimator_est = kernel_density_estimator_est/np.sum(kernel_density_estimator_est)
-ground_truth,count_truth = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
+ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
 
 #####################################################
 ##### CALCULATE PILOT KDE USING PREMADE PACKAGE #####
@@ -303,31 +407,12 @@ kde_pilot = np.reshape(kde_pilot(positions).T, X.shape)
 #this means that h is 1,2,3,4,5, etc corresponding to a 3x3, 5x5, 7x7, 9x9, 11x11, etc approximation
 # to a gaussian kernel. 
 
-#First, calculate Gaussian kernels for h = 1,2,3,4,5,6,7,8,9,10,11,12
+# Create kernels:
+x_grid = np.linspace(0, 10, 100)
+num_kernels = 20
+ratio = 1/3
+gaussian_kernels, bandwidths_h, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
 
-del_grid = x_grid[1]-x_grid[0]
-
-gaussian_kernels = []
-gaussian_kernels.append(np.array([[1]]))
-num_ker = 12 #The number of kernels to calculate
-bandwidths_h = np.zeros(num_ker) #Array to store the bandwidth ranges associated with each kernel
-#
-kernel_origin = []
-kernel_origin.append(np.array([0,0]))
-for i in range(1,12):
-    a = np.arange(-i,i+1,1)
-    b = np.arange(-i,i+1,1)
-    #make it a 3x3 kernel giving the distance in each dimension (3x3 matrix)
-    a = a.reshape(-1,1)
-    b = b.reshape(1,-1)
-    #2 times the standard deviation 
-    h = i*(del_grid*0.5)+0.5*del_grid
-    #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
-    kernel_matrix = ((1/(2*np.pi*h**2))*np.exp(-0.5*((a/h)**2+(b/h)**2))/np.sum(((1/(2*np.pi*h*h))*np.exp(-0.5*((a/h)**2+(b/h)**2)))))
-    gaussian_kernels.append(kernel_matrix)
-    bandwidths_h[i] = h #can use just find nearest value here.
-    kernel_origin.append(np.array([0,0]))
-    
 #plot the kernels in a 3x4 plot
 fig, axes = plt.subplots(3, 4, figsize=(16, 12))
 axes = axes.flatten()
@@ -352,108 +437,35 @@ plt.show()
 ######## GRID PROJECTED NON-ADAPTIVE KERNEL DENSITY ESTIMATOR ########
 ######################################################################
 
-# Initialize the result matrix
-A = np.zeros((grid_size, grid_size))
+#make an array of arbitrary bandwidths for testing
+particle_bandwidths = np.ones(num_particles)*1
+for i in range(1,num_particles):
+    particle_bandwidths[i] = particle_bandwidths[i-1]+0.00001
 
-kernel_dim = 2 #The half width dimension of the kernels in grid cells (also sets h = kernel_dim*0.5)
+#flipt it upside down
+particle_bandwidths = particle_bandwidths[::-1]
 
-# Iterate over the grid points
-for i in range(grid_size):
-    for j in range(grid_size):
-        # Determine the kernel size
-        kernel_size = len(gaussian_kernels[kernel_dim]) // 2
-        kernel = gaussian_kernels[kernel_dim]
-        # Define the window boundaries
-        i_min = (i - kernel_size)
-        i_max = (i + kernel_size + 1)
-        j_min = (j - kernel_size)
-        j_max = (j + kernel_size + 1)
-           
-        #Mirror the kernel if the kernel goes outside the grid
-        # crop the kernel and mirror the part that leaked out of the grid
-        if i_min < 0:
-            #add the leaked mass to the edge of the kernel
-            kernel[-i_min:-i_min-i_min] + np.flipud(kernel[0:-i_min])
-            #crop the kernel by distance i_min:0
-            kernel = kernel[-i_min:]  
-            i_min = 0          
-        if i_max > grid_size:
-            kernel[:i_max-grid_size] + np.flipud(kernel[-i_max+grid_size:])
-            kernel = kernel[:grid_size-i_max]
-            i_max = grid_size
-        if j_min < 0:
-            kernel[:,-j_min:-j_min-j_min] + np.fliplr(kernel[:,0:-j_min])
-            kernel = kernel[:,-j_min:]
-            j_min = 0
-        if j_max > grid_size:
-            kernel[:,:j_max-grid_size] + np.fliplr(kernel[:,-j_max+grid_size:])
-            kernel = kernel[:,:grid_size-j_max]
-            j_max = grid_size
-        # Calculate the weighted kernel
-
-        weighted_kernel = kernel * counts[i, j]
-        # Add the contribution to the result matrix
-        A[i_min:i_max, j_min:j_max] += weighted_kernel
-
-# Normalize the result matrix
-A = A / np.sum(A)
 
 ############################################################
 ##### GRID PROJECTED ADAPTIVE KERNEL DENSITY ESTIMATOR #####
 ############################################################
 
-#We have already precomputed a pilot kde estimate using an initial h = 1.5.
-
-def calculate_n_u(grid_size, kde_pilot, gaussian_kernels, sigma_u=3*1.5):
-    
-    n_u = np.zeros((grid_size, grid_size))
-    
-    #Sigma_u the bandwidth gives the size of the gaussian kernels to be used
-    kernel_index = np.argmin(np.abs(bandwidths_h-sigma_u))
-    #choose kernel
-    kernel_size = len(gaussian_kernels[kernel_index]) // 2
-    kernel = gaussian_kernels[kernel_index]
-
-    for i in range(grid_size):
-        for j in range(grid_size):
-            # Define the window boundaries
-            i_min = i - kernel_size
-            i_max = i + kernel_size + 1
-            j_min = j - kernel_size
-            j_max = j + kernel_size + 1
-
-            kernel = gaussian_kernels[kernel_index]
-
-            # Mirror the kernel if the kernel goes outside the grid
-            if i_min < 0:
-                kernel[-i_min:(-i_min-i_min)] += np.flipud(kernel[0:-i_min])
-                kernel = kernel[-i_min:]
-                i_min = 0
-            if i_max > grid_size:
-                kernel[:i_max-grid_size] += np.flipud(kernel[-i_max+grid_size:])
-                kernel = kernel[:grid_size-i_max]
-                i_max = grid_size
-            if j_min < 0:
-                kernel[:, -j_min:-j_min-j_min] += np.fliplr(kernel[:, 0:-j_min])
-                kernel = kernel[:, -j_min:]
-                j_min = 0
-            if j_max > grid_size:
-                kernel[:, :j_max-grid_size] += np.fliplr(kernel[:, -j_max+grid_size:])
-                kernel = kernel[:, :grid_size-j_max]
-                j_max = grid_size
-
-            # Calculate the weighted kernel
-            weighted_kernel = kernel * kde_pilot[i, j]
-            # Add the contribution to the result matrix
-            n_u[i_min:i_max, j_min:j_max] += weighted_kernel
-
-    return n_u
-
-# Example usage
 grid_size = 100  # Example grid size
-kde_pilot = A  
 
-n_u = calculate_n_u(grid_size, kde_pilot, gaussian_kernels)
+histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test,bandwidths=particle_bandwidths)
+cell_bandwidths=cell_bandwidths[0]
+
+x_grid = np.linspace(0, 10, grid_size)
+ratio = 1/3
+gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
+
+n_u = grid_proj_kde(grid_size, 
+                    kde_pilot, 
+                    gaussian_kernels_test,
+                    kernel_bandwidths,
+                    cell_bandwidths)
+
+plt.imshow(n_u)
 
 #####################################################
 #####################################################
@@ -678,11 +690,12 @@ if plotting == True:
     #TEST WHAT'S FASTEST GRID PROJECTED VS kernel_matrix_2d_NOFLAT
 
     #Create a bw v
+    trajectories_test = trajectories_full[::10000]
 
     #Test on the big particle dataset
     import time
     start = time.time()
-    kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories_full[:,0],trajectories_full[:,1],x_grid,y_grid,bw,weights_test)
+    kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories_test[:,0],trajectories_test[:,1],x_grid,y_grid,bw_full,weights_full)
     kernel_density_estimator_est = kernel_density_estimator_est.T
     end = time.time()
 
@@ -691,12 +704,44 @@ if plotting == True:
 
     start = time.time()
     #Precompute the pilot KDE
-    kde_pilot = histogram_estimator(trajectories_full, grid_size,weights=weights_test)[1]
-    n_u = calculate_n_u(grid_size, kde_pilot, gaussian_kernels)
+    kde_pilot = histogram_estimator(trajectories_test, grid_size,weights=weights_full)[1]
+    n_u = grid_proj_kde(grid_size, kde_pilot, gaussian_kernels)
     end = time.time()
 
     print('Time for grid projected KDE')
     print(end-start)
+
+    #Plot to see if they are the same
+    # Create a 1x2 subplot
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    # Flatten the axes array for easy iteration
+    axes = axes.flatten()
+    # Plot each matrix in the first column
+    matrices = [kernel_density_estimator_est, n_u]
+    titles = ['kernel_matrix_2d_NOFLAT', 'Grid projected KDE']
+    colormap = 'plasma'
+    # Get color limits from the ground_truth matrix
+    vmin = np.min(kernel_density_estimator_est)
+    vmax = np.max(kernel_density_estimator_est)
+    levels = np.linspace(vmin, vmax, 40)
+
+    for ax, matrix, title in zip(axes, matrices, titles):
+        im = ax.contourf(matrix, cmap=colormap, levels=levels)
+        ax.set_title(title, fontsize=font_size)
+        ax.set_xlabel('x', fontsize=font_size)
+        ax.set_ylabel('y', fontsize=font_size)
+        ax.axis('square')
+        ax.set_xlim(0, grid_size_plot)
+        ax.set_ylim(0, grid_size_plot)
+        
+        # Create a colorbar
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+    
+    plt.tight_layout()
+
+    plt.show()
 
 
 

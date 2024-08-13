@@ -403,6 +403,74 @@ def calc_mox_consumption(C_o,R_ox):
 
     return CH4_consumption
 
+@numba.jit(parallel=True, nopython=True)
+def histogram_estimator(particles, grid_size, weights=None):
+    '''
+    Input:
+    particles: np.array of shape (num_particles, 2)
+    grid_size: int
+    
+    Output:
+    particle_count: np.array of shape (grid_size, grid_size)
+    '''
+    # Initialize the histograms
+    particle_count = np.zeros((grid_size, grid_size), dtype=np.int32)
+    total_weight = np.zeros((grid_size, grid_size), dtype=np.float64)
+    
+    # Check if weights are provided
+    if weights is None:
+        weights = np.ones(len(particles), dtype=np.float64)
+    
+    # Create a 2D histogram of particle positions
+    for i in numba.prange(len(particles)):
+        x, y = particles[i, :]
+        if np.isnan(x) or np.isnan(y):
+            continue
+        x = int(x)
+        y = int(y)
+        if x >= grid_size or y >= grid_size or x < 0 or y < 0:
+            continue
+        total_weight[y, x] += weights[i]
+        particle_count[y, x] += 1
+
+    return total_weight, particle_count
+
+def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
+    """
+    Generates Gaussian kernels and their bandwidths.
+
+    Parameters:
+    x_grid (np.array): The grid on which the kernels are defined.
+    num_kernels (int): The number of kernels to generate.
+    ratio (float): The ratio between the kernel bandwidth and integration support.
+    stretch (float): The stretch factor of the kernels. Defined as the ratio between the bandwidth in the x and y directions.
+
+    Returns:
+    gaussian_kernels (list): List of Gaussian kernels.
+    bandwidths_h (np.array): Array of bandwidths associated with each kernel.
+    kernel_origin (list): List of kernel origins.
+    """
+
+    del_grid = x_grid[1] - x_grid[0]
+
+    gaussian_kernels = [np.array([[1]])]
+    bandwidths_h = np.zeros(num_kernels)
+    kernel_origin = [np.array([0, 0])]
+
+    for i in range(1, num_kernels):
+        a = np.arange(-i, i + 1, 1).reshape(-1, 1)
+        b = np.arange(-i, i + 1, 1).reshape(1, -1)
+        h = (len(a) * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
+        #impose stretch and calculate the kernel
+        h_a = h*stretch
+        h_b = h
+        kernel_matrix = ((1 / (2 * np.pi * h_a * h_b)) * np.exp(-0.5 * ((a / h_a) ** 2 + (b / h_b) ** 2)))
+        gaussian_kernels.append(kernel_matrix)
+        bandwidths_h[i] = h
+        kernel_origin.append(np.array([0, 0]))
+
+    return gaussian_kernels, bandwidths_h, kernel_origin
+
 def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
     ''' 
     Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 

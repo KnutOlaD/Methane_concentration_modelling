@@ -26,6 +26,7 @@ import matplotlib.gridspec as gridspec
 from scipy.ndimage import gaussian_filter
 import seaborn as sns
 import time
+import numba
 
 
 ###############   
@@ -76,7 +77,7 @@ R_ox = 10**-7 #s^-1
 #total seabed release
 total_seabed_release = 20833
 #only for top layer trigger
-kde_all = True
+kde_all = False
 #Weight full sim
 weights_full_sim = 0.0408 #mol/hr
 #Set manual border for grid
@@ -234,7 +235,7 @@ def create_grid(time,
 
 ###########################################################################################
 
-def add_utm(particles):
+def add_utm(particles,utm_zone = 33,utm_letter = 'W'):
     '''
     Adds utm coordinates to the particles dictionary
     
@@ -256,7 +257,8 @@ def add_utm(particles):
         #...
         #Find the UTM coordinates
         valid_indices = ~particles['lat'][:,i].mask & ~particles['lon'][:,i].mask
-        UTM_x[valid_indices,i], UTM_y[valid_indices,i], _, _ = utm.from_latlon(particles['lat'][valid_indices,i], particles['lon'][valid_indices,i])
+        UTM_x[valid_indices,i], UTM_y[valid_indices,i], _, _ = utm.from_latlon(particles['lat'][valid_indices,i], 
+        particles['lon'][valid_indices,i], force_zone_number=utm_zone, force_zone_letter=utm_letter)
     
         particles['UTM_x'] = UTM_x
         particles['UTM_y'] = UTM_y
@@ -533,7 +535,9 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
 
     return GRID_active
 
+
 from matplotlib.colors import LogNorm
+from matplotlib.ticker import ScalarFormatter
 
 def plot_2d_data_map_loop(data,
                           lon,
@@ -550,9 +554,12 @@ def plot_2d_data_map_loop(data,
                           adj_lat = [0,0],
                           bar_position = [0.195,0.12,0.54558,0.03],
                           dpi=150,
-                          log_scale=False):
+                          log_scale=False,
+                          figuresize=[14,10],
+                          starttimestring='May 20, 2021',
+                          endtimestring='May 20, 2021'):
     '''
-    Plots 2d data on a map with time progression bar
+    Plots 2d data on a map with time progression bar.
 
     Input:
     data: 2d data
@@ -566,81 +573,102 @@ def plot_2d_data_map_loop(data,
     unit: unit of the data
     savefile_path: path to where the plot should be saved
     show: boolean. If True, the plot will be shown
+    adj_lon: adjustment of the longitude extent
+    adj_lat: adjustment of the latitude extent
+    bar_position: position of the time progression bar
+    dpi: dpi of the plot
+    log_scale: boolean. If True, the colorbar will be logarithmic, uses min/max of levels input
+    figuresize: size of the figure
 
     Output:
     fig: figure object
     '''
-    #Check if coordinate input is mesh or vector
+    # Check if coordinate input is mesh or vector
     if np.shape(lon) != np.shape(data):
         lon, lat = np.meshgrid(lon, lat)
     
-    #get map extent
-    min_lon = np.min(lon)+adj_lon[0]
-    max_lon = np.max(lon)+adj_lon[1]
-    min_lat = np.min(lat)+adj_lat[0]
-    max_lat = np.max(lat)+adj_lat[1]
+    # Get map extent
+    min_lon = np.min(lon) + adj_lon[0]
+    max_lon = np.max(lon) + adj_lon[1]
+    min_lat = np.min(lat) + adj_lat[0]
+    max_lat = np.max(lat) + adj_lat[1]
     
-    fig = plt.figure(figsize=(14, 10))
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object  # Create a GridSpec object
-    ax = fig.add_subplot(gs[0],projection=projection)
+    fig = plt.figure(figsize=(figuresize[0], figuresize[1]))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
+    ax = fig.add_subplot(gs[0], projection=projection)
 
+    # Adjust levels for logarithmic scale if needed
     if log_scale:
-        norm = LogNorm()
-        levels = np.logspace(np.log10(np.min(data)), np.log10(np.max(data)/2), num=10)  # Generate levels logarithmically
+        min_level = np.min(data[data > 0])  # Smallest positive value in data
+        max_level = np.max(data)
+        num_levels = len(levels)
+        levels = np.logspace(np.log10(min_level), np.log10(max_level), num_levels)
+        norm = LogNorm(vmin=np.min(levels), vmax=np.max(levels))
+        contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, norm=norm, transform=ccrs.PlateCarree(), zorder=0, extend='both')
     else:
-        norm = None
-    contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, norm=norm, transform=ccrs.PlateCarree(), zorder=0, extend='max')
-    
-    # Add a filled contour plot with a lower zorder
-    contourf = ax.contourf(lon, lat, data, levels=levels,cmap=colormap,transform=ccrs.PlateCarree(), zorder=0, extend='max')
+        contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, transform=ccrs.PlateCarree(), zorder=0, extend='max')
+
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(unit, fontsize=16)
-    cbar.set_ticks(levels[1:-1])
-    cbar.ax.tick_params(labelsize=14)
-    ax.set_title(title,fontsize=16)
-    contour = ax.contour(lon, lat, data, levels = levels, colors = '0.9', linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
+
+    if log_scale:
+        # Use log-scale ticks for the colorbar
+        cbar.set_ticks(levels)
+        cbar.ax.set_yticklabels([f'$10^{int(np.log10(level))}$' if level >= 10 else f'{level:.1g}' for level in levels])
+
+    cbar.ax.tick_params(labelsize=14, rotation=45)
+
+    # Use scientific notation for the colorbar
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    cbar.ax.yaxis.set_major_formatter(formatter)
+
+    ax.set_title(title, fontsize=16)
+
+    # Plot the contour lines
+    contour = ax.contour(lon, lat, data, levels=levels, colors='0.8', linewidths=0.1, transform=ccrs.PlateCarree(), zorder=1)
+
     # Add the land feature with a higher zorder
     ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
     # Add the coastline with a higher zorder
-    ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
+    ax.add_feature(cfeature.COASTLINE, zorder=3, color='0.5', linewidth=0.5)
     # Set the geographical extent of the plot
     ax.set_extent([min_lon, max_lon, min_lat, max_lat])
-    #Plot a red dot at the location of tromsø
-    ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
-    #with a text label
-    ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=12)
-    #add location marker for seepage
-    ax.plot(14.29,68.9179949,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
-    #add text in lower right corner with the total sum
-    ax.text(14.39,68.8479949,'Methane seeps',transform=ccrs.PlateCarree(),color='white',fontsize=12)
 
-    #add text in lower right corner with the total sum
-    #Try to fix labels
-    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
+    # Add custom markers or labels (Tromsø, methane seeps, etc.)
+    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=5, transform=ccrs.PlateCarree())
+    ax.text(19.0553, 69.58006, 'Tromsø', transform=ccrs.PlateCarree(), color='white', fontsize=12)
+    ax.plot(14.29, 68.9179949, marker='o', color='white', markersize=5, transform=ccrs.PlateCarree())
+    ax.text(14.39, 68.8479949, 'Methane seeps', transform=ccrs.PlateCarree(), color='white', fontsize=12)
+
+    # Add gridlines
+    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=0.5, color='white', alpha=0.5, linestyle='--')
     gl.top_labels = True
     gl.left_labels = True
-    gl.xlabel_style = {'size':14}
-    gl.ylabel_style = {'size':14}
-    #savefigure if savefile_path is given
+    gl.xlabel_style = {'size': 14}
+    gl.ylabel_style = {'size': 14}
+
+    # Get the position of ax
+    pos = ax.get_position()
 
     ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
     fig.subplots_adjust(hspace=0.2)
-    ax2.set_position(bar_position)
-    ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
-    #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
+    # Set the position of ax2 to match the width of ax
+    ax2.set_position([pos.x0, bar_position[1], pos.width, bar_position[3]])
+    ax2.set_xlim(0, timepassed[1])  # Set the limits to match the number of time steps
     ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
     ax2.set_yticks([])  # Hide the y-axis ticks
-    ax2.set_xticks([0,timepassed[1]])  # Set the x-axis ticks at the start and end
-    ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'],fontsize=16)  # Set the x-axis tick labels to the start and end time
+    ax2.set_xticks([0, timepassed[1]])  # Set the x-axis ticks at the start and end
+    ax2.set_xticklabels([starttimestring, endtimestring], fontsize=16)  # Set the x-axis tick labels to the start and end time
 
-
-    if savefile_path != False:
-        plt.savefig(savefile_path,dpi=dpi)
-    #show figure if show is True
-    if show == True:
+    if savefile_path:
+        plt.savefig(savefile_path, dpi=dpi)
+    if show:
         plt.show()
 
     return fig
+
+
 
 def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
     '''
@@ -674,7 +702,7 @@ def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
     # Convert each point in the grid to UTM
     for i in range(lon_mesh.shape[0]):
         for j in range(lon_mesh.shape[1]):
-            UTM_x_wind[i, j], UTM_y_wind[i, j], _, _ = utm.from_latlon(lat_mesh[i, j], lon_mesh[i, j],force_zone_number=utm_zone)
+            UTM_x_wind[i, j], UTM_y_wind[i, j], _, _ = utm.from_latlon(lat_mesh[i, j], lon_mesh[i, j],force_zone_number=utm_zone, force_zone_letter='W')
     #create meshgrids for bin_x and bin_y
     bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
     #Loop over and 
@@ -718,7 +746,7 @@ if run_test == True:
 
 run_full = True
 if run_full == True:
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
     ODdata = nc.Dataset(datapath, 'r', mmap=True)
     #number of particles
@@ -745,7 +773,6 @@ if run_full == True:
     #unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
     #set limits for grid manually since we dont know how this will evolv
     #loop over all timesteps to check the limits of the grid or define boundaries manually
-    force_zone_number = 33
     if manual_border == True:
         minlon = 12.5
         maxlon = 21
@@ -775,13 +802,14 @@ if run_full == True:
     maxUTMxminUTMy = utm.from_latlon(maxlat,minlon)
     maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon)
     # Example: Forcing all coordinates to UTM zone 33N
-    force_zone_number = 33
+    zone_number = 33
 
-    minUTMxminUTMy = utm.from_latlon(minlat, minlon, force_zone_number=force_zone_number)
-    minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=force_zone_number)
-    maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=force_zone_number)
-    maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=force_zone_number)
-    
+    minUTMxminUTMy = utm.from_latlon(minlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
+    minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
+    maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
+    maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
+
+
 ###### SET UP GRIDS FOR THE MODEL ######
 print('Creating the output grid...')
 #MODEELING OUTPUT GRID
@@ -817,7 +845,7 @@ particles_mox_loss = np.zeros((len(bin_time)))
 #Create coordinates for plotting
 bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
 #And lon lat coordinates
-lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh.T,bin_y_mesh.T,zone_number=33,zone_letter='V')
+lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh.T,bin_y_mesh.T,zone_number=33,zone_letter='W')
 
 #Create datetime vector from bin_time
 if run_test == True: 
@@ -978,12 +1006,8 @@ if run_all == True:
     # Number of particles
     n_particles = ODdata.variables['lon'][:, 0].shape[0]
 
-    
     # Determine the midpoint
     midpoint = n_particles // 2 #this is all to speed up things.. 
-
-    #For testing purposes... 
-    kkk = 700
 
     for kkk in range(1,time_steps_full-1): 
 
@@ -1338,7 +1362,7 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 #Remove the first 
 
 #Get grid on lon/lat and limits for the figures. 
-lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
 
 lons_zoomed = lon_mesh
 lats_zoomed = lat_mesh
@@ -1356,38 +1380,86 @@ max_lat = np.max(lat_mesh)
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
 #    GRID_atm_flux = pickle.load(f)
 
-#GRID_atm_flux = GRID_atm_flux[672:,:,:] #remove the first day
+#################################################################################
+############ PLOTTING TIMESERIES OF DIFFUSIVE ATMOSPHERIC FLUX FIELD ############
+#################################################################################
 
 #Calculate atmospheric flux field per square meter per hour
-GRID_atm_flux_mm_m2 = (GRID_atm_flux/(dxy_grid**2))*10**6 #convert to mmol/m^2/hr
+GRID_atm_flux_m2 = (GRID_atm_flux/(dxy_grid**2))#
 
 images_atm_rel = []
 time_steps = len(bin_time)
-levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_mm_m2)),np.nanmax(np.nanmax(GRID_atm_flux_mm_m2)),8)
+levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_m2)),np.nanmax(np.nanmax(GRID_atm_flux_m2)),50)
+levels_atm = levels_atm[:20]*0.1
 
 #datetimevector for the progress bar
 times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
-do = False
+do = True
 if do == True:
-    for i in range(time_steps):  
-        fig = plot_2d_data_map_loop(data = GRID_atm_flux_mm_m2[i,:,:].T*10**3*24*365,
-                                    lon = lon_mesh,
-                                    lat = lat_mesh,
-                                    projection = projection,
-                                    levels = levels_atm,
-                                    timepassed = [i,time_steps],
-                                    colormap = colormap,
-                                    title = 'Atmospheric flux [nmol m$^{-2}$ yr$^{-1}$]'+str(times[i]),
-                                    unit = 'nmol m$^{-2}$ yr$^{-1}$',
-                                    savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux'+str(i)+'.png',
-                                    show = False,
-                                    dpi = 90)
-        images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux'+str(i)+'.png'))
-        fig.close()
+    for i in range(0,time_steps,12):
+        fig = plot_2d_data_map_loop(data=GRID_atm_flux_m2[i, :, :].T,
+                                    lon=lon_mesh,
+                                     lat=lat_mesh,
+                                    projection=projection,
+                                    levels=levels_atm,
+                                    timepassed=[i, time_steps],
+                                    colormap=colormap,
+                                    title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i]),
+                                    unit='mol m$^{-2}$ hr$^{-1}$',
+                                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux' + str(i) + '.png',
+                                    adj_lon = [0,-2],
+                                    adj_lat = [0,-0.8],
+                                    show=False,
+                                    dpi=90,
+                                    figuresize = [12,10],
+                                    log_scale = False,
+                                    starttimestring = '22 April 2018',
+                                    endtimestring = '30 July 2018')
+        images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux' + str(i) + '.png'))
+        plt.close(fig)  # Close the figure to avoid displaying it
+
 
     #create gif
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
+
+#Do the same proceedure for the gt_vel field
+
+#############################################################
+############ PLOTTING TIMESERIES OF GT_VEL FIELD ############
+#############################################################
+
+#load the GRID_gt_vel
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'rb') as f:
+#    GRID_gt_vel = pickle.load(f)
+
+images_gt_vel = []
+time_steps = len(bin_time)
+levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
+
+for i in range(0,time_steps,12):
+    fig = plot_2d_data_map_loop(data=GRID_gt_vel[i, :, :],
+                                lon=lon_mesh,
+                                lat=lat_mesh,
+                                projection=projection,
+                                levels=levels_gt,
+                                timepassed=[i, time_steps],
+                                colormap=colormap,
+                                title='Gas transfer velocity [cm hr$^{-1}$]' + str(times[i]),
+                                unit='cm hr$^{-1}$',
+                                savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png',
+                                adj_lon = [0,-2],
+                                adj_lat = [0,-0.8],
+                                show=False,
+                                dpi=90,
+                                figuresize = [12,10],
+                                log_scale = False,
+                                starttimestring = '22 April 2018',
+                                endtimestring = '30 July 2018')
+    images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
+    plt.close(fig)  # Close the figure to avoid displaying it
+
+
 
 #set all values located above the line given by longitude=[13,15,17] and latitude = [71,72,73] to zero
 
@@ -1401,7 +1473,7 @@ total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#*dxy_grid
 #levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)
 lons_zoomed = lon_mesh
 lats_zoomed = lat_mesh
-ws_zoomed = GRID_atm_flux_sum/1000000 #convert to nmol
+ws_zoomed = GRID_atm_flux_sum/1000000 #convert to mol
 #ws_zoomed = GRID_gt_vel[500,:,:].T
 #ws_zoomed = GRID[450][5].toarray()
 #set plotting style w
@@ -1506,7 +1578,7 @@ time_steps = len(bin_time)
 
 
 images_field_test = []
-for n in range(0,744):
+for n in range(0, len(GRID), 10):
     print(n)
     #GRID_top_sum = np.sum((GRID[n][:].toarray()))
     GRID_top_sum = GRID_mox[n,:,:]
@@ -1790,7 +1862,7 @@ if plot_wind_field == True:
     levels_gt_vel = np.arange(0, 0.5, 0.05)
     #do the same plot but just on lon lat coordinates
     #convert bin_x_mesh and bin_y_mesh to lon/la
-    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
     #datetimevector
     if run_test == True:
         times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
@@ -1830,7 +1902,7 @@ if plot_wind_field == True:
 if plot_gt_vel == True:
     levels_gt = np.arange(np.round(np.nanmin(GRID_gt_vel)), np.round(np.nanmax(GRID_gt_vel))+0.2, 10)
     #do the same plot but just on lon lat coordinates
-    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
+    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
     #craete gif image list
     images_gt_vel = []
     for i in range(0,len(bin_time)):

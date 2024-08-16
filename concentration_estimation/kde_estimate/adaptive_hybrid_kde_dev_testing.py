@@ -41,6 +41,31 @@ num_particles = num_particles_per_timestep*time_steps
 ###########################################################
 # ------------------------------------------------------- #
 
+from scipy.signal import correlate2d
+
+def calc_integral_length_scale(data):
+    '''
+    Calculates the integral length scale of a 2D dataset using spatial autocorrelation.
+    '''
+    # Subtract the mean to get anomalies
+    data_anomaly = data - np.mean(data)
+    
+    # Calculate the 2D autocorrelation function (ACF)
+    acf = correlate2d(data_anomaly, data_anomaly, mode='full', boundary='wrap')
+    
+    # Normalize the ACF
+    acf /= np.max(acf)
+    
+    # Find the distance from the center of the ACF to where it first falls below 1/e
+    center = np.array(acf.shape) // 2
+    distance = np.linalg.norm(np.indices(acf.shape).T - center, axis=-1)
+    
+    # Estimate the integral length scale as the area under the ACF
+    integral_length_scale = np.sum(acf * distance) / np.sum(acf)
+    
+    return integral_length_scale
+
+
 
 @numba.jit(parallel=True, nopython=True)
 def histogram_estimator(particles, grid_size, weights=None, bandwidths=None):
@@ -97,7 +122,7 @@ def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell
     kde_pilot (np.array): The pilot KDE values on the grid.
     gaussian_kernels (list): List of Gaussian kernel matrices.
     kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
-    grid_cell_bandwidths (np.array): Array of bandwidths of the particles.
+    cell_bandwidths (np.array): Array of bandwidths of the particles.
 
     Returns:
     np.array: The resulting KDE projected onto the grid.
@@ -110,13 +135,14 @@ def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell
     non_zero_indices = np.argwhere(kde_pilot > 0)
    
     # Find the closest kernel indices for each particle bandwidth
-    kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newais] - cell_bandwidths[non_zero_indices]), axis=0)
-    
+    #kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
     
     for idx in non_zero_indices:
         i, j = idx
         # Get the appropriate kernel for the current particle bandwidth
-        kernel_index = kernel_indices[i * grid_size + j]
+        #find the right kernel index
+        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i,j]))
+        #kernel_index = kernel_indices[i * grid_size + j]
         kernel = gaussian_kernels[kernel_index]
         kernel_size = len(kernel) // 2
 
@@ -452,8 +478,7 @@ particle_bandwidths = particle_bandwidths[::-1]
 
 grid_size = 100  # Example grid size
 
-histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test,bandwidths=particle_bandwidths)
-cell_bandwidths=cell_bandwidths[0]
+histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test,bandwidths=particle_bandwidths[::frac_diff])
 
 x_grid = np.linspace(0, 10, grid_size)
 ratio = 1/3

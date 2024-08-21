@@ -37,9 +37,9 @@ plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
-fit_wind_data = False
+fit_wind_data = True
 #fit gas transfer velocity
-fit_gt_vel = False
+fit_gt_vel = True
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -50,7 +50,7 @@ plot_gt_vel = False
 use_all_depth_layers = False
 ### CONSTANTS ###
 #max kernel bandwidth
-max_ker_bw = 17500
+max_ker_bw = 10000
 #atmospheric background concentration
 #atmospheric_conc = ((44.64*2)/1000000) #mol/m3 #1911.8 ± 0.6 ppb #44.64 #From Helge
 atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
@@ -61,12 +61,12 @@ oswald_solu_coeff = 0.28 #(for methane)
 #Set projection
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
-dxy_grid = 1600. #m
-dz_grid = 15. #m
+dxy_grid = 800. #m
+dz_grid = 50. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
-age_constant = 36 #m per hour, see figure.
+age_constant = 10 #m per hour, see figure.
 #Initial bandwidth
 initial_bandwidth = 50 #m
 #set colormap
@@ -75,11 +75,11 @@ colormap = sns.color_palette("rocket", as_cmap=True)
 #K value for the microbial oxidation (MOx) (see under mox section for more values)
 R_ox = 10**-7 #s^-1
 #total seabed release
-total_seabed_release = 20833
+total_seabed_release = 500*0.16236*(1495-720) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
 kde_all = False
 #Weight full sim
-weights_full_sim = 0.0408 #mol/hr
+weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
 #Set manual border for grid
 manual_border = True
 
@@ -386,7 +386,7 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
     k = (0.251 * u10**2 * (Sc/660)**(-0.5)) #cm/hr
 
     #Calculate the atmospheric flux
-    #F = k * (C_o - C_a) #mol/m2/day
+    #F = k * (C_o - C_a) #mol/m2/day??? WTF? Per day???
 
     return k
 
@@ -537,7 +537,8 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
 
 
 from matplotlib.colors import LogNorm
-from matplotlib.ticker import ScalarFormatter
+from matplotlib.ticker import MaxNLocator, ScalarFormatter, LogLocator
+import matplotlib.patches as patches
 
 def plot_2d_data_map_loop(data,
                           lon,
@@ -557,7 +558,11 @@ def plot_2d_data_map_loop(data,
                           log_scale=False,
                           figuresize=[14,10],
                           starttimestring='May 20, 2021',
-                          endtimestring='May 20, 2021'):
+                          endtimestring='May 20, 2021',
+                          maxnumticks = 10,
+                          plot_progress_bar = True,
+                          plot_model_domain = False,
+                          contoursettings = [2,'0.8',0.1]):
     '''
     Plots 2d data on a map with time progression bar.
 
@@ -579,6 +584,8 @@ def plot_2d_data_map_loop(data,
     dpi: dpi of the plot
     log_scale: boolean. If True, the colorbar will be logarithmic, uses min/max of levels input
     figuresize: size of the figure
+    plot_model_domain: [min_lon,max_lon,min_lat,max_lat,linewidth,color] for the model domain
+    contoursettings = [contourfrac,contourcolor,contourlinewidth] for the contour lines
 
     Output:
     fig: figure object
@@ -599,8 +606,8 @@ def plot_2d_data_map_loop(data,
 
     # Adjust levels for logarithmic scale if needed
     if log_scale:
-        min_level = np.min(data[data > 0])  # Smallest positive value in data
-        max_level = np.max(data)
+        min_level = np.min(levels[levels > 0])  # Smallest positive value in data
+        max_level = np.max(levels)
         num_levels = len(levels)
         levels = np.logspace(np.log10(min_level), np.log10(max_level), num_levels)
         norm = LogNorm(vmin=np.min(levels), vmax=np.max(levels))
@@ -608,25 +615,37 @@ def plot_2d_data_map_loop(data,
     else:
         contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, transform=ccrs.PlateCarree(), zorder=0, extend='max')
 
+    # Add a colorbar to the plot
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(unit, fontsize=16)
 
+    # Set the ticks and labels for the colorbar based on the scale
     if log_scale:
         # Use log-scale ticks for the colorbar
         cbar.set_ticks(levels)
         cbar.ax.set_yticklabels([f'$10^{int(np.log10(level))}$' if level >= 10 else f'{level:.1g}' for level in levels])
+        # Set the maximum number of ticks on the colorbar using LogLocator
+        cbar.locator = LogLocator(base=10.0, subs='auto', numticks=maxnumticks)
+    else:
+        # Set the maximum number of ticks on the colorbar using MaxNLocator
+        cbar.locator = MaxNLocator(nbins=maxnumticks)
 
+    # Update the ticks on the colorbar to apply the locator settings
+    cbar.locator = MaxNLocator(nbins=maxnumticks)
+    cbar.update_ticks()
+    # Customize the tick parameters for the colorbar
     cbar.ax.tick_params(labelsize=14, rotation=45)
 
-    # Use scientific notation for the colorbar
+    # Use scientific notation for the colorbar labels
     formatter = ScalarFormatter(useMathText=True)
     formatter.set_powerlimits((-2, 2))
     cbar.ax.yaxis.set_major_formatter(formatter)
 
+    # Set the title for the plot
     ax.set_title(title, fontsize=16)
 
-    # Plot the contour lines
-    contour = ax.contour(lon, lat, data, levels=levels, colors='0.8', linewidths=0.1, transform=ccrs.PlateCarree(), zorder=1)
+    # Plot the contour lines on top of the filled contours
+    contour = ax.contour(lon, lat, data, levels=levels[::contoursettings[0]], colors=contoursettings[1], linewidths=contoursettings[2], transform=ccrs.PlateCarree(), zorder=1)
 
     # Add the land feature with a higher zorder
     ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
@@ -634,12 +653,11 @@ def plot_2d_data_map_loop(data,
     ax.add_feature(cfeature.COASTLINE, zorder=3, color='0.5', linewidth=0.5)
     # Set the geographical extent of the plot
     ax.set_extent([min_lon, max_lon, min_lat, max_lat])
-
     # Add custom markers or labels (Tromsø, methane seeps, etc.)
-    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=5, transform=ccrs.PlateCarree())
+    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=ccrs.PlateCarree())
     ax.text(19.0553, 69.58006, 'Tromsø', transform=ccrs.PlateCarree(), color='white', fontsize=12)
-    ax.plot(14.29, 68.9179949, marker='o', color='white', markersize=5, transform=ccrs.PlateCarree())
-    ax.text(14.39, 68.8479949, 'Methane seeps', transform=ccrs.PlateCarree(), color='white', fontsize=12)
+    #ax.plot(14.29, 68.9179949, marker='o', color='white', markersize=4, transform=ccrs.PlateCarree())
+    #ax.text(14.39, 68.8479949, 'Methane seeps', transform=ccrs.PlateCarree(), color='white', fontsize=12)
 
     # Add gridlines
     gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=0.5, color='white', alpha=0.5, linestyle='--')
@@ -651,15 +669,22 @@ def plot_2d_data_map_loop(data,
     # Get the position of ax
     pos = ax.get_position()
 
-    ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-    fig.subplots_adjust(hspace=0.2)
-    # Set the position of ax2 to match the width of ax
-    ax2.set_position([pos.x0, bar_position[1], pos.width, bar_position[3]])
-    ax2.set_xlim(0, timepassed[1])  # Set the limits to match the number of time steps
-    ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
-    ax2.set_yticks([])  # Hide the y-axis ticks
-    ax2.set_xticks([0, timepassed[1]])  # Set the x-axis ticks at the start and end
-    ax2.set_xticklabels([starttimestring, endtimestring], fontsize=16)  # Set the x-axis tick labels to the start and end time
+    if plot_progress_bar == True:
+        ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
+        fig.subplots_adjust(hspace=0.2)
+        # Set the position of ax2 to match the width of ax
+        ax2.set_position([pos.x0, bar_position[1], pos.width, bar_position[3]])
+        ax2.set_xlim(0, timepassed[1])  # Set the limits to match the number of time steps
+        ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
+        ax2.set_yticks([])  # Hide the y-axis ticks
+        ax2.set_xticks([0, timepassed[1]])  # Set the x-axis ticks at the start and end
+        ax2.set_xticklabels([starttimestring, endtimestring], fontsize=16)  # Set the x-axis tick labels to the start and end time
+
+    #Include model domain rectangle if plot_model_domain is True
+    if plot_model_domain != False:
+        # Create a rectangle to show the model domain using the plot_model_domain input [min_lon,max_lon,min_lat,max_lat,linewidth,color]
+        rect = patches.Rectangle((plot_model_domain[0], plot_model_domain[2]), plot_model_domain[1]-plot_model_domain[0], plot_model_domain[3]-plot_model_domain[2], linewidth=plot_model_domain[4], edgecolor=plot_model_domain[5], facecolor='none', transform=ccrs.PlateCarree())
+        ax.add_patch(rect)
 
     if savefile_path:
         plt.savefig(savefile_path, dpi=dpi)
@@ -746,7 +771,7 @@ if run_test == True:
 
 run_full = True
 if run_full == True:
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
+    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
     ODdata = nc.Dataset(datapath, 'r', mmap=True)
     #number of particles
@@ -1179,7 +1204,7 @@ if run_all == True:
         change_indices = np.append(change_indices,len(bin_z_number))
 
         ###########################################
-        #############################################
+        ###########################################
         ###########################################
 
         for i in range(0,len(change_indices)-1): #This essentially loops over all particles (does it???)
@@ -1364,9 +1389,6 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 #Get grid on lon/lat and limits for the figures. 
 lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
 
-lons_zoomed = lon_mesh
-lats_zoomed = lat_mesh
-
 min_lon = np.min(lon_mesh)
 max_lon = np.max(lon_mesh)
 min_lat = np.min(lat_mesh)
@@ -1384,41 +1406,55 @@ max_lat = np.max(lat_mesh)
 ############ PLOTTING TIMESERIES OF DIFFUSIVE ATMOSPHERIC FLUX FIELD ############
 #################################################################################
 
+#OR ANY OTHER FIELD, REALLY, JUST CHANGE THE GRID VARIABLE...
+
 #Calculate atmospheric flux field per square meter per hour
 GRID_atm_flux_m2 = (GRID_atm_flux/(dxy_grid**2))#
+GRID_gt_vel = GRID_gt_vel #Here, just in cm/hr for convention. 
 
+
+GRID_generic = GRID_atm_flux_m2
 images_atm_rel = []
 time_steps = len(bin_time)
-levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_m2)),np.nanmax(np.nanmax(GRID_atm_flux_m2)),50)
-levels_atm = levels_atm[:20]*0.1
+levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
+#levels_atm = levels_atm[1:-1]
+levels_atm = levels_atm[:-50]*0.25
+lon_vec = lon_mesh[:,0]
+lat_vec = lat_mesh[0,:]
 
 #datetimevector for the progress bar
 times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
+twentiethofMay = 720
+time_steps = 1495
+
 do = True
 if do == True:
-    for i in range(0,time_steps,12):
-        fig = plot_2d_data_map_loop(data=GRID_atm_flux_m2[i, :, :].T,
-                                    lon=lon_mesh,
-                                     lat=lat_mesh,
+    for i in range(twentiethofMay,time_steps,2):
+        fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
+                                    lon=lon_vec,
+                                     lat=lat_vec,
                                     projection=projection,
                                     levels=levels_atm,
-                                    timepassed=[i, time_steps],
+                                    timepassed=[i-twentiethofMay, time_steps-twentiethofMay],
                                     colormap=colormap,
                                     title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i]),
                                     unit='mol m$^{-2}$ hr$^{-1}$',
                                     savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux' + str(i) + '.png',
-                                    adj_lon = [0,-2],
-                                    adj_lat = [0,-0.8],
+                                    adj_lon = [1,-1],
+                                    adj_lat = [0,-0.7],
                                     show=False,
                                     dpi=90,
                                     figuresize = [12,10],
-                                    log_scale = False,
-                                    starttimestring = '22 April 2018',
-                                    endtimestring = '30 July 2018')
+                                    log_scale = True,
+                                    starttimestring = '20 May 2018',
+                                    endtimestring = '21 June 2018',
+                                    maxnumticks = 10,
+                                    plot_progress_bar = True,
+                                    #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                                    contoursettings = [2,'0.8',0.1])
         images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux' + str(i) + '.png'))
         plt.close(fig)  # Close the figure to avoid displaying it
-
 
     #create gif
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
@@ -1433,142 +1469,133 @@ if do == True:
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'rb') as f:
 #    GRID_gt_vel = pickle.load(f)
 
+GRID_generic = GRID_gt_vel
+images_atm_rel = []
+time_steps = len(bin_time)
+levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
+#levels_atm = levels_atm[1:-1]
+levels_atm = levels_atm[:-50]*0.25
+lon_vec = lon_mesh[:,0]
+lat_vec = lat_mesh[0,:]
+#datetimevector for the progress bar
+times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+#start and end time. 
+twentiethofMay = 720
+time_steps = 1495
+
 images_gt_vel = []
 time_steps = len(bin_time)
 levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
 
-for i in range(0,time_steps,12):
+for i in range(twentiethofMay,time_steps,2):
     fig = plot_2d_data_map_loop(data=GRID_gt_vel[i, :, :],
-                                lon=lon_mesh,
-                                lat=lat_mesh,
+                                lon=lon_vec,
+                                lat=lat_vec,
                                 projection=projection,
                                 levels=levels_gt,
-                                timepassed=[i, time_steps],
+                                timepassed=[i-twentiethofMay, time_steps],
                                 colormap=colormap,
                                 title='Gas transfer velocity [cm hr$^{-1}$]' + str(times[i]),
                                 unit='cm hr$^{-1}$',
-                                savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png',
+                                savefile_path=r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\atmosphere\gt_vel_gif\gt_vel' + str(i) + '.png',
                                 adj_lon = [0,-2],
                                 adj_lat = [0,-0.8],
                                 show=False,
                                 dpi=90,
                                 figuresize = [12,10],
                                 log_scale = False,
-                                starttimestring = '22 April 2018',
-                                endtimestring = '30 July 2018')
+                                starttimestring = '20 May 2018',
+                                endtimestring = '31 May 2018')
     images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
     plt.close(fig)  # Close the figure to avoid displaying it
 
+#create gif
+imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
 
 
-#set all values located above the line given by longitude=[13,15,17] and latitude = [71,72,73] to zero
+###########################################################################
+############ PLOTTING 2D FIELD OF ACCUMULATED ATMOSPHERIC FLUX ############
+###########################################################################
 
-#Calculate the sum of all timesteps in GRID_atm_flux
-GRID_atm_flux_sum = np.nansum(GRID_atm_flux,axis=0) #in moles
-#set all negative values in GRID_atm_flux_sum to zero
-#GRID_atm_flux_sum[GRID_atm_flux_sum<0] = 0
-#total sum
-total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#*dxy_grid
+GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofMay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
+total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
+percent_of_release = np.round((total_sum/total_seabed_release)*100,5) #why multiply with 100??? Because it's percantage dumb-ass
+GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol. THIS IS ALREADY IN MOLAR. But divide to get per square meter
+levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),100)
+levels = levels[:-50]*0.25
 
-#levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),levels[4],8)
-lons_zoomed = lon_mesh
-lats_zoomed = lat_mesh
-ws_zoomed = GRID_atm_flux_sum/1000000 #convert to mol
-#ws_zoomed = GRID_gt_vel[500,:,:].T
-#ws_zoomed = GRID[450][5].toarray()
-#set plotting style w
-plt.style.use('dark_background')
+plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
+                    lon=lon_vec,
+                    lat=lat_vec,
+                    projection=projection,
+                    levels=levels,
+                    timepassed=[1, time_steps],
+                    colormap=colormap,
+                    title='Total released methane = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',
+                    unit='mol m$^{-2}$',
+                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux_sum.png',
+                    show=True,
+                    adj_lon = [0,0],
+                    adj_lat = [0,0],
+                    dpi=90,
+                    figuresize = [12,10],
+                    log_scale = True,
+                    plot_progress_bar = False,
+                    maxnumticks = 9,
+                    plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                    contoursettings = [4,'0.8',0.1])
 
-
-levels = np.linspace(np.nanmin(np.nanmin(ws_zoomed)),np.nanmax(np.nanmax(ws_zoomed))/2,60)
-levels = levels[:-50]
-
-percent_of_release = np.round(total_sum/total_seabed_release*100,3)
-
-fig = plt.figure(figsize=(14, 10))
-gs = gridspec.GridSpec(1, 1)  # Create a GridSpec object
-ax = fig.add_subplot(gs[0],projection=projection)
-
-#min_lon = 12
-#max_lon = 22.5
-#min_lat = 68.5
-#max_lat = 71.5
-
-# Add a filled contour plot with a lower zorder
-contourf = ax.contourf(lons_zoomed, lats_zoomed, ws_zoomed.T, levels=levels,cmap=colormap,
-                       transform=ccrs.PlateCarree(), zorder=0,extend='max')
-cbar = plt.colorbar(contourf, ax=ax)
-cbar.set_label(r'Methane [mol m$^{-2}$]', fontsize=16)
-#get a ticklabel vector (should be 7 ticks with even spacing from 0 to max)
-ticklabelvector = np.linspace(0,np.nanmax(np.nanmax(levels)),7)
-#cbar.set_ticks(np.unique(np.round(levels[:-1])))
-cbar.set_ticks(ticklabelvector)
-#make the colorbar ticks in scientific notation
-cbar.ax.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
-
-cbar.ax.tick_params(labelsize=14)
-ax.set_title(r'Released methane [mol m$^{-2}$], total = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',fontsize=16)
-contour = ax.contour(lons_zoomed, lats_zoomed, 
-                     ws_zoomed.T, levels = levels, colors = '0.9', 
-                     linewidths = 0.2,transform=ccrs.PlateCarree(), zorder=1)
-# Add the land feature with a higher zorder
-ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
-# Add the coastline with a higher zorder
-ax.add_feature(cfeature.COASTLINE, zorder=3, color = '0.5' ,linewidth = 0.5)
-# Set the geographical extent of the plot
-ax.set_extent([min_lon+0.5, max_lon-1.5, min_lat+0.25, max_lat-1])
-#Plot a red dot at the location of tromsø
-ax.plot(18.9553,69.6496,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
-#with a text label
-ax.text(19.0553,69.58006,'Tromsø',transform=ccrs.PlateCarree(),color='white',fontsize=12)
-#add text in lower right corner with the total sum
-#ax.text(18.5,68.5,'Total release= '+str(np.round(total_sum,2))+' mol',transform=ccrs.PlateCarree(),color='white',fontsize=14)
-#add dot where the release is (at 14.29,68.9179949)
-ax.plot(14.29,68.9179949,marker='o',color='white',markersize=5,transform=ccrs.PlateCarree())
-#add text in lower right corner with the total sum
-ax.text(14.39,68.8479949,'Seabed release',transform=ccrs.PlateCarree(),color='white',fontsize=12)
-#set limits
-
-
-
-#Try to fix labels
-gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False ,linewidth=0.5, color='white', alpha=0.5, linestyle='--')
-gl.top_labels = True
-gl.left_labels = True
-gl.xlabel_style = {'size':14}
-gl.ylabel_style = {'size':14}
-
-plt.show()
-
-#take nansum of GRIG_gt_vel to check if it's changing
-total_gt_vel = np.nansum(GRID_gt_vel,axis=2)
-
-#save figure
-#plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux_sum.png')
-
-#plt.show()
+#######################################################################
+############ PLOTTING TIMESERIES OF TOTAL ATMOSPHERIC FLUX ############
+#######################################################################
 
 #plot total_atm_flux in a nice figure with nice labels etc
-#create datetime vector
-if run_test == True:
-    times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-elif run_full == True:
-    times = pd.to_datetime(bin_time,unit='s')
+#Crop the data to 750:1470
+total_atm_flux = total_atm_flux[750:1470]
+#get corresponding time vector
+times_totatm =  pd.to_datetime(bin_time,unit='s')
+times_totatm = times_totatm[750:1470]
+
 fig = plt.figure(figsize=(16, 10))
 ax = fig.add_subplot(1, 1, 1)
-ax.plot(times_new[170:-170],total_atm_flux_new[170:-170],label='Total atmospheric flux',color='blue')
+ax.plot(times_totatm,total_atm_flux,label='Total atmospheric flux',color='blue')
 ax.set_ylabel('Total atmospheric flux [mol/hr]',fontdict={'fontsize':16})
 ax.set_title('Total atmospheric flux',fontdict={'fontsize':16})
 #set fontsize for the xticks
 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
 #add yy axis showing the number of active particles
 ax2 = ax.twinx()
-ax2.plot(times_new[170:-170],total_mox_new[170:-170],color='0.4',label='Number of active particles')
+ax2.plot(times_totatm,total_mox_new[170:-170],color='0.4',label='Number of active particles')
 ax2.set_ylabel('Number of active particles',fontdict={'fontsize':16})
 ax2.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
 #save figure
 plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux.png')
 
+#find the dominant periods in the total_atm_flux dataset
+#use the periodogram
+from scipy.signal import periodogram
+f, Pxx = periodogram(total_atm_flux,1/3600,window='hann',nfft=1024)
+plt.plot(f,Pxx)
+plt.xlabel('Frequency [Hz]')
+plt.ylabel('Power spectral density [mol$^2$ hr]')
+plt.xlim([0,0.00009])
+#plot a vertical line at the semidiurnal and diurnal frequency
+f_semi = 1/(12.42*3600)
+f_semi_idx = np.where(np.abs(f-f_semi) == np.min(np.abs(f-f_semi)))[0]
+Pxx_semi = Pxx[f_semi_idx]
+plt.plot(f_semi,Pxx_semi,'ro')
+f_diurnal = 1/(24*3600)
+f_diurnal_idx = np.where(np.abs(f-f_diurnal) == np.min(np.abs(f-f_diurnal)))[0]
+Pxx_diurnal = Pxx[f_diurnal_idx]
+plt.plot(f_diurnal,Pxx_diurnal,'bo')
+#plot grid
+plt.grid()
+
+#find tidal frequency in the periodogram
+f_tidal = 1/(12.42*3600)
+f_tidal_idx = np.where(np.abs(f-f_tidal) == np.min(np.abs(f-f_tidal)))[0]
+Pxx_tidal = Pxx[f_tidal_idx]
+plt.plot(f_tidal,Pxx_tidal,'ro')
 
 #Check what's going on in the top layer, i.e. we need to loop through 
 #GRID and sum all the top layers
@@ -1620,10 +1647,6 @@ maxmed = np.max(np.max(GRID_mox))
 for n in range(0,744):
     print(n)
     maxmed = np.append(maxmed,np.max(GRID_mox, axis=0))
-
-
-    
-
 
 plt.plot(GRID_top_sum)
 

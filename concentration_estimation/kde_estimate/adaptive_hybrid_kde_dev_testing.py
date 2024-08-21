@@ -14,6 +14,7 @@ import pickle
 import numba
 from scipy.stats import gaussian_kde
 from scipy.stats import norm
+from scipy.ndimage import generic_filter
 
 #Triggers
 create_test_data = False
@@ -65,9 +66,7 @@ def calc_integral_length_scale(data):
     
     return integral_length_scale
 
-
-
-@numba.jit(parallel=True, nopython=True)
+@numba.jit(nopython=True)#, parallel=True)
 def histogram_estimator(particles, grid_size, weights=None, bandwidths=None):
     '''
     Input:
@@ -353,45 +352,311 @@ def create_test_data(stdev=1.4, num_particles_per_timestep=5000, time_steps=380,
     
     return trajectories, bw
 
+def silvermans_simple_2d(n,dim):
+    '''
+    Calculate the Silverman's multiplication factor using the number of datapoints and the dimensionality of the data
+    '''
+    silvermans_factor = (4/(dim+2))**(1/(dim+4))*n**(-1/(dim+4))
+    return silvermans_factor
+
+def silvermans_h(data,dim):
+    '''
+    Calculate the Silverman's multiplication factor using the covariance matrix and 
+    the number o datapoints
+    '''
+    #remove nans
+    data = data[~np.isnan(data).any(axis=1)]
+    # Calculate the covariance matrix - this represents the spread of the data
+    cov_matrix = np.cov(data, rowvar=False)
+    # Calculate the determinant of the covariance matrix - this represents the volume of the data
+    det_cov = np.linalg.det(cov_matrix)
+    # Calculate the number of data points
+    n = len(data)
+    # Calculate neff
+    silvermans_factor = (n*(dim+2)/4.)**(-1./(dim+4))
+    #multiply with the covariance matrix 
+    silvermans_factor = silvermans_factor
+    return silvermans_factor
+
+def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights'):
+    if load_test_data == True:
+        # Load test data
+        with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\trajectories_full.pkl', 'rb') as f:
+            trajectories_full = pickle.load(f)
+        with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\bw.pkl', 'rb') as f:
+            bw = pickle.load(f)
+    else:
+        # Create test data
+        trajectories_full, bw = create_test_data()
+
+    trajectories = trajectories_full[::frac_diff,:]
+    #pick only the right data from the bw vector
+    bw = bw[::frac_diff]
+
+    if weights == 'log_weights':
+        weights = 1-np.log(np.linspace(1,100,len(trajectories_full)))/(np.log(100)*2)
+        weights_test = weights[::frac_diff]
+
+    return trajectories, trajectories_full, bw, weights, weights_test
+
 # ------------------------------------------------------- #
 ###########################################################
 ##################### INITIATION ##########################
 ###########################################################
 # ------------------------------------------------------- #
+# Add folder path
+#get the test data
+trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=load_test_data,frac_diff=frac_diff)
 
-if create_test_data == True:
-    trajectories, bw = create_test_data()
+grid_size = 100
+#Get the grid
+x_grid = np.linspace(0, grid_size, grid_size)
+y_grid = np.linspace(0, grid_size, grid_size)
+X,Y = np.meshgrid(x_grid,y_grid)
 
-if load_test_data == True:
-    # Load test data
-    #add directory
-    with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\trajectories_full.pkl', 'rb') as f:
-        trajectories_full = pickle.load(f)
-    with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\bw.pkl', 'rb') as f:
-        bw = pickle.load(f) #This is just the time dependent a priori bandwidth parameter
-else:
-    # Create test data
-    trajectories_full = trajectories[-1]
-#load test data
+#Do a histogram estimate for the full dataset ("ground truth") (normalized)
+ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
 
-### CREATE TEST DATA ###
-trajectories = trajectories_full[::frac_diff,:]
-#pick only the right data from the bw vector
-bw_full = bw
-bw = bw[::frac_diff]
-weights_full = np.ones(len(bw_full))
-weights = np.ones(len(bw))
+#do a gaussian kde using gaussian_kde function and h calculated using the homemade Silverman function
+#remove nans first (in both trajectories and weights)
+weights_test = weights_test[~np.isnan(trajectories).any(axis=1)]
+trajectories = trajectories[~np.isnan(trajectories).any(axis=1)]
 
-####################################################
-####### MAKE COLOR PLOT OF PARTICLE DENSITY ########
-####################################################
+#bin all particles
+histogram_prebinned,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
 
-#Create a weight function that decreases logarithmically with time
-weights = 1-np.log(np.linspace(1,100,len(trajectories_full)))/(np.log(100)*2)
-#flip weights 
-weights = weights[::-1]
+#histogram_prebinned, x_edges, y_edges = np.histogram2d(trajectories[:,1],trajectories[:,0],bins=[x_grid,y_grid])
+'''
+#calculate density and standard deviation in each cell
+from scipy.ndimage import generic_filter
 
-weights_test = weights[::frac_diff]
+def local_counts(data):
+    return np.mean(data)
+
+def local_covariance(data):
+    # Reshape the data to a 2D array (3x3)
+    reshaped_data = data.reshape((3, 3))
+    #local_mean = np.mean(reshaped_data, axis=0)
+    #centered_data = reshaped_data - local_mean
+    covariance_matrix = np.cov(centered_data, rowvar=False)
+    # Return the determinant of the covariance matrix
+    return np.linalg.det(covariance_matrix)
+
+local_counts_est = generic_filter(counts, local_counts, size=3)
+plt.imshow(local_counts_est)
+
+local_covariances_est = generic_filter(counts, local_covariance, size=(3,3))
+
+plt.imshow(local_covariances_est)
+'''
+
+###################################
+###### TRYING SOMETHING ELSE ######
+###################################
+
+
+grid_size = (100, 100)
+
+# Bin data into a 2D histogram
+#histogram, x_edges, y_edges = np.histogram2d(trajectories[:, 0], trajectories[:, 1], bins=grid_size)
+
+# Initialize array to hold local covariance matrices
+local_covariance_matrices = np.zeros((grid_size[0], grid_size[1], 3, 3))
+det_cov_matrix = np.zeros((grid_size[0], grid_size[1]))
+
+data = counts
+neighborhood_size = 31
+regularization_term = 1e-6  # Small value to add to the diagonal
+
+# Initialize the arrays to store the covariance matrices and their determinants
+local_covariance_matrices = np.zeros((grid_size[0], grid_size[1], neighborhood_size, neighborhood_size))
+det_cov_matrix = np.zeros((grid_size[0], grid_size[1]))
+
+# Calculate local covariance for each cell based on pre-binned data
+for i in range(grid_size[0]):
+    for j in range(grid_size[1]):
+        # Define the local neighborhood, e.g., 3x3 grid cells around (i, j)
+        i_min = max(i - neighborhood_size // 2, 0)
+        i_max = min(i + neighborhood_size // 2 + 1, grid_size[0])
+        j_min = max(j - neighborhood_size // 2, 0)
+        j_max = min(j + neighborhood_size // 2 + 1, grid_size[1])
+
+        # Create a matrix
+        local_data = np.zeros((i_max - i_min, j_max - j_min))
+        local_data[:, :] = data[i_min:i_max, j_min:j_max]
+
+        # Calculate the covariance matrix. np.cov is the unbiased covariance
+        covariance_matrix = np.cov(local_data, rowvar=False)
+        
+        kroenecker_delta = np.eye(covariance_matrix.shape[0])
+
+        covariance_matrix = covariance_matrix* kroenecker_delta
+
+        # Calculate the determinant of the covariance matrix
+        det_cov_matrix[i, j] = np.linalg.det(covariance_matrix)
+        
+        # Pad until it is 3x3
+        if covariance_matrix.shape[0] < neighborhood_size:
+            covariance_matrix = np.pad(covariance_matrix, ((0, neighborhood_size - covariance_matrix.shape[0]), (0, neighborhood_size - covariance_matrix.shape[1])), 'constant')
+        elif covariance_matrix.shape[1] < neighborhood_size:
+            covariance_matrix = np.pad(covariance_matrix, ((0, neighborhood_size - covariance_matrix.shape[0]), (0, neighborhood_size - covariance_matrix.shape[1])), 'constant')
+        
+        # Store the covariance matrix
+        local_covariance_matrices[i, j] = covariance_matrix
+
+detcov = np.linalg.det(local_covariance_matrices)
+
+plt.imshow(detcov)
+plt.colorbar()
+plt.show()
+
+def local_counts(data):
+    return np.sum(data)
+
+def local_std(data):
+    return np.std(data)
+
+def local_covariance(data):
+    # Reshape the data to a 2D array (3x3)
+    reshaped_data = data.reshape((3, 3))
+    #local_mean = np.mean(reshaped_data, axis=0)
+    #centered_data = reshaped_data - local_mean
+    covariance_matrix = np.cov(centered_data, rowvar=False)
+    # Return the determinant of the covariance matrix
+    return np.linalg.det(covariance_matrix)
+
+local_counts_est = generic_filter(counts, local_counts, size=11)
+local_counts_est[counts==0] = 0
+
+local_std_est = generic_filter(counts, local_std, size=11)
+local_std_est[counts==0] = 0
+
+#Bin the local_counts_est to get a set of partitions for density to use for partition based bw estimation
+local_counts_est_digi = np.digitize(local_counts_est,np.linspace(0,100,10))
+
+#Loop and do a silverman kde for each partition using the kde_gaussian function. Add them on top of each other
+#to get the final density estimate
+final_density = np.zeros(np.shape(local_counts_est))
+for i in range(2,5): #dont include the first partition. It is the zero partition
+    #get the indices of the partition
+    indices = np.where(local_counts_est_digi == i)
+    #get the counts for the partition and set everything else to 0
+    counts_partition = np.zeros(np.shape(local_counts_est))
+    counts_partition[indices] = local_counts_est[indices]
+    #Create a set of particles with positions given by the non-zero index grid cell positions
+    #and duplicate the amount of particles given by the counts in the grid cell
+    particle_set = np.array([x_grid[indices[0]], y_grid[indices[1]]]).T
+    particle_set = np.repeat(particle_set, counts_partition[counts_partition > 0].ravel().astype(int), axis=0)
+    #calculate kde using gaussian_kde
+    kde_partition = gaussian_kde(particle_set.T,bw_method = 'silverman')
+    density_partition = np.reshape(kde_partition(np.vstack([X.ravel(), Y.ravel()])), X.shape)
+    #add the partition to the final density estimate
+    final_density += density_partition
+
+
+plt.imshow(local_counts_est)
+plt.colorbar()
+plt.show()
+
+
+
+#calculate the silvermans factor for each non-zero value cell
+h = np.zeros(np.shape(local_counts_est))
+
+h[local_counts_est>0] = silvermans_simple_2d(local_counts_est[local_counts_est>0],2)*local_std_est[local_counts_est>0]
+
+
+plt.imshow(h)
+plt.colorbar()
+plt.show()
+
+#calculate the bandwidth for each cell
+
+
+############################################################
+################## CALCULATE KERNEL DENSITY ################
+############################################################
+
+#...using grid_projected_kde
+h = silvermans_h
+kde_pilot = histogram_prebinned/np.sum(histogram_prebinned)
+x_grid = np.linspace(0, 10, grid_size[0])
+ratio = 1/3
+num_kernels = 20
+gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
+
+cell_bandwidths = h
+
+n_u = grid_proj_kde(grid_size[0], 
+                    kde_pilot, 
+                    gaussian_kernels_test,
+                    kernel_bandwidths,
+                    cell_bandwidths)
+
+plt.imshow(n_u)
+
+
+
+### CALCULATE USING THE SCIPY GAUSSIAN KDE FUNCTION ###
+kde_scipy_silverman = gaussian_kde(trajectories.T,bw_method = 'silverman',weights=weights_test)
+kde_scipy_silverman = np.reshape(kde_scipy_silverman(np.vstack([X.ravel(), Y.ravel()])), X.shape)
+
+### CALCULATE USING HOME MADE KERNEL DENSITY ESTIMATOR AND BINNED ###
+
+#Calculate a simple histogram estimator estimate
+histogram_estimator_est,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
+
+silverman_factor = silvermans_h(trajectories,2)
+#Multiply with covariance matrix to get the bandwidth
+#The standard deviation can be calculated using the square root of the determinant of 
+#the covariance matrix. The covariance matrix is the spread of the data, and the determinant
+#is the volume of the data. The determinant is the product of the eigenvalues of the covariance matrix.
+cov_matrix = np.cov(trajectories.T)
+detcov = np.linalg.det(cov_matrix)  
+bw = silverman_factor**2*np.sqrt(detcov)
+
+#Do a 2d version with different stds in different axes
+cov_matrix = np.cov(trajectories.T)
+#calculate eigenvalues and eigenvectors
+eigvals, eigvecs = np.linalg.eigh(cov_matrix)
+#Calculate standard deviations along the eigenvectors
+std_dev1 = np.sqrt(eigvals[0])
+std_dev2 = np.sqrt(eigvals[1])
+
+
+#from scipy.stats import multivariate_normal
+data = trajectories
+mean = np.mean(data,axis=0)
+mean = np.array([0,0])
+x, y = np.mgrid[-10:10:100j, -10:10:100j]
+pos = np.dstack((x, y))
+kernel = multivariate_normal(mean=mean, cov=cov_matrix)
+z = kernel.pdf(pos)
+plt.contourf(x, y, z, cmap='viridis')
+plt.colorbar()
+plt.title('2D Gaussian Kernel')
+plt.xlabel('X-axis')
+plt.ylabel('Y-axis')
+plt.show()
+
+
+
+
+
+h = silverman_factor*np.sqrt(detcov)
+x_grid = np.linspace(0, 10, grid_size)
+ratio = 1/3
+gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
+
+n_u = grid_proj_kde(grid_size, 
+                    kde_pilot, 
+                    gaussian_kernels_test,
+                    kernel_bandwidths,
+                    cell_bandwidths)
+
+
+
+
 
 #Histogram estimator estimate
 histogram_estimator_est,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
@@ -404,6 +669,10 @@ histogram_estimator_est = histogram_estimator_est/np.sum(histogram_estimator_est
 kernel_density_estimator_est = kernel_density_estimator_est/np.sum(kernel_density_estimator_est)
 ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
 
+#calculate h using the 2d silverman function
+h = silvermans_h(trajectories,2)
+
+
 #####################################################
 ##### CALCULATE PILOT KDE USING PREMADE PACKAGE #####
 #####################################################
@@ -414,7 +683,7 @@ X, Y = np.meshgrid(x_grid, y_grid)
 positions = np.vstack([X.ravel(), Y.ravel()])
 
 # Sample particle positions
-values = np.array(trajectories.T)  # Replace with your actual data
+values = np.array(trajectories.T)  
 #remove nans in values
 weights = weights_test[~np.isnan(values).any(axis=0)]
 values = values[:,~np.isnan(values).any(axis=0)]
@@ -500,6 +769,7 @@ plt.imshow(n_u)
 #####################################################
 #####################################################
 
+plotting = False
 if plotting == True:
     #stop the script here
 

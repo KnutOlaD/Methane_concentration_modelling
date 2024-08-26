@@ -427,7 +427,7 @@ def histogram_estimator(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None
     # Initialize the histograms
     particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
     total_weight = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
-    average_bandwidth = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
+    sum_bandwidth = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
     
     #Normalize the particle positions to the grid
     x_pos = (x_pos - grid_x[0])/(grid_x[1]-grid_x[0])
@@ -435,35 +435,26 @@ def histogram_estimator(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None
     
     # Create a 2D histogram of particle positions
     for i in numba.prange(len(x_pos)):
-        if np.isnan(x_pos) or np.isnan(y_pos):
+        if np.isnan(x_pos[i]) or np.isnan(y_pos[i]):
             continue
-        x_pos = int(x_pos)
-        y_pos = int(y_pos)
-        if x_pos >= grid_size_x or y_pos >= grid_size_y or x_pos < 0 or y_pos < 0: #check if the particle is outside the grid
+        x = int(x_pos[i])
+        y = int(y_pos[i])
+        if x >= grid_size_x or y >= grid_size_y or x < 0 or y < 0: #check if the particle is outside the grid
             continue
-        total_weight[y_pos, x_pos] += weights[i]
-        particle_count[y_pos, x_pos] += 1
-        average_bandwidth[y_pos, x_pos] += bandwidths[i]
-    #Get average bandwidth
-    average_bandwidth[particle_count > 0] /= particle_count[particle_count > 0]
-    return particle_count, total_weight, average_bandwidth
+        total_weight[y, x] += weights[i]
+        particle_count[y, x] += 1
+        sum_bandwidth[y, x] += bandwidths[i]
+    return particle_count, total_weight, sum_bandwidth
 
-#test function
-a = particles['UTM_x'].compressed()
-b = particles['UTM_y'].compressed()
-bandwidths = np.ones(len(a))
-weights = np.ones(len(a))
-grid_x = bin_x
-grid_y = bin_y
-particle_count, total_weight, average_bandwidth = histogram_estimator(a,b,grid_x,grid_y,bandwidths,weights)
-
-
-def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
+def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
-    Generates Gaussian kernels and their bandwidths.
+    Generates Gaussian kernels and their bandwidths. The function generates a kernel with support
+    equal to the bandwidth multiplied by the ratio and the ratio sets the "resolution" of the 
+    gaussian bandwidth family, i.e. ratio = 1/3 means that one kernel will be created for 0.33, 0.66, 1.0 etc.
+    The kernels are stretched in the x-direction by the stretch factor.
+
 
     Parameters:
-    x_grid (np.array): The grid on which the kernels are defined.
     num_kernels (int): The number of kernels to generate.
     ratio (float): The ratio between the kernel bandwidth and integration support.
     stretch (float): The stretch factor of the kernels. Defined as the ratio between the bandwidth in the x and y directions.
@@ -474,27 +465,26 @@ def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
     kernel_origin (list): List of kernel origins.
     """
 
-    del_grid = x_grid[1] - x_grid[0]
-
     gaussian_kernels = [np.array([[1]])]
     bandwidths_h = np.zeros(num_kernels)
-    kernel_origin = [np.array([0, 0])]
+    #kernel_origin = [np.array([0, 0])]
 
     for i in range(1, num_kernels):
         a = np.arange(-i, i + 1, 1).reshape(-1, 1)
         b = np.arange(-i, i + 1, 1).reshape(1, -1)
-        h = (len(a) * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
+        h = (i * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
         #impose stretch and calculate the kernel
         h_a = h*stretch
         h_b = h
         kernel_matrix = ((1 / (2 * np.pi * h_a * h_b)) * np.exp(-0.5 * ((a / h_a) ** 2 + (b / h_b) ** 2)))
-        gaussian_kernels.append(kernel_matrix)
+        #append the kernel matrix and normalize (to make sure the sum of the kernel is 1)
+        gaussian_kernels.append(kernel_matrix / np.sum(kernel_matrix))
         bandwidths_h[i] = h
-        kernel_origin.append(np.array([0, 0]))
+        #kernel_origin.append(np.array([0, 0]))
 
-    return gaussian_kernels, bandwidths_h, kernel_origin
+    return gaussian_kernels, bandwidths_h#, kernel_origin
 
-def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell_bandwidths):
+def grid_proj_kde(kde_pilot,grid_x,grid_y, gaussian_kernels, kernel_bandwidths,cell_bandwidths):
     """
     Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
 
@@ -510,7 +500,7 @@ def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell
     """
     #ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
     
-    n_u = np.zeros((grid_size, grid_size))
+    n_u = np.zeros((grid_x, grid_y))
 
     # Get the indices of non-zero kde_pilot values
     non_zero_indices = np.argwhere(kde_pilot > 0)
@@ -529,17 +519,17 @@ def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell
 
         # Define the window boundaries
         i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, grid_size)
+        i_max = min(i + kernel_size + 1, grid_x)
         j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, grid_size)
+        j_max = min(j + kernel_size + 1, grid_y)
 
         # Calculate the weighted kernel
         weighted_kernel = kernel * kde_pilot[i, j]
 
         # Add the contribution to the result matrix
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(grid_size - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(grid_size - j, kernel_size + 1)
+            max(0, kernel_size - i):kernel_size + min(grid_x - i, kernel_size + 1),
+            max(0, kernel_size - j):kernel_size + min(grid_y - j, kernel_size + 1)
         ]
 
     return n_u
@@ -905,7 +895,6 @@ if run_full == True:
     maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
     maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
 
-
 ###### SET UP GRIDS FOR THE MODEL ######
 print('Creating the output grid...')
 #MODEELING OUTPUT GRID
@@ -948,6 +937,13 @@ if run_test == True:
     timedatetime = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 else:
     timedatetime = pd.to_datetime(bin_time,unit='s')
+
+###### GENERATE GAUSSIAN KERNELS ######
+print('Generating gaussian kernels...')
+#generate gaussian kernels
+gaussian_kernels, bandwidths_h = generate_gaussian_kernels(25, 1/3, stretch=1)
+#Get the bandwidth in real distances (this is easy since the grid is uniform)
+bandwidths_h = bandwidths_h*(bin_x[1]-bin_x[0])
 
 ############################
 ###### FIRST TIMESTEP ######
@@ -1321,12 +1317,22 @@ if run_all == True:
                 
 
 
-                GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
-                                            parts_active_z[1],
-                                            bin_x,
-                                            bin_y,
-                                            parts_active_z[5],
-                                            parts_active_z[4])
+                #GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
+                                            #parts_active_z[1],
+                                            #bin_x,
+                                            #bin_y,
+                                            #parts_active_z[5],
+                                            #parts_active_z[4])
+                
+                #Calculate the kernel density estimate
+                PreGRID_active = histogam_estimator(parts_active_z[0],
+                                                    parts_active_z[1],
+                                                    bin_x,
+                                                    bin_y,
+                                                    parts_active_z[5],
+                                                    parts_active_z[4])
+                
+                GRID_active = 
                 
                 if run_test == True:
                     GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3

@@ -426,138 +426,42 @@ trajectories = trajectories[~np.isnan(trajectories).any(axis=1)]
 histogram_prebinned,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
 
 #histogram_prebinned, x_edges, y_edges = np.histogram2d(trajectories[:,1],trajectories[:,0],bins=[x_grid,y_grid])
-'''
+
 #calculate density and standard deviation in each cell
 from scipy.ndimage import generic_filter
-
-def local_counts(data):
-    return np.mean(data)
-
-def local_covariance(data):
-    # Reshape the data to a 2D array (3x3)
-    reshaped_data = data.reshape((3, 3))
-    #local_mean = np.mean(reshaped_data, axis=0)
-    #centered_data = reshaped_data - local_mean
-    covariance_matrix = np.cov(centered_data, rowvar=False)
-    # Return the determinant of the covariance matrix
-    return np.linalg.det(covariance_matrix)
-
-local_counts_est = generic_filter(counts, local_counts, size=3)
-plt.imshow(local_counts_est)
-
-local_covariances_est = generic_filter(counts, local_covariance, size=(3,3))
-
-plt.imshow(local_covariances_est)
-'''
-
-###################################
-###### TRYING SOMETHING ELSE ######
-###################################
-
-
-grid_size = (100, 100)
-
-# Bin data into a 2D histogram
-#histogram, x_edges, y_edges = np.histogram2d(trajectories[:, 0], trajectories[:, 1], bins=grid_size)
-
-# Initialize array to hold local covariance matrices
-local_covariance_matrices = np.zeros((grid_size[0], grid_size[1], 3, 3))
-det_cov_matrix = np.zeros((grid_size[0], grid_size[1]))
-
-data = counts
-neighborhood_size = 31
-regularization_term = 1e-6  # Small value to add to the diagonal
-
-# Initialize the arrays to store the covariance matrices and their determinants
-local_covariance_matrices = np.zeros((grid_size[0], grid_size[1], neighborhood_size, neighborhood_size))
-det_cov_matrix = np.zeros((grid_size[0], grid_size[1]))
-
-# Calculate local covariance for each cell based on pre-binned data
-for i in range(grid_size[0]):
-    for j in range(grid_size[1]):
-        # Define the local neighborhood, e.g., 3x3 grid cells around (i, j)
-        i_min = max(i - neighborhood_size // 2, 0)
-        i_max = min(i + neighborhood_size // 2 + 1, grid_size[0])
-        j_min = max(j - neighborhood_size // 2, 0)
-        j_max = min(j + neighborhood_size // 2 + 1, grid_size[1])
-
-        # Create a matrix
-        local_data = np.zeros((i_max - i_min, j_max - j_min))
-        local_data[:, :] = data[i_min:i_max, j_min:j_max]
-
-        # Calculate the covariance matrix. np.cov is the unbiased covariance
-        covariance_matrix = np.cov(local_data, rowvar=False)
-        
-        kroenecker_delta = np.eye(covariance_matrix.shape[0])
-
-        covariance_matrix = covariance_matrix* kroenecker_delta
-
-        # Calculate the determinant of the covariance matrix
-        det_cov_matrix[i, j] = np.linalg.det(covariance_matrix)
-        
-        # Pad until it is 3x3
-        if covariance_matrix.shape[0] < neighborhood_size:
-            covariance_matrix = np.pad(covariance_matrix, ((0, neighborhood_size - covariance_matrix.shape[0]), (0, neighborhood_size - covariance_matrix.shape[1])), 'constant')
-        elif covariance_matrix.shape[1] < neighborhood_size:
-            covariance_matrix = np.pad(covariance_matrix, ((0, neighborhood_size - covariance_matrix.shape[0]), (0, neighborhood_size - covariance_matrix.shape[1])), 'constant')
-        
-        # Store the covariance matrix
-        local_covariance_matrices[i, j] = covariance_matrix
-
-detcov = np.linalg.det(local_covariance_matrices)
-
-plt.imshow(detcov)
-plt.colorbar()
-plt.show()
+import numpy.random as npr
 
 def local_counts(data):
     return np.sum(data)
 
 def local_std(data):
-    return np.std(data)
+    #data = data[data>0]
+    window_mean = np.mean(data[data>0])
+    return np.sqrt(np.sum((data - window_mean)**2))
 
-def local_covariance(data):
-    # Reshape the data to a 2D array (3x3)
-    reshaped_data = data.reshape((3, 3))
-    #local_mean = np.mean(reshaped_data, axis=0)
-    #centered_data = reshaped_data - local_mean
-    covariance_matrix = np.cov(centered_data, rowvar=False)
-    # Return the determinant of the covariance matrix
-    return np.linalg.det(covariance_matrix)
+def local_numcounts(data):
+    return np.sum(data>0)
+            
+    
 
-local_counts_est = generic_filter(counts, local_counts, size=11)
-local_counts_est[counts==0] = 0
+p_size = 7
 
-local_std_est = generic_filter(counts, local_std, size=11)
-local_std_est[counts==0] = 0
+local_counts_est = np.zeros(np.shape(histogram_prebinned))    
+local_counts_est[counts>0] = generic_filter(counts, local_counts, size=(p_size,p_size))[counts>0]
+#plt.imshow(local_counts_est)
+print(len(local_counts_est[local_counts_est>0]))
 
-#Bin the local_counts_est to get a set of partitions for density to use for partition based bw estimation
-local_counts_est_digi = np.digitize(local_counts_est,np.linspace(0,100,10))
-
-#Loop and do a silverman kde for each partition using the kde_gaussian function. Add them on top of each other
-#to get the final density estimate
-final_density = np.zeros(np.shape(local_counts_est))
-for i in range(2,5): #dont include the first partition. It is the zero partition
-    #get the indices of the partition
-    indices = np.where(local_counts_est_digi == i)
-    #get the counts for the partition and set everything else to 0
-    counts_partition = np.zeros(np.shape(local_counts_est))
-    counts_partition[indices] = local_counts_est[indices]
-    #Create a set of particles with positions given by the non-zero index grid cell positions
-    #and duplicate the amount of particles given by the counts in the grid cell
-    particle_set = np.array([x_grid[indices[0]], y_grid[indices[1]]]).T
-    particle_set = np.repeat(particle_set, counts_partition[counts_partition > 0].ravel().astype(int), axis=0)
-    #calculate kde using gaussian_kde
-    kde_partition = gaussian_kde(particle_set.T,bw_method = 'silverman')
-    density_partition = np.reshape(kde_partition(np.vstack([X.ravel(), Y.ravel()])), X.shape)
-    #add the partition to the final density estimate
-    final_density += density_partition
+local_std_est = np.zeros(np.shape(histogram_prebinned))
+local_std_est[counts>0] = (generic_filter(counts, local_std, size=(p_size,p_size))[counts>0])/local_counts_est[counts>0]
+print(len(local_std_est[local_std_est>0]))
+#add noise lost during the binning process
+#grid cell size
+dxy = x_grid[1]-x_grid[0]
+#add noise to the std
 
 
-plt.imshow(local_counts_est)
-plt.colorbar()
-plt.show()
 
+plt.imshow(local_std_est)
 
 
 #calculate the silvermans factor for each non-zero value cell
@@ -578,16 +482,15 @@ plt.show()
 ############################################################
 
 #...using grid_projected_kde
-h = silvermans_h
 kde_pilot = histogram_prebinned/np.sum(histogram_prebinned)
-x_grid = np.linspace(0, 10, grid_size[0])
+x_grid = np.linspace(0, 10, grid_size)
 ratio = 1/3
-num_kernels = 20
+num_kernels = 15
 gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
 
-cell_bandwidths = h
+cell_bandwidths = h*10
 
-n_u = grid_proj_kde(grid_size[0], 
+n_u = grid_proj_kde(grid_size, 
                     kde_pilot, 
                     gaussian_kernels_test,
                     kernel_bandwidths,
@@ -752,6 +655,7 @@ histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid
 x_grid = np.linspace(0, 10, grid_size)
 ratio = 1/3
 gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
+cell_bandwidths = h
 
 n_u = grid_proj_kde(grid_size, 
                     kde_pilot, 

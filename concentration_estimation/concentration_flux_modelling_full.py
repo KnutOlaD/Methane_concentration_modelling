@@ -62,7 +62,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 50. #m
+dz_grid = 25. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -634,7 +634,7 @@ def plot_2d_data_map_loop(data,
     cbar.locator = MaxNLocator(nbins=maxnumticks)
     cbar.update_ticks()
     # Customize the tick parameters for the colorbar
-    cbar.ax.tick_params(labelsize=14, rotation=45)
+    cbar.ax.tick_params(labelsize=14, rotation=0)
 
     # Use scientific notation for the colorbar labels
     formatter = ScalarFormatter(useMathText=True)
@@ -687,7 +687,7 @@ def plot_2d_data_map_loop(data,
         ax.add_patch(rect)
 
     if savefile_path:
-        plt.savefig(savefile_path, dpi=dpi)
+        plt.savefig(savefile_path, dpi=dpi, transparent=False, bbox_inches='tight')
     if show:
         plt.show()
 
@@ -1419,8 +1419,8 @@ time_steps = len(bin_time)
 levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
 #levels_atm = levels_atm[1:-1]
 levels_atm = levels_atm[:-50]*0.25
-lon_vec = lon_mesh[:,0]
-lat_vec = lat_mesh[0,:]
+lon_vec = lon_mesh[0,:]
+lat_vec = lat_mesh[:,0]
 
 #datetimevector for the progress bar
 times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
@@ -1430,7 +1430,7 @@ time_steps = 1495
 
 do = True
 if do == True:
-    for i in range(twentiethofMay,time_steps,2):
+    for i in range(twentiethofMay,time_steps,1):
         fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
                                     lon=lon_vec,
                                      lat=lat_vec,
@@ -1438,11 +1438,11 @@ if do == True:
                                     levels=levels_atm,
                                     timepassed=[i-twentiethofMay, time_steps-twentiethofMay],
                                     colormap=colormap,
-                                    title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i]),
+                                    title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i])[5:-3],
                                     unit='mol m$^{-2}$ hr$^{-1}$',
-                                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux' + str(i) + '.png',
+                                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
                                     adj_lon = [1,-1],
-                                    adj_lat = [0,-0.7],
+                                    adj_lat = [0,-0.5],
                                     show=False,
                                     dpi=90,
                                     figuresize = [12,10],
@@ -1453,11 +1453,11 @@ if do == True:
                                     plot_progress_bar = True,
                                     #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
                                     contoursettings = [2,'0.8',0.1])
-        images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux' + str(i) + '.png'))
+        images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png'))
         plt.close(fig)  # Close the figure to avoid displaying it
 
     #create gif
-    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
+    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
 
 #Do the same proceedure for the gt_vel field
 
@@ -1471,12 +1471,6 @@ if do == True:
 
 GRID_generic = GRID_gt_vel
 images_atm_rel = []
-time_steps = len(bin_time)
-levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
-#levels_atm = levels_atm[1:-1]
-levels_atm = levels_atm[:-50]*0.25
-lon_vec = lon_mesh[:,0]
-lat_vec = lat_mesh[0,:]
 #datetimevector for the progress bar
 times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 #start and end time. 
@@ -1493,19 +1487,19 @@ for i in range(twentiethofMay,time_steps,2):
                                 lat=lat_vec,
                                 projection=projection,
                                 levels=levels_gt,
-                                timepassed=[i-twentiethofMay, time_steps],
+                                timepassed=[i-twentiethofMay, time_steps-twentiethofMay],
                                 colormap=colormap,
                                 title='Gas transfer velocity [cm hr$^{-1}$]' + str(times[i]),
                                 unit='cm hr$^{-1}$',
                                 savefile_path=r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\atmosphere\gt_vel_gif\gt_vel' + str(i) + '.png',
-                                adj_lon = [0,-2],
-                                adj_lat = [0,-0.8],
+                                adj_lon = [1,-1],
+                                adj_lat = [0,-0.7],
                                 show=False,
                                 dpi=90,
                                 figuresize = [12,10],
                                 log_scale = False,
                                 starttimestring = '20 May 2018',
-                                endtimestring = '31 May 2018')
+                                endtimestring = '20 June 2018')
     images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
     plt.close(fig)  # Close the figure to avoid displaying it
 
@@ -1519,7 +1513,7 @@ imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_h
 
 GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofMay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
 total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
-percent_of_release = np.round((total_sum/total_seabed_release)*100,5) #why multiply with 100??? Because it's percantage dumb-ass
+percent_of_release = np.round((total_sum/total_seabed_release)*100,4) #why multiply with 100??? Because it's percantage dumb-ass
 GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol. THIS IS ALREADY IN MOLAR. But divide to get per square meter
 levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),100)
 levels = levels[:-50]*0.25
@@ -1533,7 +1527,7 @@ plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
                     colormap=colormap,
                     title='Total released methane = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',
                     unit='mol m$^{-2}$',
-                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\atm_flux_sum.png',
+                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\atm_flux_sum.png',
                     show=True,
                     adj_lon = [0,0],
                     adj_lat = [0,0],

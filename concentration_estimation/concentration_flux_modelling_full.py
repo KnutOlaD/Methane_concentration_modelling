@@ -37,9 +37,9 @@ plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
-fit_wind_data = True
+fit_wind_data = False
 #fit gas transfer velocity
-fit_gt_vel = True
+fit_gt_vel = False
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -406,36 +406,57 @@ def calc_mox_consumption(C_o,R_ox):
     return CH4_consumption
 
 @numba.jit(parallel=True, nopython=True)
-def histogram_estimator(particles, grid_size, weights=None):
+def histogram_estimator(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None):
     '''
     Input:
-    particles: np.array of shape (num_particles, 2)
-    grid_size: int
-    
+    x_pos (np.array): x-coordinates of the particles
+    y_pos (np.array): y-coordinates of the particles
+    grid_x (np.array): grid cell boundaries in the x-direction
+    grid_y (np.array): grid cell boundaries in the y-direction
+
     Output:
     particle_count: np.array of shape (grid_size, grid_size)
+    total_weight: np.array of shape (grid_size, grid_size)
+    average_bandwidth: np.array of shape (grid_size, grid_size)
     '''
+
+    #get size of grid in x and y direction
+    grid_size_y = len(grid_x)
+    grid_size_x = len(grid_y)
+
     # Initialize the histograms
-    particle_count = np.zeros((grid_size, grid_size), dtype=np.int32)
-    total_weight = np.zeros((grid_size, grid_size), dtype=np.float64)
+    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
+    total_weight = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
+    average_bandwidth = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
     
-    # Check if weights are provided
-    if weights is None:
-        weights = np.ones(len(particles), dtype=np.float64)
+    #Normalize the particle positions to the grid
+    x_pos = (x_pos - grid_x[0])/(grid_x[1]-grid_x[0])
+    y_pos = (y_pos - grid_y[0])/(grid_y[1]-grid_y[0])
     
     # Create a 2D histogram of particle positions
-    for i in numba.prange(len(particles)):
-        x, y = particles[i, :]
-        if np.isnan(x) or np.isnan(y):
+    for i in numba.prange(len(x_pos)):
+        if np.isnan(x_pos) or np.isnan(y_pos):
             continue
-        x = int(x)
-        y = int(y)
-        if x >= grid_size or y >= grid_size or x < 0 or y < 0:
+        x_pos = int(x_pos)
+        y_pos = int(y_pos)
+        if x_pos >= grid_size_x or y_pos >= grid_size_y or x_pos < 0 or y_pos < 0: #check if the particle is outside the grid
             continue
-        total_weight[y, x] += weights[i]
-        particle_count[y, x] += 1
+        total_weight[y_pos, x_pos] += weights[i]
+        particle_count[y_pos, x_pos] += 1
+        average_bandwidth[y_pos, x_pos] += bandwidths[i]
+    #Get average bandwidth
+    average_bandwidth[particle_count > 0] /= particle_count[particle_count > 0]
+    return particle_count, total_weight, average_bandwidth
 
-    return total_weight, particle_count
+#test function
+a = particles['UTM_x'].compressed()
+b = particles['UTM_y'].compressed()
+bandwidths = np.ones(len(a))
+weights = np.ones(len(a))
+grid_x = bin_x
+grid_y = bin_y
+particle_count, total_weight, average_bandwidth = histogram_estimator(a,b,grid_x,grid_y,bandwidths,weights)
+
 
 def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
     """
@@ -472,6 +493,56 @@ def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
         kernel_origin.append(np.array([0, 0]))
 
     return gaussian_kernels, bandwidths_h, kernel_origin
+
+def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell_bandwidths):
+    """
+    Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
+
+    Parameters:
+    grid_size (int): The size of the grid (grid_size x grid_size).
+    kde_pilot (np.array): The pilot KDE values on the grid.
+    gaussian_kernels (list): List of Gaussian kernel matrices.
+    kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
+    cell_bandwidths (np.array): Array of bandwidths of the particles.
+
+    Returns:
+    np.array: The resulting KDE projected onto the grid.
+    """
+    #ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
+    
+    n_u = np.zeros((grid_size, grid_size))
+
+    # Get the indices of non-zero kde_pilot values
+    non_zero_indices = np.argwhere(kde_pilot > 0)
+   
+    # Find the closest kernel indices for each particle bandwidth
+    #kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
+    
+    for idx in non_zero_indices:
+        i, j = idx
+        # Get the appropriate kernel for the current particle bandwidth
+        #find the right kernel index
+        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i,j]))
+        #kernel_index = kernel_indices[i * grid_size + j]
+        kernel = gaussian_kernels[kernel_index]
+        kernel_size = len(kernel) // 2
+
+        # Define the window boundaries
+        i_min = max(i - kernel_size, 0)
+        i_max = min(i + kernel_size + 1, grid_size)
+        j_min = max(j - kernel_size, 0)
+        j_max = min(j + kernel_size + 1, grid_size)
+
+        # Calculate the weighted kernel
+        weighted_kernel = kernel * kde_pilot[i, j]
+
+        # Add the contribution to the result matrix
+        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
+            max(0, kernel_size - i):kernel_size + min(grid_size - i, kernel_size + 1),
+            max(0, kernel_size - j):kernel_size + min(grid_size - j, kernel_size + 1)
+        ]
+
+    return n_u
 
 def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
     ''' 
@@ -1243,6 +1314,13 @@ if run_all == True:
             parts_active_z[1][parts_active_z[1] > np.max(bin_y)] = np.max(bin_y)-1
 
             if kde_all == True or i==0:
+                #Calculate pre-kernel density estimate using np.histogram2d
+                z_values,h_values = histogram_estimator(parts_active_z[0],
+                                                        parts_active_z[1],
+                                                        )
+                
+
+
                 GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
                                             parts_active_z[1],
                                             bin_x,

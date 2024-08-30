@@ -405,8 +405,8 @@ def calc_mox_consumption(C_o,R_ox):
 
     return CH4_consumption
 
-@numba.jit(parallel=True, nopython=True)
-def histogram_estimator(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None):
+@numba.jit(parallel=True,nopython=True)
+def histogram_estimator_numba(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None):
     '''
     Input:
     x_pos (np.array): x-coordinates of the particles
@@ -421,8 +421,8 @@ def histogram_estimator(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None
     '''
 
     #get size of grid in x and y direction
-    grid_size_y = len(grid_x)
-    grid_size_x = len(grid_y)
+    grid_size_x = len(grid_x)
+    grid_size_y = len(grid_y)
 
     # Initialize the histograms
     particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
@@ -443,7 +443,67 @@ def histogram_estimator(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None
             continue
         total_weight[y, x] += weights[i]
         particle_count[y, x] += 1
-        sum_bandwidth[y, x] += bandwidths[i]
+        sum_bandwidth[y, x] += bandwidths[i]*weights[i] #weighted sum of bandwidths
+    
+    #print(np.shape(particle_count))
+
+    return particle_count, total_weight, sum_bandwidth
+
+#Added a non-numba vectorized version to see if that causes the 233 crash
+def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
+    '''
+    Input:
+    x_pos (np.array): x-coordinates of the particles
+    y_pos (np.array): y-coordinates of the particles
+    grid_x (np.array): grid cell boundaries in the x-direction
+    grid_y (np.array): grid cell boundaries in the y-direction
+
+    Output:
+    particle_count: np.array of shape (grid_size, grid_size)
+    total_weight: np.array of shape (grid_size, grid_size)
+    average_bandwidth: np.array of shape (grid_size, grid_size)
+    '''
+
+    # Get size of grid in x and y direction
+    grid_size_x = len(grid_x)
+    grid_size_y = len(grid_y)
+
+    # Initialize the histograms
+    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
+    total_weight = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
+    sum_bandwidth = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
+    
+    # Normalize the particle positions to the grid
+    grid_x0 = grid_x[0]
+    grid_y0 = grid_y[0]
+    grid_x1 = grid_x[1]
+    grid_y1 = grid_y[1]
+    x_pos = (x_pos - grid_x0) / (grid_x1 - grid_x0)
+    y_pos = (y_pos - grid_y0) / (grid_y1 - grid_y0)
+    
+    # Filter out NaN values
+    valid_mask = ~np.isnan(x_pos) & ~np.isnan(y_pos)
+    x_pos = x_pos[valid_mask]
+    y_pos = y_pos[valid_mask]
+    weights = weights[valid_mask]
+    bandwidths = bandwidths[valid_mask]
+    
+    # Convert positions to integer grid indices
+    x_indices = x_pos.astype(np.int32)
+    y_indices = y_pos.astype(np.int32)
+    
+    # Boundary check
+    valid_mask = (x_indices >= 0) & (x_indices < grid_size_x) & (y_indices >= 0) & (y_indices < grid_size_y)
+    x_indices = x_indices[valid_mask]
+    y_indices = y_indices[valid_mask]
+    weights = weights[valid_mask]
+    bandwidths = bandwidths[valid_mask]
+    
+    # Accumulate weights and counts
+    np.add.at(total_weight, (y_indices, x_indices), weights)
+    np.add.at(particle_count, (y_indices, x_indices), 1)
+    np.add.at(sum_bandwidth, (y_indices, x_indices), bandwidths * weights)
+
     return particle_count, total_weight, sum_bandwidth
 
 def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
@@ -484,7 +544,7 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 
     return gaussian_kernels, bandwidths_h#, kernel_origin
 
-def grid_proj_kde(kde_pilot,grid_x,grid_y, gaussian_kernels, kernel_bandwidths,cell_bandwidths):
+def grid_proj_kde(grid_x,grid_y,kde_pilot,gaussian_kernels,kernel_bandwidths,cell_bandwidths):
     """
     Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
 
@@ -500,7 +560,11 @@ def grid_proj_kde(kde_pilot,grid_x,grid_y, gaussian_kernels, kernel_bandwidths,c
     """
     #ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
     
-    n_u = np.zeros((grid_x, grid_y))
+    # Get the grid size
+    gridsize_x = len(grid_x)
+    gridsize_y = len(grid_y)
+
+    n_u = np.zeros((gridsize_x, gridsize_y))
 
     # Get the indices of non-zero kde_pilot values
     non_zero_indices = np.argwhere(kde_pilot > 0)
@@ -515,21 +579,21 @@ def grid_proj_kde(kde_pilot,grid_x,grid_y, gaussian_kernels, kernel_bandwidths,c
         kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i,j]))
         #kernel_index = kernel_indices[i * grid_size + j]
         kernel = gaussian_kernels[kernel_index]
-        kernel_size = len(kernel) // 2
+        kernel_size = len(kernel) // 2 #Why?? Because it's symmetric around the center. 
 
         # Define the window boundaries
         i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, grid_x)
+        i_max = min(i + kernel_size + 1, gridsize_x)
         j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, grid_y)
+        j_max = min(j + kernel_size + 1, gridsize_y)
 
         # Calculate the weighted kernel
         weighted_kernel = kernel * kde_pilot[i, j]
 
         # Add the contribution to the result matrix
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(grid_x - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(grid_y - j, kernel_size + 1)
+            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
+            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
         ]
 
     return n_u
@@ -844,7 +908,7 @@ if run_full == True:
                 'time':np.ma.zeros(2),}
     #first timestep:
     particles['lon'][:,0] = ODdata.variables['lon'][:, 0].copy()
-    particles['lat'][:,0] = ODdata.variables['lat'][:, 0].copy()
+    particles['lat'][:,0] = ODdata.variables['lat'][:, 0].copy() 
     particles['z'][:,0] = ODdata.variables['z'][:, 0].copy()
     particles['timefull'] = ODdata.variables['time'][:].copy()
     particles['time'][0] = ODdata.variables['time'][0].copy()
@@ -941,10 +1005,10 @@ else:
 ###### GENERATE GAUSSIAN KERNELS ######
 print('Generating gaussian kernels...')
 #generate gaussian kernels
-gaussian_kernels, bandwidths_h = generate_gaussian_kernels(25, 1/3, stretch=1)
+gaussian_kernels, gaussian_bandwidths_h = generate_gaussian_kernels(20, 1/3, stretch=1)
 #Get the bandwidth in real distances (this is easy since the grid is uniform)
-bandwidths_h = bandwidths_h*(bin_x[1]-bin_x[0])
-
+gaussian_bandwidths_h = gaussian_bandwidths_h*(bin_x[1]-bin_x[0])
+print('done.')
 ############################
 ###### FIRST TIMESTEP ######
 ############################
@@ -1100,6 +1164,8 @@ if run_all == True:
 
     # Determine the midpoint
     midpoint = n_particles // 2 #this is all to speed up things.. 
+
+    #kkk = 232
 
     for kkk in range(1,time_steps_full-1): 
 
@@ -1310,29 +1376,34 @@ if run_all == True:
             parts_active_z[1][parts_active_z[1] > np.max(bin_y)] = np.max(bin_y)-1
 
             if kde_all == True or i==0:
-                #Calculate pre-kernel density estimate using np.histogram2d
-                z_values,h_values = histogram_estimator(parts_active_z[0],
-                                                        parts_active_z[1],
-                                                        )
-                
-
-
-                #GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
+                ### THIS IS THE OLD WAY OF DOING IT ###            
+                #ols_GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
                                             #parts_active_z[1],
                                             #bin_x,
                                             #bin_y,
                                             #parts_active_z[5],
                                             #parts_active_z[4])
-                
-                #Calculate the kernel density estimate
-                PreGRID_active = histogam_estimator(parts_active_z[0],
+                ########################################
+
+                ### Calculate the kernel density estimate ###
+
+                #pre-kernel density estimate using the histogram estimator
+                PreGRID_active,preGRID_active_weight,preGRID_active_bw = histogram_estimator(parts_active_z[0],
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
                                                     parts_active_z[5],
                                                     parts_active_z[4])
                 
-                GRID_active = 
+                #Calculate the average bandwidth in each cell by dividin with preGRID_active_weight
+                preGRID_active_bw = np.divide(preGRID_active_bw,preGRID_active_weight, out=np.zeros_like(preGRID_active_bw), where=preGRID_active_weight != 0)
+
+                GRID_active = grid_proj_kde(bin_x,
+                                            bin_y,
+                                            preGRID_active_weight,
+                                            gaussian_kernels,
+                                            gaussian_bandwidths_h,
+                                            preGRID_active_bw)
                 
                 if run_test == True:
                     GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3

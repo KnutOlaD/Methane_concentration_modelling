@@ -439,6 +439,8 @@ def local_std(data):
     window_mean = np.mean(data[data>0])
     return np.sqrt(np.sum((data - window_mean)**2))
 
+
+
 def local_numcounts(data):
     return np.sum(data>0)
             
@@ -470,8 +472,9 @@ h = np.zeros(np.shape(local_counts_est))
 h[local_counts_est>0] = silvermans_simple_2d(local_counts_est[local_counts_est>0],2)*local_std_est[local_counts_est>0]
 
 
-plt.imshow(h)
+plt.imshow(h*2)
 plt.colorbar()
+plt.title('Adaptive bandwidth estimate')
 plt.show()
 
 #calculate the bandwidth for each cell
@@ -496,7 +499,10 @@ n_u = grid_proj_kde(grid_size,
                     kernel_bandwidths,
                     cell_bandwidths)
 
+plt.figure()
 plt.imshow(n_u)
+plt.colorbar()
+plt.title('Grid projected KDE using adaptive ...')
 
 
 
@@ -504,59 +510,10 @@ plt.imshow(n_u)
 kde_scipy_silverman = gaussian_kde(trajectories.T,bw_method = 'silverman',weights=weights_test)
 kde_scipy_silverman = np.reshape(kde_scipy_silverman(np.vstack([X.ravel(), Y.ravel()])), X.shape)
 
-### CALCULATE USING HOME MADE KERNEL DENSITY ESTIMATOR AND BINNED ###
-
-#Calculate a simple histogram estimator estimate
-histogram_estimator_est,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
-
-silverman_factor = silvermans_h(trajectories,2)
-#Multiply with covariance matrix to get the bandwidth
-#The standard deviation can be calculated using the square root of the determinant of 
-#the covariance matrix. The covariance matrix is the spread of the data, and the determinant
-#is the volume of the data. The determinant is the product of the eigenvalues of the covariance matrix.
-cov_matrix = np.cov(trajectories.T)
-detcov = np.linalg.det(cov_matrix)  
-bw = silverman_factor**2*np.sqrt(detcov)
-
-#Do a 2d version with different stds in different axes
-cov_matrix = np.cov(trajectories.T)
-#calculate eigenvalues and eigenvectors
-eigvals, eigvecs = np.linalg.eigh(cov_matrix)
-#Calculate standard deviations along the eigenvectors
-std_dev1 = np.sqrt(eigvals[0])
-std_dev2 = np.sqrt(eigvals[1])
-
-
-#from scipy.stats import multivariate_normal
-data = trajectories
-mean = np.mean(data,axis=0)
-mean = np.array([0,0])
-x, y = np.mgrid[-10:10:100j, -10:10:100j]
-pos = np.dstack((x, y))
-kernel = multivariate_normal(mean=mean, cov=cov_matrix)
-z = kernel.pdf(pos)
-plt.contourf(x, y, z, cmap='viridis')
+plt.figure()
+plt.imshow(kde_scipy_silverman)
 plt.colorbar()
-plt.title('2D Gaussian Kernel')
-plt.xlabel('X-axis')
-plt.ylabel('Y-axis')
-plt.show()
-
-
-
-
-
-h = silverman_factor*np.sqrt(detcov)
-x_grid = np.linspace(0, 10, grid_size)
-ratio = 1/3
-gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
-
-n_u = grid_proj_kde(grid_size, 
-                    kde_pilot, 
-                    gaussian_kernels_test,
-                    kernel_bandwidths,
-                    cell_bandwidths)
-
+plt.title('Gaussian KDE using scipy Silverman constant bandwidth')
 
 
 
@@ -564,16 +521,13 @@ n_u = grid_proj_kde(grid_size,
 #Histogram estimator estimate
 histogram_estimator_est,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
 #Kernel density estimator with time dependent bandwidth estimate
-kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories[:,0],trajectories[:,1],x_grid,y_grid,bw,weights_test)
+kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories[:,0].T,trajectories[:,1].T,x_grid,y_grid,bw,weights_test)
 kernel_density_estimator_est = kernel_density_estimator_est.T
 
 #Normalize everything
 histogram_estimator_est = histogram_estimator_est/np.sum(histogram_estimator_est)
 kernel_density_estimator_est = kernel_density_estimator_est/np.sum(kernel_density_estimator_est)
 ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
-
-#calculate h using the 2d silverman function
-h = silvermans_h(trajectories,2)
 
 
 #####################################################
@@ -655,7 +609,7 @@ histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid
 x_grid = np.linspace(0, 10, grid_size)
 ratio = 1/3
 gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
-cell_bandwidths = h
+cell_bandwidths = cell_bandwidths
 
 n_u = grid_proj_kde(grid_size, 
                     kde_pilot, 
@@ -673,7 +627,7 @@ plt.imshow(n_u)
 #####################################################
 #####################################################
 
-plotting = False
+plotting = True
 if plotting == True:
     #stop the script here
 

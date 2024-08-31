@@ -35,6 +35,10 @@ stdev = 1.4 #Stochastic std
 U_a = np.array([2.5, 2.5]) #Advection velocity
 num_particles = num_particles_per_timestep*time_steps
 
+#Change the default colormap to something bright other than viridis
+#use rocket from sns
+plt.rcParams['image.cmap'] = 'rocket'
+
 
 # ------------------------------------------------------- #
 ###########################################################
@@ -67,7 +71,7 @@ def calc_integral_length_scale(data):
     return integral_length_scale
 
 @numba.jit(nopython=True)#, parallel=True)
-def histogram_estimator(particles, grid_size, weights=None, bandwidths=None):
+def histogram_estimator_numba(particles, grid_size, weights=None, bandwidths=None):
     '''
     Input:
     particles: np.array of shape (num_particles, 2)
@@ -110,14 +114,14 @@ def histogram_estimator(particles, grid_size, weights=None, bandwidths=None):
 
     return total_weight, particle_count, cell_bandwidths
 
-
 #Function to calculate the grid projected kernel density estimator
-def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell_bandwidths):
+def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths, cell_bandwidths):
     """
     Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
 
     Parameters:
-    grid_size (int): The size of the grid (grid_size x grid_size).
+    grid_x (np.array): Array of grid cell boundaries in the x-direction.
+    grid_y (np.array): Array of grid cell boundaries in the y-direction.
     kde_pilot (np.array): The pilot KDE values on the grid.
     gaussian_kernels (list): List of Gaussian kernel matrices.
     kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
@@ -125,43 +129,54 @@ def grid_proj_kde(grid_size, kde_pilot, gaussian_kernels, kernel_bandwidths,cell
 
     Returns:
     np.array: The resulting KDE projected onto the grid.
+
+    Notes:
+    - This function only works with a simple histogram estimator as the pilot KDE.
+    - The function assumes that the Gaussian kernels are symmetric around their center.
+    - The grid size is determined by the lengths of grid_x and grid_y.
+    - The function iterates over non-zero values in the pilot KDE and applies the corresponding Gaussian kernel.
+    - The appropriate Gaussian kernel is selected based on the bandwidth of each particle.
+    - The resulting KDE is accumulated in the output grid n_u.
     """
-    #ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
+    # ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
     
-    n_u = np.zeros((grid_size, grid_size))
+    # Get the grid size
+    gridsize_x = len(grid_x)
+    gridsize_y = len(grid_y)
+
+    n_u = np.zeros((gridsize_x, gridsize_y))
 
     # Get the indices of non-zero kde_pilot values
     non_zero_indices = np.argwhere(kde_pilot > 0)
    
     # Find the closest kernel indices for each particle bandwidth
-    #kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
+    # kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
     
     for idx in non_zero_indices:
         i, j = idx
         # Get the appropriate kernel for the current particle bandwidth
-        #find the right kernel index
-        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i,j]))
-        #kernel_index = kernel_indices[i * grid_size + j]
+        # find the right kernel index
+        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j]))
+        # kernel_index = kernel_indices[i * grid_size + j]
         kernel = gaussian_kernels[kernel_index]
-        kernel_size = len(kernel) // 2
+        kernel_size = len(kernel) // 2  # Because it's symmetric around the center.
 
         # Define the window boundaries
         i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, grid_size)
+        i_max = min(i + kernel_size + 1, gridsize_x)
         j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, grid_size)
+        j_max = min(j + kernel_size + 1, gridsize_y)
 
         # Calculate the weighted kernel
         weighted_kernel = kernel * kde_pilot[i, j]
 
         # Add the contribution to the result matrix
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(grid_size - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(grid_size - j, kernel_size + 1)
+            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
+            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
         ]
 
     return n_u
-
 
 def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
     ''' 
@@ -249,12 +264,15 @@ def update_positions(particles, U_a, stdev, dt):
     return particles
 
     
-def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
+def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
-    Generates Gaussian kernels and their bandwidths.
+    Generates Gaussian kernels and their bandwidths. The function generates a kernel with support
+    equal to the bandwidth multiplied by the ratio and the ratio sets the "resolution" of the 
+    gaussian bandwidth family, i.e. ratio = 1/3 means that one kernel will be created for 0.33, 0.66, 1.0 etc.
+    The kernels are stretched in the x-direction by the stretch factor.
+
 
     Parameters:
-    x_grid (np.array): The grid on which the kernels are defined.
     num_kernels (int): The number of kernels to generate.
     ratio (float): The ratio between the kernel bandwidth and integration support.
     stretch (float): The stretch factor of the kernels. Defined as the ratio between the bandwidth in the x and y directions.
@@ -265,28 +283,24 @@ def generate_gaussian_kernels(x_grid, num_kernels, ratio, stretch=1):
     kernel_origin (list): List of kernel origins.
     """
 
-    del_grid = x_grid[1] - x_grid[0]
-
     gaussian_kernels = [np.array([[1]])]
     bandwidths_h = np.zeros(num_kernels)
-    kernel_origin = [np.array([0, 0])]
+    #kernel_origin = [np.array([0, 0])]
 
     for i in range(1, num_kernels):
         a = np.arange(-i, i + 1, 1).reshape(-1, 1)
         b = np.arange(-i, i + 1, 1).reshape(1, -1)
-        h = (len(a) * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
+        h = (i * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
         #impose stretch and calculate the kernel
         h_a = h*stretch
         h_b = h
         kernel_matrix = ((1 / (2 * np.pi * h_a * h_b)) * np.exp(-0.5 * ((a / h_a) ** 2 + (b / h_b) ** 2)))
-        gaussian_kernels.append(kernel_matrix)
+        #append the kernel matrix and normalize (to make sure the sum of the kernel is 1)
+        gaussian_kernels.append(kernel_matrix / np.sum(kernel_matrix))
         bandwidths_h[i] = h
-        kernel_origin.append(np.array([0, 0]))
+        #kernel_origin.append(np.array([0, 0]))
 
-    #set the smallest bandwidth to 0.5 of the first calculated bandwidth (gaussian_kernels[1])
-    bandwidths_h[0] = bandwidths_h[1] * 0.5
-
-    return gaussian_kernels, bandwidths_h, kernel_origin
+    return gaussian_kernels, bandwidths_h#, kernel_origin
 
 
 #
@@ -399,6 +413,95 @@ def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights'):
 
     return trajectories, trajectories_full, bw, weights, weights_test
 
+
+def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
+    '''
+    Input:
+    x_pos (np.array): x-coordinates of the particles
+    y_pos (np.array): y-coordinates of the particles
+    grid_x (np.array): grid cell boundaries in the x-direction
+    grid_y (np.array): grid cell boundaries in the y-direction
+    bandwidths (np.array): bandwidths of the particles
+    weights (np.array): weights of the particles
+
+    Output:
+    particle_count: np.array of shape (grid_size, grid_size)
+    total_weight: np.array of shape (grid_size, grid_size)
+    average_bandwidth: np.array of shape (grid_size, grid_size)
+    '''
+
+    # Get size of grid in x and y direction
+    grid_size_x = len(grid_x)
+    grid_size_y = len(grid_y)
+
+    # Initialize the histograms
+    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
+    total_weight = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
+    cell_bandwidth = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
+    
+    # Normalize the particle positions to the grid
+    grid_x0 = grid_x[0]
+    grid_y0 = grid_y[0]
+    grid_x1 = grid_x[1]
+    grid_y1 = grid_y[1]
+    x_pos = (x_pos - grid_x0) / (grid_x1 - grid_x0)
+    y_pos = (y_pos - grid_y0) / (grid_y1 - grid_y0)
+    
+    # Filter out NaN values
+    valid_mask = ~np.isnan(x_pos) & ~np.isnan(y_pos)
+    x_pos = x_pos[valid_mask]
+    y_pos = y_pos[valid_mask]
+    weights = weights[valid_mask]
+    bandwidths = bandwidths[valid_mask]
+    
+    # Convert positions to integer grid indices
+    x_indices = x_pos.astype(np.int32)
+    y_indices = y_pos.astype(np.int32)
+    
+    # Boundary check
+    valid_mask = (x_indices >= 0) & (x_indices < grid_size_x) & (y_indices >= 0) & (y_indices < grid_size_y)
+    x_indices = x_indices[valid_mask]
+    y_indices = y_indices[valid_mask]
+    weights = weights[valid_mask]
+    bandwidths = bandwidths[valid_mask]
+    
+    # Accumulate weights and counts
+    np.add.at(total_weight, (y_indices, x_indices), weights)
+    np.add.at(particle_count, (y_indices, x_indices), 1)
+    np.add.at(cell_bandwidth, (y_indices, x_indices), bandwidths * weights)
+
+    cell_bandwidth = np.divide(cell_bandwidth, total_weight, out=np.zeros_like(cell_bandwidth), where=total_weight!=0)
+
+    return particle_count, total_weight, cell_bandwidth
+
+#create random binned data
+binned_data = np.random.randint(0,10,(10,10))
+window_size = 2
+
+def histogram_variance(binned_data, window_size):
+    '''
+    Calculate the simple variance of the binned data using ...
+    '''
+    #check that there's data in the binned data
+    if np.sum(binned_data) == 0:
+        return 0
+    #get the central value of all bins
+    grid_size = len(binned_data)
+    #Central point of all grid cells
+    X = np.arange(0,grid_size*window_size,window_size)
+    Y = np.arange(0,grid_size*window_size,window_size)
+    #Calculate the average position in the binned data
+    mu_x = np.sum(binned_data*X)/np.sum(binned_data)
+    mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
+    #Calculate the variance
+    var_y = np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)
+    var_x = np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)
+    #Calculate the covariance
+    cov_xy = np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)
+    #Calculate the total variance
+    variance_data = var_x+var_y+2*cov_xy
+    return variance_data
+
 # ------------------------------------------------------- #
 ###########################################################
 ##################### INITIATION ##########################
@@ -407,20 +510,79 @@ def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights'):
 # Add folder path
 #get the test data
 trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=load_test_data,frac_diff=frac_diff)
+bw_full = np.ones(len(trajectories_full))
+weights_full = weights
 
 grid_size = 100
 #Get the grid
 x_grid = np.linspace(0, grid_size, grid_size)
 y_grid = np.linspace(0, grid_size, grid_size)
 X,Y = np.meshgrid(x_grid,y_grid)
+#GROUND TRUTH POSITIONS
+p_full_x = trajectories_full[:,0] #the full x particle positions positions
+p_full_y = trajectories_full[:,1]
+#TEST POSITIONS
+p_x = trajectories[:,0] #the test x particle positions positions
+p_y = trajectories[:,1]
+#OBTAIN GAUSSIAN KERNELS
+num_kernels = 25
+ratio = 1/3
+gaussian_kernels, kernel_bandwidths = generate_gaussian_kernels(num_kernels, ratio)
 
-#Do a histogram estimate for the full dataset ("ground truth") (normalized)
-ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
+######################################
+############ GROUND TRUTH ############
+######################################
 
-#do a gaussian kde using gaussian_kde function and h calculated using the homemade Silverman function
-#remove nans first (in both trajectories and weights)
-weights_test = weights_test[~np.isnan(trajectories).any(axis=1)]
-trajectories = trajectories[~np.isnan(trajectories).any(axis=1)]
+ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(p_full_x,p_full_y, x_grid,y_grid,bandwidths=bw_full,weights=weights_full
+)/np.sum(histogram_estimator(p_full_x,p_full_y, x_grid,y_grid,bandwidths=bw_full,weights=weights_full))   
+
+#make a plot of the ground truth
+plt.figure()
+plt.imshow(ground_truth)
+plt.colorbar()
+plt.title('Ground truth')
+plt.show()
+
+################################################
+########### NAIVE HISTOGRAM ESTIMATE ###########
+################################################
+
+naive_estimate,count_naive,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test
+)/np.sum(histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test))
+
+#make a plot of the naive estimate
+plt.figure()
+plt.imshow(naive_estimate)
+plt.colorbar()
+plt.title('Naive histogram estimate')
+plt.show()
+
+#########################################################
+########### TIME VARYING BANDWIDTH ESTIMATE #############
+#########################################################
+
+#We already have a time varying bandwidth in the preloaded data (bw) and the naive prebin estimate
+#we also have gaussian_kernels and associated kernel_bandwidths. We can now use
+#the grid_proj_kde directly to get the kde estimate but we need to divide the cell_bandwidths
+#with the particle count to get the average bandwidth in each cell using np.divide
+
+pre_estimate,count_pre,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
+kde_time_bw = grid_proj_kde(x_grid, y_grid, naive_estimate, gaussian_kernels, kernel_bandwidths, cell_bandwidths)
+
+#make a plot of the time dependent bandwidth estimate
+plt.figure()
+plt.imshow(kde_time_bw)
+plt.colorbar()
+plt.title('Time dependent bandwidth estimate')
+plt.show()
+
+########################################################
+########### DATA DRIVEN BANDWIDTH ESTIMATE #############
+########################################################
+
+#Apply the histogram_variance function to all cells in the naive estimate
+
+
 
 #bin all particles
 histogram_prebinned,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
@@ -515,7 +677,53 @@ plt.imshow(kde_scipy_silverman)
 plt.colorbar()
 plt.title('Gaussian KDE using scipy Silverman constant bandwidth')
 
+ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)
 
+
+
+######################################################################
+######## GRID PROJECTED NON-ADAPTIVE KERNEL DENSITY ESTIMATOR ########
+######################################################################
+
+#make an array of arbitrary bandwidths for testing
+particle_bandwidths = np.ones(num_particles)*1
+for i in range(1,num_particles):
+    particle_bandwidths[i] = particle_bandwidths[i-1]+0.00001
+
+#flipt it upside down
+particle_bandwidths = particle_bandwidths[::-1]
+
+
+############################################################
+##### GRID PROJECTED ADAPTIVE KERNEL DENSITY ESTIMATOR #####
+############################################################
+
+grid_size = 100  # Example grid size
+
+histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test,bandwidths=particle_bandwidths[::frac_diff])
+
+x_grid = np.linspace(0, 10, grid_size)
+ratio = 1/3
+gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
+cell_bandwidths = cell_bandwidths
+
+n_u = grid_proj_kde(grid_size, 
+                    kde_pilot, 
+                    gaussian_kernels_test,
+                    kernel_bandwidths,
+                    cell_bandwidths)
+
+plt.figure()
+plt.imshow(n_u)
+plt.title('Grid projected KDE using time dependent bandwidth')
+plt.colorbar()
+
+
+#plot the ground truth
+plt.figure()
+plt.imshow(ground_truth)
+plt.title('Ground truth')
+plt.colorbar()
 
 
 #Histogram estimator estimate
@@ -617,7 +825,18 @@ n_u = grid_proj_kde(grid_size,
                     kernel_bandwidths,
                     cell_bandwidths)
 
+plt.figure()
 plt.imshow(n_u)
+plt.title('Grid projected KDE using time dependent bandwidth')
+plt.colorbar()
+
+#plot the ground truth
+plt.figure()
+plt.imshow(ground_truth)
+plt.title('Ground truth')
+plt.colorbar()
+
+
 
 #####################################################
 #####################################################

@@ -504,7 +504,9 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
     np.add.at(particle_count, (y_indices, x_indices), 1)
     np.add.at(sum_bandwidth, (y_indices, x_indices), bandwidths * weights)
 
-    return particle_count, total_weight, sum_bandwidth
+    cell_bandwidth = np.divide(sum_bandwidth, total_weight, out=np.zeros_like(sum_bandwidth), where=total_weight != 0)
+
+    return particle_count, total_weight, cell_bandwidth
 
 def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
@@ -544,12 +546,13 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 
     return gaussian_kernels, bandwidths_h#, kernel_origin
 
-def grid_proj_kde(grid_x,grid_y,kde_pilot,gaussian_kernels,kernel_bandwidths,cell_bandwidths):
+def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths, cell_bandwidths):
     """
     Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
 
     Parameters:
-    grid_size (int): The size of the grid (grid_size x grid_size).
+    grid_x (np.array): Array of grid cell boundaries in the x-direction.
+    grid_y (np.array): Array of grid cell boundaries in the y-direction.
     kde_pilot (np.array): The pilot KDE values on the grid.
     gaussian_kernels (list): List of Gaussian kernel matrices.
     kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
@@ -557,8 +560,16 @@ def grid_proj_kde(grid_x,grid_y,kde_pilot,gaussian_kernels,kernel_bandwidths,cel
 
     Returns:
     np.array: The resulting KDE projected onto the grid.
+
+    Notes:
+    - This function only works with a simple histogram estimator as the pilot KDE.
+    - The function assumes that the Gaussian kernels are symmetric around their center.
+    - The grid size is determined by the lengths of grid_x and grid_y.
+    - The function iterates over non-zero values in the pilot KDE and applies the corresponding Gaussian kernel.
+    - The appropriate Gaussian kernel is selected based on the bandwidth of each particle.
+    - The resulting KDE is accumulated in the output grid n_u.
     """
-    #ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
+    # ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
     
     # Get the grid size
     gridsize_x = len(grid_x)
@@ -570,16 +581,16 @@ def grid_proj_kde(grid_x,grid_y,kde_pilot,gaussian_kernels,kernel_bandwidths,cel
     non_zero_indices = np.argwhere(kde_pilot > 0)
    
     # Find the closest kernel indices for each particle bandwidth
-    #kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
+    # kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
     
     for idx in non_zero_indices:
         i, j = idx
         # Get the appropriate kernel for the current particle bandwidth
-        #find the right kernel index
-        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i,j]))
-        #kernel_index = kernel_indices[i * grid_size + j]
+        # find the right kernel index
+        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j]))
+        # kernel_index = kernel_indices[i * grid_size + j]
         kernel = gaussian_kernels[kernel_index]
-        kernel_size = len(kernel) // 2 #Why?? Because it's symmetric around the center. 
+        kernel_size = len(kernel) // 2  # Because it's symmetric around the center.
 
         # Define the window boundaries
         i_min = max(i - kernel_size, 0)
@@ -1153,6 +1164,8 @@ elif run_full == True:
 
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
+kde_time_vector = np.zeros(time_steps_full-1)
+
 run_all = True
 
 if run_all == True:
@@ -1387,6 +1400,8 @@ if run_all == True:
 
                 ### Calculate the kernel density estimate ###
 
+                #Time the kde step
+                start_time = time.time()
                 #pre-kernel density estimate using the histogram estimator
                 PreGRID_active,preGRID_active_weight,preGRID_active_bw = histogram_estimator(parts_active_z[0],
                                                     parts_active_z[1],
@@ -1396,7 +1411,8 @@ if run_all == True:
                                                     parts_active_z[4])
                 
                 #Calculate the average bandwidth in each cell by dividin with preGRID_active_weight
-                preGRID_active_bw = np.divide(preGRID_active_bw,preGRID_active_weight, out=np.zeros_like(preGRID_active_bw), where=preGRID_active_weight != 0)
+                #THE FUNCTION NOW DOES THIS ITSELF. 
+                #preGRID_active_bw = np.divide(preGRID_active_bw,preGRID_active_weight, out=np.zeros_like(preGRID_active_bw), where=preGRID_active_weight != 0)
 
                 GRID_active = grid_proj_kde(bin_x,
                                             bin_y,
@@ -1405,6 +1421,12 @@ if run_all == True:
                                             gaussian_bandwidths_h,
                                             preGRID_active_bw)
                 
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                print(f"KDE took {elapsed_time:.6f} seconds")
+                #store the time it took to calculate the kde 
+                kde_time_vector[kkk] = elapsed_time
+
                 if run_test == True:
                     GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3
                 elif run_full == True:

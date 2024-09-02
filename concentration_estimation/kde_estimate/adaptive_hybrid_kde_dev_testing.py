@@ -16,6 +16,11 @@ from scipy.stats import gaussian_kde
 from scipy.stats import norm
 from scipy.ndimage import generic_filter
 
+#set plotting style
+plt.style.use('dark_background')
+#set the plotting style back to default
+plt.style.use('default')
+
 #Triggers
 create_test_data = False
 load_test_data = True
@@ -472,13 +477,9 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
 
     cell_bandwidth = np.divide(cell_bandwidth, total_weight, out=np.zeros_like(cell_bandwidth), where=total_weight!=0)
 
-    return particle_count, total_weight, cell_bandwidth
+    return total_weight,particle_count, cell_bandwidth
 
-#create random binned data
-binned_data = np.random.randint(0,10,(10,10))
-window_size = 2
-
-def histogram_variance(binned_data, window_size):
+def histogram_variance(binned_data, window_size, bin_size=1):
     '''
     Calculate the simple variance of the binned data using ...
     '''
@@ -499,8 +500,130 @@ def histogram_variance(binned_data, window_size):
     #Calculate the covariance
     cov_xy = np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)
     #Calculate the total variance
-    variance_data = var_x+var_y+2*cov_xy
+    variance_data = var_x+var_y+2*cov_xy*0
+    #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
+    #Sheppards correction
+    variance_data = variance_data - 1/12*(3*bin_size**2)
     return variance_data
+
+def window_sum(data):
+    # Filter out zero values
+    non_zero_data = data[data != 0]
+    return np.sum(non_zero_data)
+
+def calculate_autocorrelation_vectorized(data):
+    '''
+    Calculates the autocorrelation for all lags along rows and columns, separately, as an average.
+    
+    Input:
+    data: 2D matrix with equal number of rows and columns
+    
+    Output:
+    autocorr_rows: 1D array with the average autocorrelation for each lag along rows
+    autocorr_cols: 1D array with the average autocorrelation for each lag along columns
+    '''
+    num_rows, num_cols = data.shape
+    lags = num_rows - 1
+    autocorr_rows = np.zeros((num_rows, lags))
+    autocorr_cols = np.zeros((num_cols, lags))
+    
+    for k in range(1, lags + 1):
+        autocorr_rows[:, k - 1] = np.sum(data[:, :-k] * data[:, k:], axis=1) / (num_cols - k)
+        autocorr_cols[:, k - 1] = np.sum(data[:-k, :] * data[k:, :], axis=0) / (num_rows - k)
+    
+    autocorr_rows = np.nanmean(autocorr_rows, axis=0)
+    autocorr_cols = np.nanmean(autocorr_cols, axis=0)
+    
+    return autocorr_rows, autocorr_cols
+
+def get_integral_length_scale_vectorized(histogram_prebinned, window_size):
+    '''
+    Processes the histogram_prebinned data to calculate the integral length scale
+    for all non-zero elements using a specified window size.
+    
+    Input:
+    histogram_prebinned: 2D matrix with histogram data
+    window_size: Size of the window to use for the calculations
+    
+    Output:
+    integral_length_scale_matrix: 2D matrix with the integral length scale values
+    '''
+    rows, cols = histogram_prebinned.shape
+    integral_length_scale_matrix = np.zeros_like(histogram_prebinned, dtype=float)
+    
+    for i in range(0, rows - window_size + 1):
+        for j in range(0, cols - window_size + 1):
+            window = histogram_prebinned[i:i + window_size, j:j + window_size]
+            if np.any(window != 0):  # Check if there are any non-zero elements in the window
+                autocorr_rows, autocorr_cols = calculate_autocorrelation(window)
+                autocorr = (autocorr_rows + autocorr_cols) / 2
+                integral_length_scale = np.sum(autocorr) / autocorr[0]
+                integral_length_scale_matrix[i:i + window_size, j:j + window_size] = integral_length_scale
+    
+    return integral_length_scale_matrix
+
+def calculate_autocorrelation(data):
+    '''
+    Calculates the autocorrelation for all lags along rows and columns, separately, as an average.
+    
+    Input:
+    data: 2D matrix with equal number of rows and columns
+    
+    Output:
+    autocorr_rows: 1D array with the average autocorrelation for each lag along rows
+    autocorr_cols: 1D array with the average autocorrelation for each lag along columns
+    '''
+    # Initialize the autocorrelation matrices
+    autocorr_rows = np.zeros((len(data), len(data[0])))
+    autocorr_cols = np.zeros((len(data), len(data[0])))
+    lags = len(data) - 1
+    len_data = len(data[0])
+    
+    # Calculate the autocorrelation for all lags along rows and columns
+    for i in range(len(data)):
+        for k in range(1, lags + 1):
+            autocorr_rows[i, k - 1] = (1 / (len_data - k)) * np.sum(data[i, :len(data[i]) - k] * data[i, k:])
+            autocorr_cols[i, k - 1] = (1 / (len_data - k)) * np.sum(data[:len(data[i]) - k, i] * data[k:, i])
+    
+    # Calculate the average autocorrelation for rows and columns
+    autocorr_rows = np.nanmean(autocorr_rows, axis=0)
+    autocorr_cols = np.nanmean(autocorr_cols, axis=0)
+    
+    return autocorr_rows, autocorr_cols
+
+def get_integral_length_scale(histogram_prebinned, window_size):
+    '''
+    Processes the histogram_prebinned data to calculate the integral length scale
+    for all non-zero elements using a specified window size.
+    
+    Input:
+    histogram_prebinned: 2D matrix with histogram data
+    window_size: Size of the window to use for the calculations
+    
+    Output:
+    integral_length_scale_matrix: 2D matrix with the integral length scale values
+    '''
+    rows, cols = histogram_prebinned.shape
+    integral_length_scale_matrix = np.zeros_like(histogram_prebinned, dtype=float)
+
+    #find all non-zero indices in histogram_prebinned
+    non_zero_indices = np.argwhere(histogram_prebinned > 0)
+
+    #pad histogram_prebinned to avoid edge effects
+    histogram_prebinned_padded = np.pad(histogram_prebinned, window_size // 2, mode='reflect')
+
+    for idx in non_zero_indices:
+        i, j = idx
+        window = histogram_prebinned_padded[i:i + window_size, j:j + window_size]
+        if np.any(window != 0):
+            autocorr_rows, autocorr_cols = calculate_autocorrelation(window)
+            autocorr = (autocorr_rows + autocorr_cols) / 2
+            integral_length_scale = np.sum(autocorr) / autocorr[0]
+            integral_length_scale_matrix[i, j] = integral_length_scale
+
+
+    return integral_length_scale_matrix
+
 
 # ------------------------------------------------------- #
 ###########################################################
@@ -512,6 +635,10 @@ def histogram_variance(binned_data, window_size):
 trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=load_test_data,frac_diff=frac_diff)
 bw_full = np.ones(len(trajectories_full))
 weights_full = weights
+#Set weights_full and weights to 1
+weights_full = np.ones(len(trajectories_full))
+weights_test = np.ones(len(trajectories))
+
 
 grid_size = 100
 #Get the grid
@@ -567,553 +694,181 @@ plt.show()
 #with the particle count to get the average bandwidth in each cell using np.divide
 
 pre_estimate,count_pre,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
-kde_time_bw = grid_proj_kde(x_grid, y_grid, naive_estimate, gaussian_kernels, kernel_bandwidths, cell_bandwidths)
+kde_time_bw = grid_proj_kde(x_grid, y_grid, pre_estimate, gaussian_kernels, kernel_bandwidths, cell_bandwidths)
 
 #make a plot of the time dependent bandwidth estimate
 plt.figure()
 plt.imshow(kde_time_bw)
 plt.colorbar()
-plt.title('Time dependent bandwidth estimate')
+plt.title('Time dependent bandwidth estimate (old method)')
 plt.show()
 
 ########################################################
 ########### DATA DRIVEN BANDWIDTH ESTIMATE #############
 ########################################################
 
-#Apply the histogram_variance function to all cells in the naive estimate
+#MAKE PRE BINNED ESTIMATE
+histogram_prebinned,count_prebinned,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
 
+#Define window size, i.e. the size the adaptation is applied to
+window_size = 21
+pad_size = window_size // 2
+#pad the naive estimate with zeros (reflective padding) to avoid problems at the edges.
+histogram_prebinned_padded = np.pad(histogram_prebinned, pad_size, mode='reflect')
+count_prebinned_padded = np.pad(count_prebinned, pad_size, mode='reflect')
 
+###
+#ESTIMATE THE STANDARD DEVIATION IN EACH WINDOW ASSOCIATED WITH EACH NON-ZERO CELL.
+###
 
-#bin all particles
-histogram_prebinned,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
+variance_estimate = np.zeros(np.shape(naive_estimate))
 
-#histogram_prebinned, x_edges, y_edges = np.histogram2d(trajectories[:,1],trajectories[:,0],bins=[x_grid,y_grid])
+for i in range(len(naive_estimate)):
+    for j in range(len(naive_estimate)):
+        if naive_estimate[i, j] != 0:
+            window = histogram_prebinned_padded[i:i+window_size, j:j+window_size]
+            variance_estimate[i, j] = histogram_variance(window, 1)
 
-#calculate density and standard deviation in each cell
-from scipy.ndimage import generic_filter
-import numpy.random as npr
+std_estimate = np.sqrt(variance_estimate)
 
-def local_counts(data):
-    return np.sum(data)
-
-def local_std(data):
-    #data = data[data>0]
-    window_mean = np.mean(data[data>0])
-    return np.sqrt(np.sum((data - window_mean)**2))
-
-
-
-def local_numcounts(data):
-    return np.sum(data>0)
-            
-    
-
-p_size = 7
-
-local_counts_est = np.zeros(np.shape(histogram_prebinned))    
-local_counts_est[counts>0] = generic_filter(counts, local_counts, size=(p_size,p_size))[counts>0]
-#plt.imshow(local_counts_est)
-print(len(local_counts_est[local_counts_est>0]))
-
-local_std_est = np.zeros(np.shape(histogram_prebinned))
-local_std_est[counts>0] = (generic_filter(counts, local_std, size=(p_size,p_size))[counts>0])/local_counts_est[counts>0]
-print(len(local_std_est[local_std_est>0]))
-#add noise lost during the binning process
-#grid cell size
-dxy = x_grid[1]-x_grid[0]
-#add noise to the std
-
-
-
-plt.imshow(local_std_est)
-
-
-#calculate the silvermans factor for each non-zero value cell
-h = np.zeros(np.shape(local_counts_est))
-
-h[local_counts_est>0] = silvermans_simple_2d(local_counts_est[local_counts_est>0],2)*local_std_est[local_counts_est>0]
-
-
-plt.imshow(h*2)
+#plot the variance estimate
+plt.figure()
+plt.imshow(std_estimate)
 plt.colorbar()
-plt.title('Adaptive bandwidth estimate')
+plt.title('Standard deviation estimate')
 plt.show()
 
-#calculate the bandwidth for each cell
+###
+#CALCULATE N, I.E. NUMBER OF PARTICLES IN ALL ALL NON-ZERO CELLS
+###
 
+sum_estimate = generic_filter(histogram_prebinned, window_sum, size=window_size)
+sum_estimate[histogram_prebinned == 0] = 0
 
-############################################################
-################## CALCULATE KERNEL DENSITY ################
-############################################################
-
-#...using grid_projected_kde
-kde_pilot = histogram_prebinned/np.sum(histogram_prebinned)
-x_grid = np.linspace(0, 10, grid_size)
-ratio = 1/3
-num_kernels = 15
-gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
-
-cell_bandwidths = h*10
-
-n_u = grid_proj_kde(grid_size, 
-                    kde_pilot, 
-                    gaussian_kernels_test,
-                    kernel_bandwidths,
-                    cell_bandwidths)
-
-plt.figure()
-plt.imshow(n_u)
+#plot it.
+plt.imshow(sum_estimate)
 plt.colorbar()
-plt.title('Grid projected KDE using adaptive ...')
+plt.title('Sum estimate (N pure)')
+plt.show()
 
+###
+#CALCULATE SIMPLE EFFECTIVE N_eff_simple = N/window_size**2
+###
 
+N_eff_simple = sum_estimate/window_size
+N_eff_simple = sum_estimate
 
-### CALCULATE USING THE SCIPY GAUSSIAN KDE FUNCTION ###
-kde_scipy_silverman = gaussian_kde(trajectories.T,bw_method = 'silverman',weights=weights_test)
-kde_scipy_silverman = np.reshape(kde_scipy_silverman(np.vstack([X.ravel(), Y.ravel()])), X.shape)
+###
+#CALCULATE ADVANCED EFFECTIVE N_eff_advanced
+###
 
-plt.figure()
-plt.imshow(kde_scipy_silverman)
+integral_length_scale = get_integral_length_scale(histogram_prebinned, window_size)
+#also called P_eff in notes...
+
+#plot the integral length scale
+plt.imshow(integral_length_scale)
 plt.colorbar()
-plt.title('Gaussian KDE using scipy Silverman constant bandwidth')
-
-ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)
-
+plt.title('Integral length scale')
+plt.show()
 
 
-######################################################################
-######## GRID PROJECTED NON-ADAPTIVE KERNEL DENSITY ESTIMATOR ########
-######################################################################
+#calculate the advanced N_eff
+N_eff_advanced = sum_estimate/integral_length_scale
 
-#make an array of arbitrary bandwidths for testing
-particle_bandwidths = np.ones(num_particles)*1
-for i in range(1,num_particles):
-    particle_bandwidths[i] = particle_bandwidths[i-1]+0.00001
-
-#flipt it upside down
-particle_bandwidths = particle_bandwidths[::-1]
-
-
-############################################################
-##### GRID PROJECTED ADAPTIVE KERNEL DENSITY ESTIMATOR #####
-############################################################
-
-grid_size = 100  # Example grid size
-
-histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test,bandwidths=particle_bandwidths[::frac_diff])
-
-x_grid = np.linspace(0, 10, grid_size)
-ratio = 1/3
-gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
-cell_bandwidths = cell_bandwidths
-
-n_u = grid_proj_kde(grid_size, 
-                    kde_pilot, 
-                    gaussian_kernels_test,
-                    kernel_bandwidths,
-                    cell_bandwidths)
-
-plt.figure()
-plt.imshow(n_u)
-plt.title('Grid projected KDE using time dependent bandwidth')
+#plot the advanced N_eff
+plt.imshow(N_eff_advanced)
 plt.colorbar()
+plt.title('Advanced effective N_eff using integral length scale')
+plt.show()
 
+###
+#CALCULATE THE SILVERMAN FACTIR (4/(dim+2))**(1/(dim+4))*n**(-1/(dim+4)) FOR ALL NON-ZERO CELLS
+###
 
-#plot the ground truth
-plt.figure()
-plt.imshow(ground_truth)
-plt.title('Ground truth')
+N_eff = N_eff_advanced
+
+N_silv = np.zeros(np.shape(N_eff))
+non_zero_indices = N_eff != 0
+N_silv[non_zero_indices] = silvermans_simple_2d(N_eff[non_zero_indices], 2)
+#set all zero values to nan
+N_silv[N_eff == 0] = np.nan
+
+#plot Silvermans factor
+plt.imshow(N_silv)
 plt.colorbar()
+plt.title('Silverman factor estimate')
+plt.show()
 
+###
+#CALCULATE THE BANDWIDTH h = N_silv*std_estimate
+###
 
-#Histogram estimator estimate
-histogram_estimator_est,counts,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test)
-#Kernel density estimator with time dependent bandwidth estimate
-kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories[:,0].T,trajectories[:,1].T,x_grid,y_grid,bw,weights_test)
-kernel_density_estimator_est = kernel_density_estimator_est.T
+h = N_silv*std_estimate
 
-#Normalize everything
-histogram_estimator_est = histogram_estimator_est/np.sum(histogram_estimator_est)
-kernel_density_estimator_est = kernel_density_estimator_est/np.sum(kernel_density_estimator_est)
-ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(trajectories_full, grid_size,weights=weights)/np.sum(histogram_estimator(trajectories_full, grid_size,weights=weights))
+#plot the bandwidth estimate
+plt.figure()
+plt.imshow(h)
+plt.colorbar()
+plt.title('Bandwidth estimate')
+plt.show()
 
+###
+#CALCULATE THE KERNEL DENSITY ESTIMATE
+###
 
-#####################################################
-##### CALCULATE PILOT KDE USING PREMADE PACKAGE #####
-#####################################################
+kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h)
+#normalize
+kde_data_driven = kde_data_driven/np.sum(kde_data_driven)
 
-#create a 2d grid
-X, Y = np.meshgrid(x_grid, y_grid)
-#...using vstack
-positions = np.vstack([X.ravel(), Y.ravel()])
+#plot the kernel density estimate
+plt.figure()
+plt.imshow(kde_data_driven)
+plt.colorbar()
+plt.title('Data driven kde estimate using NeffNeff! Full pakke!')
+plt.show()
 
-# Sample particle positions
-values = np.array(trajectories.T)  
-#remove nans in values
-weights = weights_test[~np.isnan(values).any(axis=0)]
-values = values[:,~np.isnan(values).any(axis=0)]
-kde_pilot = gaussian_kde(values,bw_method = 'silverman',weights = weights)
-#with constant bandwidth
-kde_pilot = gaussian_kde(values,bw_method = 0.1,weights = np.ones(len(values[0])))
-kde_pilot = np.reshape(kde_pilot(positions).T, X.shape)
+#set all nan values in h to 0
+h[np.isnan(h)] = 0
+#plot everything:
 
-#try to use the FFT method from kdepy ... maybe later...
+# Determine the global min and max values for the lower three plots
+vmin = min(np.min(kde_data_driven), np.min(naive_estimate), np.min(ground_truth))
+vmax = max(np.max(kde_data_driven), np.max(naive_estimate), np.max(ground_truth))
 
-#############################################################################
-####### CALCULATE BANDWIDTH H USING THE HISTOGRAM ESTIMATOR ESTIMATE ########
-#############################################################################
+fig, axs = plt.subplots(2, 3, figsize=(15, 10))
 
-#The bandwidth must be h = n*del_x, i.e. a whole number times the grid resolution
-#this means that h is 1,2,3,4,5, etc corresponding to a 3x3, 5x5, 7x7, 9x9, 11x11, etc approximation
-# to a gaussian kernel. 
+# Plot 1: Data driven kde estimate using NeffNeff! Full pakke!
+im1 = axs[1, 2].imshow(kde_data_driven, vmin=vmin, vmax=vmax)
+axs[1, 2].set_title('Data driven estimator using "NeffNeffNeff!')
+fig.colorbar(im1, ax=axs[1, 2])
 
-# Create kernels:
-x_grid = np.linspace(0, 10, 100)
-num_kernels = 20
-ratio = 1/3
-gaussian_kernels, bandwidths_h, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
+# Plot 2: Bandwidth estimate
+im2 = axs[0, 2].imshow(h)
+axs[0, 2].set_title('Bandwidth estimate')
+fig.colorbar(im2, ax=axs[0, 2])
 
-#plot the kernels in a 3x4 plot
-fig, axes = plt.subplots(3, 4, figsize=(16, 12))
-axes = axes.flatten()
-for i in range(12):
-    a = np.arange(-i,i+1,1)
-    b = np.arange(-i,i+1,1)
-    #make it a 3x3 kernel giving the distance in each dimension (3x3 matrix)
-    #a = a.reshape(-1,1)
-    #b = b.reshape(1,-1)
-    #plot the kernel centered at kernel_origin
-    axes[i].pcolor(kernel_origin[i][0]+a,kernel_origin[i][1]+b,gaussian_kernels[i])
-    
-    axes[i].set_title('Gaussian Kernel, h='+str(i+1))
-    #set the same limit for everyone
-    axes[i].set_xlim(-12, 12)
-    axes[i].set_ylim(-12, 12)
+# Plot 3: Integral length scale
+im3 = axs[0, 1].imshow(integral_length_scale)
+axs[0, 1].set_title('Integral length scale')
+fig.colorbar(im3, ax=axs[0, 1])
+
+# Plot 4: Standard deviation estimate
+im4 = axs[0, 0].imshow(std_estimate)
+axs[0, 0].set_title('Standard deviation estimate')
+fig.colorbar(im4, ax=axs[0, 0])
+
+# Plot 5: Naive histogram estimate
+im5 = axs[1, 1].imshow(naive_estimate, vmin=vmin, vmax=vmax)
+axs[1, 1].set_title('Naive histogram estimate')
+fig.colorbar(im5, ax=axs[1, 1])
+
+# Plot 6: Ground truth
+im6 = axs[1, 0].imshow(ground_truth, vmin=vmin, vmax=vmax)
+axs[1, 0].set_title('Ground truth')
+fig.colorbar(im6, ax=axs[1, 0])
 
 plt.tight_layout()
 plt.show()
-
-######################################################################
-######## GRID PROJECTED NON-ADAPTIVE KERNEL DENSITY ESTIMATOR ########
-######################################################################
-
-#make an array of arbitrary bandwidths for testing
-particle_bandwidths = np.ones(num_particles)*1
-for i in range(1,num_particles):
-    particle_bandwidths[i] = particle_bandwidths[i-1]+0.00001
-
-#flipt it upside down
-particle_bandwidths = particle_bandwidths[::-1]
-
-
-############################################################
-##### GRID PROJECTED ADAPTIVE KERNEL DENSITY ESTIMATOR #####
-############################################################
-
-grid_size = 100  # Example grid size
-
-histogram_est,kde_pilot,cell_bandwidths = histogram_estimator(trajectories, grid_size,weights=weights_test,bandwidths=particle_bandwidths[::frac_diff])
-
-x_grid = np.linspace(0, 10, grid_size)
-ratio = 1/3
-gaussian_kernels_test, kernel_bandwidths, kernel_origin = generate_gaussian_kernels(x_grid, num_kernels, ratio)
-cell_bandwidths = cell_bandwidths
-
-n_u = grid_proj_kde(grid_size, 
-                    kde_pilot, 
-                    gaussian_kernels_test,
-                    kernel_bandwidths,
-                    cell_bandwidths)
-
-plt.figure()
-plt.imshow(n_u)
-plt.title('Grid projected KDE using time dependent bandwidth')
-plt.colorbar()
-
-#plot the ground truth
-plt.figure()
-plt.imshow(ground_truth)
-plt.title('Ground truth')
-plt.colorbar()
-
-
-
-#####################################################
-#####################################################
-#####################################################
-#################### PLOTTING #######################
-#####################################################
-#####################################################
-#####################################################
-
-plotting = True
-if plotting == True:
-    #stop the script here
-
-    ##########################################################################
-    # Create a 1x2 subplot of all the particles in the full and test dataset #
-    ##########################################################################
-
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-
-    # Plot final particle positions for trajectories_full
-    axes[0].scatter(trajectories_full[:,0], trajectories_full[:,1], s=1)
-    axes[0].set_xlim(0, grid_size_plot)
-    axes[0].set_ylim(0, grid_size_plot)
-    axes[0].set_title('Final Particle Positions (Full)')
-    axes[0].set_xlabel('x')
-    axes[0].set_ylabel('y')
-
-    # Plot final particle positions for trajectories
-    axes[1].scatter(trajectories[:,0], trajectories[:,1], s=1)
-    axes[1].set_xlim(0, grid_size_plot)
-    axes[1].set_ylim(0, grid_size_plot)
-    axes[1].set_title('Final Particle Positions (Sampled)')
-    axes[1].set_xlabel('x')
-    axes[1].set_ylabel('y')
-
-    plt.tight_layout()
-    plt.show()
-
-    ########################################################
-    ### Create 2x3 color plots with data and differences ###
-    ########################################################
-
-    # Set font size
-    font_size = 14
-    # Create a 3x2 subplot
-    fig, axes = plt.subplots(3, 2, figsize=(16, 24))
-    # Flatten the axes array for easy iteration
-    axes = axes.flatten()
-    # Plot each matrix in the first column
-    matrices = [ground_truth, histogram_estimator_est, kernel_density_estimator_est]
-    titles = ['Histogram est, N='+str(num_particles), 
-            'Histogram Estimator, N='+str(num_particles/frac_diff), 
-            'Kernel Density Estimator, N='+str(num_particles/frac_diff)]
-    colormap = 'plasma'
-
-    #Get color limits from the ground_truth matrix
-    vmin = np.min(ground_truth)
-    vmax = np.max(ground_truth)
-
-    for ax, matrix, title in zip(axes[::2], matrices, titles):
-        im = ax.pcolor(matrix, cmap=colormap,vmin=vmin,vmax=vmax)
-        ax.set_title(title, fontsize=font_size)
-        ax.set_xlabel('x', fontsize=font_size)
-        ax.set_ylabel('y', fontsize=font_size)
-        ax.axis('square')
-        ax.set_xlim(0, grid_size_plot)
-        ax.set_ylim(0, grid_size_plot)
-        
-        # Create a colorbar
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-
-    #Plot the Z matrix (the default gaussian_kde solution) in the upper right hand side plot
-    #using the same plotting routine as above
-    im = axes[1].pcolor(kde_pilot, cmap=colormap,vmin=vmin,vmax=vmax)
-    axes[1].set_title('Gaussian KDE using Scott assumption', fontsize=font_size)
-    axes[1].set_xlabel('x', fontsize=font_size)
-    axes[1].set_ylabel('y', fontsize=font_size)
-    axes[1].axis('square')
-    axes[1].set_xlim(0, grid_size_plot)
-    axes[1].set_ylim(0, grid_size_plot)
-    #and same color range and colorbar
-    divider = make_axes_locatable(axes[1])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    plt.colorbar(im, cax=cax)
-
-    #Plot the grid projected kernel density estimate in the middle right figure
-
-    im = axes[3].pcolor(A, cmap=colormap,vmin=vmin,vmax=vmax)
-    axes[3].set_title('Grid projected KDE', fontsize=font_size)
-    axes[3].set_xlabel('x', fontsize=font_size)
-    axes[3].set_ylabel('y', fontsize=font_size)
-    axes[3].axis('square')
-    axes[3].set_xlim(0, grid_size_plot)
-    axes[3].set_ylim(0, grid_size_plot)
-    #and same color range and colorbar
-    divider = make_axes_locatable(axes[3])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    plt.colorbar(im, cax=cax)
-
-    #
-
-
-
-    '''
-    # Plot the differences in the second column
-    diff_matrices = [np.abs(ground_truth - histogram_estimator_est), np.abs(ground_truth - kernel_density_estimator_est)]
-    diff_titles = ['Difference Histogram Estimator', 'Difference Kernel Density Estimator']
-
-    for ax, matrix, title in zip(axes[3::2], diff_matrices, diff_titles):
-        im = ax.pcolor(matrix, cmap=colormap)
-        ax.set_title(title, fontsize=font_size)
-        ax.set_xlabel('x', fontsize=font_size)
-        ax.set_ylabel('y', fontsize=font_size)
-        ax.axis('square')
-        ax.set_xlim(0, grid_size_plot)
-        ax.set_ylim(0, grid_size_plot)
-        
-        # Create a colorbar
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-    '''
-
-    plt.tight_layout()
-    plt.show()
-
-    # Set font size
-    font_size = 14
-    # Create a 3x2 subplot
-    fig, axes = plt.subplots(3, 2, figsize=(16, 24))
-    # Flatten the axes array for easy iteration
-    axes = axes.flatten()
-    # Plot each matrix in the first column
-    matrices = [ground_truth, histogram_estimator_est, kernel_density_estimator_est]
-    titles = ['Histogram est, N='+str(num_particles), 
-            'Histogram Estimator, N='+str(num_particles/frac_diff), 
-            'Kernel Density Estimator, N='+str(num_particles/frac_diff)]
-    colormap = 'plasma'
-    # Get color limits from the ground_truth matrix
-    vmin = np.min(ground_truth)
-    vmax = np.max(ground_truth)
-    # Get color limits for the difference matrices
-    diff_vmin = min(np.min(np.abs(ground_truth - histogram_estimator_est)), np.min(np.abs(ground_truth - kernel_density_estimator_est)))
-    diff_vmax = max(np.max(np.abs(ground_truth - histogram_estimator_est)), np.max(np.abs(ground_truth - kernel_density_estimator_est)))
-    levels = np.linspace(vmin, vmax, 40)
-    for ax, matrix, title in zip(axes[::2], matrices, titles):
-        im = ax.contourf(matrix, cmap=colormap, levels=levels)
-        ax.set_title(title, fontsize=font_size)
-        ax.set_xlabel('x', fontsize=font_size)
-        ax.set_ylabel('y', fontsize=font_size)
-        ax.axis('square')
-        ax.set_xlim(0, grid_size_plot)
-        ax.set_ylim(0, grid_size_plot)
-        
-        # Create a colorbar
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-
-    #Plot the Z matrix (the default gaussian_kde solution) in the upper right hand side plot
-    #using the same plotting routine as above
-    im = axes[1].contourf(kde_pilot, cmap=colormap, levels=levels)
-    axes[1].set_title('Gaussian KDE using Scott assumption', fontsize=font_size)
-    axes[1].set_xlabel('x', fontsize=font_size)
-    axes[1].set_ylabel('y', fontsize=font_size)
-    axes[1].axis('square')
-    axes[1].set_xlim(0, grid_size_plot)
-    axes[1].set_ylim(0, grid_size_plot)
-    #and same color range and colorbar
-    divider = make_axes_locatable(axes[1])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    plt.colorbar(im, cax=cax)
-
-    #Plot the grid projected kernel density estimate in the middle right figure
-    im = axes[3].contourf(A, cmap=colormap, levels=levels)
-    axes[3].set_title('Grid projected NON-WEIGHTED KDE', fontsize=font_size)
-    axes[3].set_xlabel('x', fontsize=font_size)
-    axes[3].set_ylabel('y', fontsize=font_size)
-    axes[3].axis('square')
-    axes[3].set_xlim(0, grid_size_plot)
-    axes[3].set_ylim(0, grid_size_plot)
-    #and same color range and colorbar
-    divider = make_axes_locatable(axes[3])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    plt.colorbar(im, cax=cax)
-
-
-    '''
-    # Plot the differences in the second column
-    diff_matrices = [np.abs(ground_truth - histogram_estimator_est), np.abs(ground_truth - kernel_density_estimator_est)]
-    diff_titles = ['Difference Histogram Estimator', 'Difference Kernel Density Estimator']
-
-    for ax, matrix, title in zip(axes[3::2], diff_matrices, diff_titles):
-        im = ax.contourf(matrix, cmap=colormap, vmin=diff_vmin, vmax=diff_vmax)
-        ax.set_title(title, fontsize=font_size)
-        ax.set_xlabel('x', fontsize=font_size)
-        ax.set_ylabel('y', fontsize=font_size)
-        ax.axis('square')
-        ax.set_xlim(0, grid_size_plot)
-        ax.set_ylim(0, grid_size_plot)
-        
-        # Create a colorbar
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-
-    '''
-
-    plt.tight_layout()
-    plt.show()
-    #print the summed differences
-    print('Summed differences between the two estimators')
-    print('Difference, histogram estimator')
-    print(np.sum(np.abs(ground_truth - histogram_estimator_est)))
-    print('Difference, kernel density estimator')
-    print(np.sum(np.abs(ground_truth - kernel_density_estimator_est)))
-    print('Difference, grid projected KDE')
-    print(np.sum(np.abs(ground_truth - A)))
-
-    ###############
-    #TEST WHAT'S FASTEST GRID PROJECTED VS kernel_matrix_2d_NOFLAT
-
-    #Create a bw v
-    trajectories_test = trajectories_full[::10000]
-
-    #Test on the big particle dataset
-    import time
-    start = time.time()
-    kernel_density_estimator_est = kernel_matrix_2d_NOFLAT(trajectories_test[:,0],trajectories_test[:,1],x_grid,y_grid,bw_full,weights_full)
-    kernel_density_estimator_est = kernel_density_estimator_est.T
-    end = time.time()
-
-    print('Time for kernel_matrix_2d_NOFLAT')
-    print(end-start)
-
-    start = time.time()
-    #Precompute the pilot KDE
-    kde_pilot = histogram_estimator(trajectories_test, grid_size,weights=weights_full)[1]
-    n_u = grid_proj_kde(grid_size, kde_pilot, gaussian_kernels)
-    end = time.time()
-
-    print('Time for grid projected KDE')
-    print(end-start)
-
-    #Plot to see if they are the same
-    # Create a 1x2 subplot
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-    # Flatten the axes array for easy iteration
-    axes = axes.flatten()
-    # Plot each matrix in the first column
-    matrices = [kernel_density_estimator_est, n_u]
-    titles = ['kernel_matrix_2d_NOFLAT', 'Grid projected KDE']
-    colormap = 'plasma'
-    # Get color limits from the ground_truth matrix
-    vmin = np.min(kernel_density_estimator_est)
-    vmax = np.max(kernel_density_estimator_est)
-    levels = np.linspace(vmin, vmax, 40)
-
-    for ax, matrix, title in zip(axes, matrices, titles):
-        im = ax.contourf(matrix, cmap=colormap, levels=levels)
-        ax.set_title(title, fontsize=font_size)
-        ax.set_xlabel('x', fontsize=font_size)
-        ax.set_ylabel('y', fontsize=font_size)
-        ax.axis('square')
-        ax.set_xlim(0, grid_size_plot)
-        ax.set_ylim(0, grid_size_plot)
-        
-        # Create a colorbar
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-    
-    plt.tight_layout()
-
-    plt.show()
 
 
 

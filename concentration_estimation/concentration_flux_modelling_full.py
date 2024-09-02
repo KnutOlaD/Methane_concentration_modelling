@@ -47,7 +47,7 @@ plot_wind_field = False
 #plot gas transfer velocity
 plot_gt_vel = False
 #Use all depth layers
-use_all_depth_layers = False
+use_all_depth_layers = True
 ### CONSTANTS ###
 #max kernel bandwidth
 max_ker_bw = 10000
@@ -62,7 +62,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 25. #m
+dz_grid = 50. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -77,7 +77,7 @@ R_ox = 10**-7 #s^-1
 #total seabed release
 total_seabed_release = 500*0.16236*(1495-720) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
-kde_all = False
+kde_all = True
 #Weight full sim
 weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
 #Set manual border for grid
@@ -450,63 +450,33 @@ def histogram_estimator_numba(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weight
     return particle_count, total_weight, sum_bandwidth
 
 #Added a non-numba vectorized version to see if that causes the 233 crash
-def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
-    '''
-    Input:
-    x_pos (np.array): x-coordinates of the particles
-    y_pos (np.array): y-coordinates of the particles
-    grid_x (np.array): grid cell boundaries in the x-direction
-    grid_y (np.array): grid cell boundaries in the y-direction
+# Ensure indices are within bounds before performing operations
+def histogram_estimator(x, y, bin_x, bin_y, weights, bandwidths):
+    # Initialize arrays
+    total_weight = np.zeros((len(bin_y), len(bin_x)))
+    particle_count = np.zeros((len(bin_y), len(bin_x)))
+    sum_bandwidth = np.zeros((len(bin_y), len(bin_x)))
 
-    Output:
-    particle_count: np.array of shape (grid_size, grid_size)
-    total_weight: np.array of shape (grid_size, grid_size)
-    average_bandwidth: np.array of shape (grid_size, grid_size)
-    '''
+    # Compute indices
+    x_indices = np.digitize(x, bin_x) - 1
+    y_indices = np.digitize(y, bin_y) - 1
 
-    # Get size of grid in x and y direction
-    grid_size_x = len(grid_x)
-    grid_size_y = len(grid_y)
-
-    # Initialize the histograms
-    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
-    total_weight = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
-    sum_bandwidth = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
-    
-    # Normalize the particle positions to the grid
-    grid_x0 = grid_x[0]
-    grid_y0 = grid_y[0]
-    grid_x1 = grid_x[1]
-    grid_y1 = grid_y[1]
-    x_pos = (x_pos - grid_x0) / (grid_x1 - grid_x0)
-    y_pos = (y_pos - grid_y0) / (grid_y1 - grid_y0)
-    
-    # Filter out NaN values
-    valid_mask = ~np.isnan(x_pos) & ~np.isnan(y_pos)
-    x_pos = x_pos[valid_mask]
-    y_pos = y_pos[valid_mask]
-    weights = weights[valid_mask]
-    bandwidths = bandwidths[valid_mask]
-    
-    # Convert positions to integer grid indices
-    x_indices = x_pos.astype(np.int32)
-    y_indices = y_pos.astype(np.int32)
-    
-    # Boundary check
-    valid_mask = (x_indices >= 0) & (x_indices < grid_size_x) & (y_indices >= 0) & (y_indices < grid_size_y)
+    # Mask for valid indices
+    valid_mask = (x_indices >= 0) & (x_indices < len(bin_x)) & (y_indices >= 0) & (y_indices < len(bin_y))
     x_indices = x_indices[valid_mask]
     y_indices = y_indices[valid_mask]
     weights = weights[valid_mask]
     bandwidths = bandwidths[valid_mask]
-    
+
     # Accumulate weights and counts
     np.add.at(total_weight, (y_indices, x_indices), weights)
     np.add.at(particle_count, (y_indices, x_indices), 1)
     np.add.at(sum_bandwidth, (y_indices, x_indices), bandwidths * weights)
 
-    cell_bandwidth = np.divide(sum_bandwidth, total_weight, out=np.zeros_like(sum_bandwidth), where=total_weight != 0)
+    # Calculate average bandwidth
+    average_bandwidth = np.divide(sum_bandwidth, total_weight, out=np.zeros_like(sum_bandwidth), where=total_weight != 0)
 
-    return particle_count, total_weight, cell_bandwidth
+    return total_weight, particle_count, average_bandwidth
 
 def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
@@ -592,20 +562,30 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
         kernel = gaussian_kernels[kernel_index]
         kernel_size = len(kernel) // 2  # Because it's symmetric around the center.
 
-        # Define the window boundaries
-        i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, gridsize_x)
-        j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, gridsize_y)
+    # Define the window boundaries
+    i_min = max(i - kernel_size, 0)
+    i_max = min(i + kernel_size + 1, gridsize_x)
+    j_min = max(j - kernel_size, 0)
+    j_max = min(j + kernel_size + 1, gridsize_y)
 
-        # Calculate the weighted kernel
-        weighted_kernel = kernel * kde_pilot[i, j]
+    # Calculate the weighted kernel
+    weighted_kernel = kernel * kde_pilot[i, j]
 
+    # Define the kernel slice boundaries
+    kernel_i_min = max(0, kernel_size - i)
+    kernel_i_max = kernel_size + min(gridsize_x - i, kernel_size + 1)
+    kernel_j_min = max(0, kernel_size - j)
+    kernel_j_max = kernel_size + min(gridsize_y - j, kernel_size + 1)
+
+    # Ensure the shapes are compatible before adding
+    n_u_slice_shape = n_u[i_min:i_max, j_min:j_max].shape
+    weighted_kernel_slice_shape = weighted_kernel[kernel_i_min:kernel_i_max, kernel_j_min:kernel_j_max].shape
+
+    if n_u_slice_shape == weighted_kernel_slice_shape:
         # Add the contribution to the result matrix
-        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
-        ]
+        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[kernel_i_min:kernel_i_max, kernel_j_min:kernel_j_max]
+    else:
+        print(f"Shape mismatch: n_u[{i_min}:{i_max}, {j_min}:{j_max}].shape = {n_u_slice_shape}, weighted_kernel[{kernel_i_min}:{kernel_i_max}, {kernel_j_min}:{kernel_j_max}].shape = {weighted_kernel_slice_shape}")
 
     return n_u
 
@@ -1328,7 +1308,7 @@ if run_all == True:
         #get indices where bin_z_number changes
         change_indices = np.where(np.diff(bin_z_number) != 0)[0]
         #Trigger if you want to loop through all depth layers
-        if use_all_depth_layers == True:
+        if use_all_depth_layers == True: #is this depracated??
             change_indices = np.array([0,len(bin_z_number)])
         
         #Define the [location_x,location_y,location_z,weight,bw] for the particle. This is the active particle matrix
@@ -1346,7 +1326,7 @@ if run_all == True:
         #INITIATE FOR LOOP OVER DEPTH LAYERS#
         #-----------------------------------#
 
-        #add one right hands side limit to change_indices
+        #add one right hand side limit to change_indices
         change_indices = np.append(change_indices,len(bin_z_number))
 
         ###########################################
@@ -1407,8 +1387,8 @@ if run_all == True:
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
-                                                    parts_active_z[5],
-                                                    parts_active_z[4])
+                                                    parts_active_z[4],
+                                                    parts_active_z[5])
                 
                 #Calculate the average bandwidth in each cell by dividin with preGRID_active_weight
                 #THE FUNCTION NOW DOES THIS ITSELF. 
@@ -1506,9 +1486,9 @@ if plotting == True:
     #create a gif from the images
     imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration.gif', images_conc, duration=0.5)
 
-#------------------------------------#
-#SAVE STUFF TO PICKLE FILES FOR LATER#
-#------------------------------------#
+#----------------------#
+#PICKLE FILES FOR LATER#
+#----------------------#
 
 #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:

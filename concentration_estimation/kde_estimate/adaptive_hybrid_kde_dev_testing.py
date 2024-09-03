@@ -710,8 +710,15 @@ plt.show()
 #MAKE PRE BINNED ESTIMATE
 histogram_prebinned,count_prebinned,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
 
+#Calculate the integral length scale for the whole prebinned data to get the window size
+window = histogram_prebinned
+autocorr_rows, autocorr_cols = calculate_autocorrelation(window)
+autocorr = (autocorr_rows + autocorr_cols) / 2
+integral_length_scale = np.sum(autocorr) / autocorr[0]
+window_size = int(np.ceil(np.mean(integral_length_scale)))
+
 #Define window size, i.e. the size the adaptation is applied to
-window_size = 21
+window_size = 17
 pad_size = window_size // 2
 #pad the naive estimate with zeros (reflective padding) to avoid problems at the edges.
 histogram_prebinned_padded = np.pad(histogram_prebinned, pad_size, mode='reflect')
@@ -723,6 +730,9 @@ count_prebinned_padded = np.pad(count_prebinned, pad_size, mode='reflect')
 
 variance_estimate = np.zeros(np.shape(naive_estimate))
 
+#get non-zero indices
+non_zero_indices = naive_estimate != 0
+
 for i in range(len(naive_estimate)):
     for j in range(len(naive_estimate)):
         if naive_estimate[i, j] != 0:
@@ -730,6 +740,7 @@ for i in range(len(naive_estimate)):
             variance_estimate[i, j] = histogram_variance(window, 1)
 
 std_estimate = np.sqrt(variance_estimate)
+
 
 #plot the variance estimate
 plt.figure()
@@ -804,6 +815,7 @@ plt.show()
 ###
 
 h = N_silv*std_estimate
+#wherever the standard deviation is 
 
 #plot the bandwidth estimate
 plt.figure()
@@ -815,8 +827,9 @@ plt.show()
 ###
 #CALCULATE THE KERNEL DENSITY ESTIMATE
 ###
-
-kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h)
+h_grid = h
+#h_grid[std_estimate == 0] = 1000
+kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid)
 #normalize
 kde_data_driven = kde_data_driven/np.sum(kde_data_driven)
 
@@ -871,4 +884,8 @@ plt.tight_layout()
 plt.show()
 
 
+### CALCULATE INTEGRAL LENGTH SCALE FOR ALL DATA ###
 
+#autocorr_rows, autocorr_cols = calculate_autocorrelation(histogram_prebinned)
+#autocorr = (autocorr_rows + autocorr_cols) / 2
+#integral_length_scale = np.sum(autocorr) / autocorr[0]

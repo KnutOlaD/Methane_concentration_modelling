@@ -479,32 +479,36 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
 
     return total_weight,particle_count, cell_bandwidth
 
-def histogram_variance(binned_data, window_size, bin_size=1):
+def histogram_std(binned_data, effective_samples = None, bin_size=1):
     '''
     Calculate the simple variance of the binned data using ...
     '''
+    #set integral length scale to the size of the grid if not provided
+    if effective_samples == None:
+        effective_samples = np.sum(binned_data)
+    #get 
     #check that there's data in the binned data
     if np.sum(binned_data) == 0:
         return 0
     #get the central value of all bins
     grid_size = len(binned_data)
     #Central point of all grid cells
-    X = np.arange(0,grid_size*window_size,window_size)
-    Y = np.arange(0,grid_size*window_size,window_size)
-    #Calculate the average position in the binned data
+    X = np.arange(0,grid_size*bin_size,bin_size)
+    Y = np.arange(0,grid_size*bin_size,bin_size)
+    #Calculate the weigthed average position in the binned data
     mu_x = np.sum(binned_data*X)/np.sum(binned_data)
     mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
     #Calculate the variance
-    var_y = np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)
-    var_x = np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)
+    std_y = np.sqrt(np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
+    std_x = np.sqrt(np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
     #Calculate the covariance
-    cov_xy = np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)
+    std_xy = np.sqrt(np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
     #Calculate the total variance
-    variance_data = var_x+var_y+2*cov_xy*0
+    std_data = (std_x+std_y+2*std_xy)/4
     #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
     #Sheppards correction
-    variance_data = variance_data - 1/12*(3*bin_size**2)
-    return variance_data
+    std_data = std_data - 1/12*(3*bin_size**2)
+    return std_data
 
 def window_sum(data):
     # Filter out zero values
@@ -561,33 +565,36 @@ def get_integral_length_scale_vectorized(histogram_prebinned, window_size):
                 integral_length_scale_matrix[i:i + window_size, j:j + window_size] = integral_length_scale
     
     return integral_length_scale_matrix
-
+    
 def calculate_autocorrelation(data):
     '''
     Calculates the autocorrelation for all lags along rows and columns, separately, as an average.
     
     Input:
-    data: 2D matrix with equal number of rows and columns
+    data: 2D matrix with possibly unequal number of rows and columns
     
     Output:
     autocorr_rows: 1D array with the average autocorrelation for each lag along rows
     autocorr_cols: 1D array with the average autocorrelation for each lag along columns
     '''
-    # Initialize the autocorrelation matrices
-    autocorr_rows = np.zeros((len(data), len(data[0])))
-    autocorr_cols = np.zeros((len(data), len(data[0])))
-    lags = len(data) - 1
-    len_data = len(data[0])
+    num_rows, num_cols = data.shape
+    max_lag = min(num_rows, num_cols) - 1
     
-    # Calculate the autocorrelation for all lags along rows and columns
-    for i in range(len(data)):
-        for k in range(1, lags + 1):
-            autocorr_rows[i, k - 1] = (1 / (len_data - k)) * np.sum(data[i, :len(data[i]) - k] * data[i, k:])
-            autocorr_cols[i, k - 1] = (1 / (len_data - k)) * np.sum(data[:len(data[i]) - k, i] * data[k:, i])
+    # Initialize the autocorrelation arrays
+    autocorr_rows = np.zeros(max_lag)
+    autocorr_cols = np.zeros(max_lag)
     
-    # Calculate the average autocorrelation for rows and columns
-    autocorr_rows = np.nanmean(autocorr_rows, axis=0)
-    autocorr_cols = np.nanmean(autocorr_cols, axis=0)
+    # Precompute denominators for efficiency
+    row_denominators = np.array([1 / (num_cols - k) for k in range(1, max_lag + 1)])
+    col_denominators = np.array([1 / (num_rows - k) for k in range(1, max_lag + 1)])
+    
+    # Calculate the autocorrelation for all lags along rows
+    for k in range(1, max_lag + 1):
+        autocorr_rows[k - 1] = np.mean([row_denominators[k - 1] * np.sum(data[i, :num_cols - k] * data[i, k:]) for i in range(num_rows)])
+    
+    # Calculate the autocorrelation for all lags along columns
+    for k in range(1, max_lag + 1):
+        autocorr_cols[k - 1] = np.mean([col_denominators[k - 1] * np.sum(data[:num_rows - k, j] * data[k:, j]) for j in range(num_cols)])
     
     return autocorr_rows, autocorr_cols
 
@@ -614,9 +621,9 @@ def get_integral_length_scale(histogram_prebinned, window_size):
 
     for idx in non_zero_indices:
         i, j = idx
-        window = histogram_prebinned_padded[i:i + window_size, j:j + window_size]
-        if np.any(window != 0):
-            autocorr_rows, autocorr_cols = calculate_autocorrelation(window)
+        data_subset = histogram_prebinned_padded[i:i + window_size, j:j + window_size]
+        if np.any(data_subset != 0):
+            autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
             autocorr = (autocorr_rows + autocorr_cols) / 2
             integral_length_scale = np.sum(autocorr) / autocorr[0]
             integral_length_scale_matrix[i, j] = integral_length_scale
@@ -711,8 +718,8 @@ plt.show()
 histogram_prebinned,count_prebinned,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
 
 #Calculate the integral length scale for the whole prebinned data to get the window size
-window = histogram_prebinned
-autocorr_rows, autocorr_cols = calculate_autocorrelation(window)
+data_subset = histogram_prebinned
+autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
 autocorr = (autocorr_rows + autocorr_cols) / 2
 integral_length_scale = np.sum(autocorr) / autocorr[0]
 window_size = int(np.ceil(np.mean(integral_length_scale)))
@@ -722,6 +729,7 @@ window_size = 17
 pad_size = window_size // 2
 #pad the naive estimate with zeros (reflective padding) to avoid problems at the edges.
 histogram_prebinned_padded = np.pad(histogram_prebinned, pad_size, mode='reflect')
+naive_estimate_padded = histogram_prebinned_padded
 count_prebinned_padded = np.pad(count_prebinned, pad_size, mode='reflect')
 
 ###
@@ -729,19 +737,34 @@ count_prebinned_padded = np.pad(count_prebinned, pad_size, mode='reflect')
 ###
 
 variance_estimate = np.zeros(np.shape(naive_estimate))
-
-#get non-zero indices
-non_zero_indices = naive_estimate != 0
-
-for i in range(len(naive_estimate)):
-    for j in range(len(naive_estimate)):
-        if naive_estimate[i, j] != 0:
-            window = histogram_prebinned_padded[i:i+window_size, j:j+window_size]
-            variance_estimate[i, j] = histogram_variance(window, 1)
-
-std_estimate = np.sqrt(variance_estimate)
+weight_estimate = np.zeros(np.shape(naive_estimate))
+integral_length_scale_matrix = np.zeros(np.shape(naive_estimate))
+h_matrix = np.zeros(np.shape(naive_estimate))
+#get non_zero indices
+non_zero_indices = np.argwhere(histogram_prebinned != 0)
+N_eff_advanced = np.zeros(np.shape(naive_estimate))
+N_eff_simple = np.zeros(np.shape(naive_estimate))
+std_estimate = np.zeros(np.shape(naive_estimate))
+N_silv = np.zeros(np.shape(naive_estimate))
 
 
+#calculate variances, weights, integral length scales and hs for all non-zero cells
+for idx in non_zero_indices:
+    i,j = idx
+    data_subset = naive_estimate_padded[i:i+window_size,j:j+window_size] #using the padded matrix, so no dividing here...
+    subset_indices = np.argwhere(data_subset != 0)
+
+    weight_estimate[i,j] = np.sum(data_subset)#CALCULATE N, I.E. NUMBER OF PARTICLES IN ALL ALL NON-ZERO CELLS
+    autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
+    autocorr = (autocorr_rows + autocorr_cols) / 2
+    integral_length_scale = np.sum(autocorr) / autocorr[0]
+    integral_length_scale_matrix[i, j] = integral_length_scale
+    N_eff_simple[i,j] = weight_estimate[i,j]/window_size #CALCULATE ADVANCED EFFECTIVE N_eff_advanced simply
+    N_eff_advanced_ij = weight_estimate[i,j]/integral_length_scale
+    N_eff_advanced[i,j] = N_eff_advanced_ij
+    std_estimate[i,j] = histogram_std(data_subset/np.sum(data_subset),effective_samples=N_eff_advanced_ij,bin_size=1)
+    h_matrix[i,j] = silvermans_simple_2d(weight_estimate[i,j], 2)*(std_estimate[i,j])
+'''
 #plot the variance estimate
 plt.figure()
 plt.imshow(std_estimate)
@@ -749,42 +772,20 @@ plt.colorbar()
 plt.title('Standard deviation estimate')
 plt.show()
 
-###
-#CALCULATE N, I.E. NUMBER OF PARTICLES IN ALL ALL NON-ZERO CELLS
-###
-
-sum_estimate = generic_filter(histogram_prebinned, window_sum, size=window_size)
-sum_estimate[histogram_prebinned == 0] = 0
-
 #plot it.
-plt.imshow(sum_estimate)
+plt.imshow(weight_estimate)
 plt.colorbar()
 plt.title('Sum estimate (N pure)')
 plt.show()
 
-###
-#CALCULATE SIMPLE EFFECTIVE N_eff_simple = N/window_size**2
-###
-
-N_eff_simple = sum_estimate/window_size
-N_eff_simple = sum_estimate
-
-###
-#CALCULATE ADVANCED EFFECTIVE N_eff_advanced
-###
-
-integral_length_scale = get_integral_length_scale(histogram_prebinned, window_size)
-#also called P_eff in notes...
-
 #plot the integral length scale
-plt.imshow(integral_length_scale)
+plt.imshow(integral_length_scale_matrix)
 plt.colorbar()
 plt.title('Integral length scale')
 plt.show()
 
-
 #calculate the advanced N_eff
-N_eff_advanced = sum_estimate/integral_length_scale
+#N_eff_advanced = weight_estimate/integral_length_scale_matrix
 
 #plot the advanced N_eff
 plt.imshow(N_eff_advanced)
@@ -792,30 +793,11 @@ plt.colorbar()
 plt.title('Advanced effective N_eff using integral length scale')
 plt.show()
 
-###
-#CALCULATE THE SILVERMAN FACTIR (4/(dim+2))**(1/(dim+4))*n**(-1/(dim+4)) FOR ALL NON-ZERO CELLS
-###
-
-N_eff = N_eff_advanced
-
-N_silv = np.zeros(np.shape(N_eff))
-non_zero_indices = N_eff != 0
-N_silv[non_zero_indices] = silvermans_simple_2d(N_eff[non_zero_indices], 2)
-#set all zero values to nan
-N_silv[N_eff == 0] = np.nan
-
 #plot Silvermans factor
 plt.imshow(N_silv)
 plt.colorbar()
 plt.title('Silverman factor estimate')
 plt.show()
-
-###
-#CALCULATE THE BANDWIDTH h = N_silv*std_estimate
-###
-
-h = N_silv*std_estimate
-#wherever the standard deviation is 
 
 #plot the bandwidth estimate
 plt.figure()
@@ -824,10 +806,12 @@ plt.colorbar()
 plt.title('Bandwidth estimate')
 plt.show()
 
+'''
+
 ###
 #CALCULATE THE KERNEL DENSITY ESTIMATE
 ###
-h_grid = h
+h_grid = h_matrix
 #h_grid[std_estimate == 0] = 1000
 kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid)
 #normalize
@@ -861,7 +845,7 @@ axs[0, 2].set_title('Bandwidth estimate')
 fig.colorbar(im2, ax=axs[0, 2])
 
 # Plot 3: Integral length scale
-im3 = axs[0, 1].imshow(integral_length_scale)
+im3 = axs[0, 1].imshow(integral_length_scale_matrix)
 axs[0, 1].set_title('Integral length scale')
 fig.colorbar(im3, ax=axs[0, 1])
 
@@ -882,6 +866,22 @@ fig.colorbar(im6, ax=axs[1, 0])
 
 plt.tight_layout()
 plt.show()
+
+#plot a histogram of the non-zero elements of the standard deviation matrix and N_eff matrix in a subplot
+plt.figure()
+plt.subplot(1,2,1)
+plt.hist(std_estimate[std_estimate != 0].flatten(),bins=100)
+plt.title('Standard deviation histogram')
+plt.subplot(1,2,2)
+plt.hist(N_eff_advanced[N_eff_advanced != 0].flatten(),bins=100)
+plt.title('N_eff histogram')
+plt.show()
+
+
+
+
+
+
 
 
 ### CALCULATE INTEGRAL LENGTH SCALE FOR ALL DATA ###

@@ -5,6 +5,12 @@ Author: Knut Ola Dølven
 
 I think this one runs the big simulation.. 
 
+TO DO
+
+-SET ALL WEIGHTS TO 1
+-SET ALL BANDWIDTHS TO 1
+- RUN TEST SIMULATION
+
 '''
 import numpy as np
 import matplotlib.pyplot as plt
@@ -83,8 +89,8 @@ weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles
 #Set manual border for grid
 manual_border = True
 #what am I doing now?
-run_test = False
-run_full = True
+run_test = True
+run_full = False
 #KDE dimensionality
 kde_dim = 2
 #Silvermans coefficients
@@ -459,34 +465,65 @@ def histogram_estimator_numba(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weight
 
     return particle_count, total_weight, sum_bandwidth
 
-#Added a non-numba vectorized version to see if that causes the 233 crash
-# Ensure indices are within bounds before performing operations
-def histogram_estimator(x, y, bin_x, bin_y, weights, bandwidths):
-    # Initialize arrays
-    total_weight = np.zeros((len(bin_y), len(bin_x)))
-    particle_count = np.zeros((len(bin_y), len(bin_x)))
-    sum_bandwidth = np.zeros((len(bin_y), len(bin_x)))
+def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
+    '''
+    Input:
+    x_pos (np.array): x-coordinates of the particles
+    y_pos (np.array): y-coordinates of the particles
+    grid_x (np.array): grid cell boundaries in the x-direction
+    grid_y (np.array): grid cell boundaries in the y-direction
+    bandwidths (np.array): bandwidths of the particles
+    weights (np.array): weights of the particles
 
-    # Compute indices
-    x_indices = np.digitize(x, bin_x) - 1
-    y_indices = np.digitize(y, bin_y) - 1
+    Output:
+    particle_count: np.array of shape (grid_size, grid_size)
+    total_weight: np.array of shape (grid_size, grid_size)
+    average_bandwidth: np.array of shape (grid_size, grid_size)
+    '''
 
-    # Mask for valid indices
-    valid_mask = (x_indices >= 0) & (x_indices < len(bin_x)) & (y_indices >= 0) & (y_indices < len(bin_y))
+    # Get size of grid in x and y direction
+    grid_size_x = len(grid_x)
+    grid_size_y = len(grid_y)
+
+    # Initialize the histograms
+    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
+    total_weight = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
+    cell_bandwidth = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
+    
+    # Normalize the particle positions to the grid
+    grid_x0 = grid_x[0]
+    grid_y0 = grid_y[0]
+    grid_x1 = grid_x[1]
+    grid_y1 = grid_y[1]
+    x_pos = (x_pos - grid_x0) / (grid_x1 - grid_x0)
+    y_pos = (y_pos - grid_y0) / (grid_y1 - grid_y0)
+    
+    # Filter out NaN values
+    valid_mask = ~np.isnan(x_pos) & ~np.isnan(y_pos)
+    x_pos = x_pos[valid_mask]
+    y_pos = y_pos[valid_mask]
+    weights = weights[valid_mask]
+    bandwidths = bandwidths[valid_mask]
+    
+    # Convert positions to integer grid indices
+    x_indices = x_pos.astype(np.int32)
+    y_indices = y_pos.astype(np.int32)
+    
+    # Boundary check
+    valid_mask = (x_indices >= 0) & (x_indices < grid_size_x) & (y_indices >= 0) & (y_indices < grid_size_y)
     x_indices = x_indices[valid_mask]
     y_indices = y_indices[valid_mask]
     weights = weights[valid_mask]
     bandwidths = bandwidths[valid_mask]
-
+    
     # Accumulate weights and counts
-    np.add.at(total_weight, (y_indices, x_indices), weights)
-    np.add.at(particle_count, (y_indices, x_indices), 1)
-    np.add.at(sum_bandwidth, (y_indices, x_indices), bandwidths * weights)
+    np.add.at(total_weight, (x_indices, y_indices), weights)
+    np.add.at(particle_count, (x_indices, y_indices), 1)
+    np.add.at(cell_bandwidth, (x_indices, y_indices), bandwidths * weights)
 
-    # Calculate average bandwidth
-    average_bandwidth = np.divide(sum_bandwidth, total_weight, out=np.zeros_like(sum_bandwidth), where=total_weight != 0)
+    cell_bandwidth = np.divide(cell_bandwidth, total_weight, out=np.zeros_like(cell_bandwidth), where=total_weight!=0)
 
-    return total_weight, particle_count, average_bandwidth
+    return total_weight, particle_count, cell_bandwidth
 
 def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
@@ -876,66 +913,6 @@ def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
     return None
 
 
-def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
-    '''
-    Input:
-    x_pos (np.array): x-coordinates of the particles
-    y_pos (np.array): y-coordinates of the particles
-    grid_x (np.array): grid cell boundaries in the x-direction
-    grid_y (np.array): grid cell boundaries in the y-direction
-    bandwidths (np.array): bandwidths of the particles
-    weights (np.array): weights of the particles
-
-    Output:
-    particle_count: np.array of shape (grid_size, grid_size)
-    total_weight: np.array of shape (grid_size, grid_size)
-    average_bandwidth: np.array of shape (grid_size, grid_size)
-    '''
-
-    # Get size of grid in x and y direction
-    grid_size_x = len(grid_x)
-    grid_size_y = len(grid_y)
-
-    # Initialize the histograms
-    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
-    total_weight = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
-    cell_bandwidth = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
-    
-    # Normalize the particle positions to the grid
-    grid_x0 = grid_x[0]
-    grid_y0 = grid_y[0]
-    grid_x1 = grid_x[1]
-    grid_y1 = grid_y[1]
-    x_pos = (x_pos - grid_x0) / (grid_x1 - grid_x0)
-    y_pos = (y_pos - grid_y0) / (grid_y1 - grid_y0)
-    
-    # Filter out NaN values
-    valid_mask = ~np.isnan(x_pos) & ~np.isnan(y_pos)
-    x_pos = x_pos[valid_mask]
-    y_pos = y_pos[valid_mask]
-    weights = weights[valid_mask]
-    bandwidths = bandwidths[valid_mask]
-    
-    # Convert positions to integer grid indices
-    x_indices = x_pos.astype(np.int32)
-    y_indices = y_pos.astype(np.int32)
-    
-    # Boundary check
-    valid_mask = (x_indices >= 0) & (x_indices < grid_size_x) & (y_indices >= 0) & (y_indices < grid_size_y)
-    x_indices = x_indices[valid_mask]
-    y_indices = y_indices[valid_mask]
-    weights = weights[valid_mask]
-    bandwidths = bandwidths[valid_mask]
-    
-    # Accumulate weights and counts
-    np.add.at(total_weight, (y_indices, x_indices), weights)
-    np.add.at(particle_count, (y_indices, x_indices), 1)
-    np.add.at(cell_bandwidth, (y_indices, x_indices), bandwidths * weights)
-
-    cell_bandwidth = np.divide(cell_bandwidth, total_weight, out=np.zeros_like(cell_bandwidth), where=total_weight!=0)
-
-    return total_weight,particle_count, cell_bandwidth
-
 @jit(nopython=True)
 def histogram_variance_numba(binned_data, bins): #here, suggest to multiply with (M-1)/M to get unbiased estimate
     if np.sum(binned_data) == 0:
@@ -952,7 +929,7 @@ def histogram_std(binned_data, effective_samples = None, bin_size=1):
     '''
     #set integral length scale to the size of the grid if not provided
     if effective_samples == None:
-        effective_samples = np.sum(binned_data) #There's issues with this for some reason.. 
+        effective_samples = np.sum(binned_data)
     #get 
     #check that there's data in the binned data
     if np.sum(binned_data) == 0:
@@ -963,18 +940,15 @@ def histogram_std(binned_data, effective_samples = None, bin_size=1):
     X = np.arange(0,grid_size*bin_size,bin_size)
     Y = np.arange(0,grid_size*bin_size,bin_size)
     #Calculate the weigthed average position in the binned data
-    mu_x = np.sum(binned_data*X)/np.sum(binned_data)
-    mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
+    [mu_x,mu_y] = np.sum(binned_data*X)/np.sum(binned_data),np.sum(binned_data*Y)/np.sum(binned_data)
     #Calculate the variance
-    std_y = np.sqrt(np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
-    std_x = np.sqrt(np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
-    #Calculate the covariance
-    std_xy = np.sqrt(np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
-    #Calculate the total variance
-    std_data = (std_x+std_y+2*std_xy)/4
+    variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/np.sum(binned_data)**2)*(effective_samples/(effective_samples-1))
+    std_data = np.sqrt(variance)
+    #std_data = np.sqrt(std_x**2+std_y**2+2*std_xy**2)/4
+    #std_data = (std_x+std_y+2*std_xy)/4
     #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
     #Sheppards correction
-    std_data = std_data - 1/12*(3*bin_size**2)
+    std_data = std_data + 1/12*bin_size*bin_size
     return std_data
 
 def histogram_variance(binned_data, bin_size=1):
@@ -1110,11 +1084,16 @@ if run_test == True:
     particles = load_nc_data(datapath)
     particles = add_utm(particles)
     #adjust the time vector to start on May 20 2018
+    minlon = 12.5
+    maxlon = 21
+    minlat = 68.5
+    maxlat = 72
+    maxdepth = 15*20
 
-import dask.array as da
+
+import dask.array as da #Old stuff. I tried... 
 import xarray as xr
 
-run_full = True
 if run_full == True:
     datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
@@ -1167,27 +1146,44 @@ if run_full == True:
                 maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
                 maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
     
-    #get the min/max values for the UTM coordinates using the utm package and the minlon/maxlon/minlat/maxlat values
-    minUTMxminUTMy = utm.from_latlon(minlat,minlon)
-    minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
-    maxUTMxminUTMy = utm.from_latlon(maxlat,minlon)
-    maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon)
-    # Example: Forcing all coordinates to UTM zone 33N
-    zone_number = 33
+#get the min/max values for the UTM coordinates using the utm package and the minlon/maxlon/minlat/maxlat values
+minUTMxminUTMy = utm.from_latlon(minlat,minlon)
+minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
+maxUTMxminUTMy = utm.from_latlon(maxlat,minlon)
+maxUTMxmaxUTMy = utm.from_latlon(maxlat,maxlon)
+# Example: Forcing all coordinates to UTM zone 33N
+zone_number = 33
 
-    minUTMxminUTMy = utm.from_latlon(minlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
-    minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
-    maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
-    maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
+minUTMxminUTMy = utm.from_latlon(minlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
+minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
+maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
+maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
+
+#Create a test data set of binned values in a 10x10 grid containing 50% zeros
+histogram_prebinned = np.random.choice([0, 1], size=(10, 10), p=[0.5, 0.5])
+#replace all 1s with some random values
+histogram_prebinned_uneven_weights = histogram_prebinned.copy()
+histogram_prebinned_uneven_weights[histogram_prebinned_uneven_weights == 1] = np.random.randint(1, 10, size=np.sum(histogram_prebinned_uneven_weights == 1))
+
+N = np.shape(histogram_prebinned)[0]*np.shape(histogram_prebinned)[1]
+#Calculate the effective number of samples
+effective_samples = (np.sum(histogram_prebinned)**2)/np.sum(histogram_prebinned**2)
+effective_samples_uneven = (np.sum(histogram_prebinned_uneven_weights)**2)/np.sum(histogram_prebinned_uneven_weights**2)
+
+print('Effective samples:',effective_samples)
+print('Effective samples uneven:',effective_samples_uneven)
+
+plt.imshow(histogram_prebinned, cmap='viridis')
+plt.colorbar()
 
 ###### SET UP GRIDS FOR THE MODEL ######
 print('Creating the output grid...')
 #MODEELING OUTPUT GRID
 if run_test == True:
     GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
-                                                [np.max([100000-dxy_grid-1,np.min(particles['UTM_x'].compressed())]),np.min([np.max(particles['UTM_x'].compressed()),1000000-dxy_grid-1])],
-                                                [np.max([dxy_grid+1,np.min(particles['UTM_y'].compressed())]),np.min([np.max(particles['UTM_y'].compressed()),10000000-dxy_grid-1])],
-                                                np.max(np.abs(particles['z'])),
+                                                [np.max([100000-dxy_grid-1,minUTMxminUTMy[0]]),np.min([1000000-dxy_grid-1,maxUTMxmaxUTMy[0]])],
+                                                [np.max([dxy_grid+1,minUTMxminUTMy[1]]),np.min([10000000-dxy_grid-1,maxUTMxmaxUTMy[1]])],
+                                                maxdepth+25,
                                                 savefile_path=False,
                                                 resolution=np.array([dxy_grid,dz_grid]))
 elif run_full == True:
@@ -1211,6 +1207,10 @@ total_mox = np.zeros(len(bin_time))
 particles_atm_loss = np.zeros((len(bin_time)))
 #particle mox loss history
 particles_mox_loss = np.zeros((len(bin_time)))
+#local integral length scale
+integral_length_scale_windows = GRID
+#local std
+standard_deviations_windows = GRID
 
 #Create coordinates for plotting
 bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
@@ -1239,14 +1239,9 @@ bin_time_number = np.digitize(particles['time'][0],bin_time)
 bin_time_number = len(particles['time'])-1
 
 #Get the utm coordinates of the particles in the first time step
-if run_test == True:
-    x = particles['UTM_x'][:,bin_time_number]
-    y = particles['UTM_y'][:,bin_time_number]
-    z = np.abs(particles['z'][:,bin_time_number])
-elif run_full == True:
-    x = particles['UTM_x'][:,0]
-    y = particles['UTM_y'][:,0]
-    z = np.abs(particles['z'][:,0])
+x = particles['UTM_x'][:,0]
+y = particles['UTM_y'][:,0]
+z = np.abs(particles['z'][:,0])
 
 #Get the bin numbers for the particles
 bin_x_number = np.digitize((x.compressed()),bin_x)
@@ -1279,7 +1274,6 @@ ws_interp = np.ma.filled(ws_interp,np.nan)
 sst_interp = np.ma.filled(sst_interp,np.nan)
 
 GRID_gt_vel = np.zeros((len(bin_time),len(bin_y),len(bin_x)))
-
 
 #Calculate the gas transfer velocity
 if fit_gt_vel == True:
@@ -1354,11 +1348,13 @@ particles['age'].mask = particles['lon'].mask
 #and for total particles
 total_parts = np.zeros(len(bin_time))
 
-####################################################################
-###### ADD VECTOR TO STORE INTEGRAL LENGTH SCALE OF THE FIELD ######
-####################################################################
+####################################################################################
+###### ADD VECTOR TO STORE INTEGRAL LENGTH SCALE AND OTHER STUFF OF THE FIELD ######
+####################################################################################
 
 integral_length_scale_full = np.zeros(len(bin_time))
+#std_full = np.zeros(len(bin_time))
+
     
 #############################################################################################
 ################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
@@ -1372,10 +1368,7 @@ integral_length_scale_full = np.zeros(len(bin_time))
 #---------------------------------------------------#
 print('Starting to loop through all timesteps...')
 
-if run_test == True:
-    time_steps_full = len(particles['time'])
-elif run_full == True:
-    time_steps_full = len(ODdata.variables['time'])
+time_steps_full = len(ODdata.variables['time'])
 
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
@@ -1396,51 +1389,65 @@ if run_all == True:
     #kkk = 232
 
     for kkk in range(1,time_steps_full-1): 
+        start_time_full = time.time()
+        start_time = time.time()        
+        print("Time step {kkk}")
+        # Check if running in test mode
+        if kkk==1 and run_test==True:
+            # Load all data into memory
+            particles_all_data = {}
+            for var_name in ODdata.variables:
+                particles_all_data[var_name] = ODdata.variables[var_name][:]
+            particles_all_data = add_utm(particles_all_data)
+            print('Loading all data into memory')
 
-        start_time = time.time()
-        
-        print(kkk)
         #------------------------------------------------------#
-        #LAZY LOAD THE PARTICLES FOR THE CURRENT TIMESTEP (j=n)#
+        # LAZY LOAD THE PARTICLES FOR THE CURRENT TIMESTEP (j=n)#
         #------------------------------------------------------#
-        #and replace the 0th index with the 1st index
+        # and replace the 0th index with the 1st index
         particles['lon'][:,0] = particles['lon'][:,1]
         particles['lat'][:,0] = particles['lat'][:,1]
         particles['z'][:,0] = particles['z'][:,1]
         particles['time'][0] = particles['time'][1]
         particles['bw'][:,0] = particles['bw'][:,1]
 
-        # Assign the data to the particles dictionary
-        particles['lon'][:, 1] = ODdata.variables['lon'][:, kkk].copy()
-        #find the indices of all unmasked values in particles['lon'][:, 1]
-
-
-
-
-        particles['lat'][:, 1] = ODdata.variables['lat'][:, kkk].copy()
-        particles['z'][:, 1] = ODdata.variables['z'][:, kkk].copy()
-        # Assign the current time step
-        particles['time'][1] = ODdata.variables['time'][kkk].copy()
+        if run_test:
+            # Assign the data from preloaded data
+            particles['lon'][:, 1] = particles_all_data['lon'][:, kkk].copy()
+            particles['lat'][:, 1] = particles_all_data['lat'][:, kkk].copy()
+            particles['z'][:, 1] = particles_all_data['z'][:, kkk].copy()
+            particles['time'][1] = particles_all_data['time'][kkk].copy()
+            particles['UTM_x'][:,1] = particles_all_data['UTM_x'][:,kkk].copy()
+            particles['UTM_y'][:,1] = particles_all_data['UTM_y'][:,kkk].copy()
+            particles['UTM_x'][:,0] = particles_all_data['UTM_x'][:,kkk-1].copy()
+            particles['UTM_y'][:,0] = particles_all_data['UTM_y'][:,kkk-1].copy()
+        else:
+            # Assign the data to the particles dictionary
+            particles['lon'][:, 1] = ODdata.variables['lon'][:, kkk].copy()
+            particles['lat'][:, 1] = ODdata.variables['lat'][:, kkk].copy()
+            particles['z'][:, 1] = ODdata.variables['z'][:, kkk].copy()
+            particles['time'][1] = ODdata.variables['time'][kkk].copy()
+            particles = add_utm(particles)
 
         # Update masks
         particles['weight'][:, 1].mask = particles['z'][:, 1].mask
         particles['bw'][:, 1].mask = particles['z'][:, 1].mask
-        #Add weights if it's the first timestep
+
+        # Add weights if it's the first timestep
         if kkk == 1:
             particles['weight'][:,1][np.where(particles['weight'][:,1].mask == False)] = weights_full_sim
             particles['weight'][:,0] = particles['weight'][:,1]
-        #particles['bw'][:,1] = particles['z'][:,1]
-        #add utm
-        particles = add_utm(particles)
+
+        # Add UTM
+        
         #add aging
         
         end_time = time.time()
         elapsed_time = end_time - start_time
-        print(f"Time taken for data loading {kkk}: {elapsed_time:.6f} seconds")
+        print(f"Data loading: {elapsed_time:.6f} seconds")
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
-      
 
         #do some binning
         #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
@@ -1592,20 +1599,29 @@ if run_all == True:
 
             #Set any particle that has left the model domain to have zero weight and location
             #at the model boundary
-            parts_active_z[4][parts_active_z[0] < np.min(bin_x)] = 0
-            parts_active_z[4][parts_active_z[0] > np.max(bin_x)] = 0
-            parts_active_z[4][parts_active_z[1] < np.min(bin_y)] = 0
-            parts_active_z[4][parts_active_z[1] > np.max(bin_y)] = 0
-            parts_active_z[0][parts_active_z[0] < np.min(bin_x)] = np.min(bin_x)+1
-            parts_active_z[0][parts_active_z[0] > np.max(bin_x)] = np.max(bin_x)-1
-            parts_active_z[1][parts_active_z[1] < np.min(bin_y)] = np.min(bin_y)+1
-            parts_active_z[1][parts_active_z[1] > np.max(bin_y)] = np.max(bin_y)-1
+
+            #Remove particles that are outside the model domain (they are allowed to return later if the current will bring them back)
+            # Assuming parts_active_z is a list of arrays with 'x' and 'y' coordinates
+
+            # Create masks for x and y coordinates
+            mask_x = (parts_active_z[0] >= bin_x[0]) & (parts_active_z[0] <= bin_x[-1])
+            mask_y = (parts_active_z[1] >= bin_y[0]) & (parts_active_z[1] <= bin_y[-1])
+            #find all false values in the mask
+            mask_x_false = np.where(mask_x == False)
+            mask_y_false = np.where(mask_y == False)
+
+            # Combine masks to filter out values outside the grid
+            mask = mask_x & mask_y
+
+            # Apply the mask to filter the arrays
+            for i in range(len(parts_active_z)):
+                parts_active_z[i] = parts_active_z[i][mask]
 
             #-------------------------------------#
             #CALCULATE THE KERNEL DENSITY ESTIMATE#
             #-------------------------------------#
 
-            if kde_all == True or i==0 and parts_active_z[0].any(): #dont bother with the kde if there are no particles in the depth layer
+            if kde_all == True or i==0: #dont bother with the kde if there are no particles in the depth layer
                 ### THIS IS THE OLD WAY OF DOING IT ###            
                 #ols_GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
                                             #parts_active_z[1],
@@ -1614,20 +1630,24 @@ if run_all == True:
                                             #parts_active_z[5],
                                             #parts_active_z[4])
                 ########################################
-
                 ###################
                 ### Pregridding ###
                 ###################
+                
+                #Stop and go out of the if if there are no particles in the depth layer
+                if len(parts_active_z[0]) == 0:
+                    continue
 
                 #Time the kde step
                 start_time = time.time()
                 #pre-kernel density estimate using the histogram estimator
-                PreGRID_active,preGRID_active_weight,preGRID_active_bw = histogram_estimator(parts_active_z[0],
+                PreGRID_active,preGRID_active_counts,preGRID_active_bw = histogram_estimator(parts_active_z[0],
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
                                                     parts_active_z[4],
                                                     parts_active_z[5])
+                
                 
                 #######################################
                 ### Using time dependent bandwidths ###
@@ -1636,7 +1656,7 @@ if run_all == True:
                 if h_adaptive == 'Time_dep':
                     GRID_active = grid_proj_kde(bin_x,
                                                 bin_y,
-                                                preGRID_active_weight,
+                                                PreGRID_active,
                                                 gaussian_kernels,
                                                 gaussian_bandwidths_h,
                                                 preGRID_active_bw)
@@ -1645,43 +1665,49 @@ if run_all == True:
                     print(f"KDE took {elapsed_time:.6f} seconds")
                     #store the time it took to calculate the kde 
                     kde_time_vector[kkk] = elapsed_time
-                
+   
                 #############################
                 ### Using local Silverman ###
                 #############################
-
-
-
 
                 if h_adaptive == 'Local_Silverman' and PreGRID_active.any():
                     #time it
                     start_time = time.time()
                     #Estimate the correct averaging window size via the Integral Length scale
-                    naive_estimate = PreGRID_active #just to not mix up things... 
-                    autocorr_rows, autocorr_cols = calculate_autocorrelation(naive_estimate)
+                    autocorr_rows, autocorr_cols = calculate_autocorrelation(preGRID_active_counts)
                     autocorr = (autocorr_rows + autocorr_cols) / 2
-                    integral_length_scale_full[kkk] = np.mean(np.sum(autocorr)/autocorr[0])
+                    integral_length_scale_full[kkk] = np.sum(autocorr)/autocorr[0]
                     window_size = int(integral_length_scale_full[kkk])
+                    #set max window_size to 31
+                    window_size = min(window_size,31)
+                    #and minimum of 5
+                    window_size = max(window_size,5)
                     # Ensure window_size is an odd number
                     if window_size % 2 == 0:
                         window_size += 1
                     pad_size = window_size//2
                     #Pad the preestimate to fix edge effects
-                    naive_estimate_padded = np.pad(naive_estimate,pad_size,mode='reflect')
+                    preGRID_active_counts_padded = np.pad(preGRID_active_counts,pad_size,mode='reflect')
+                    
                     ###
                     #ESTIMATE STANDARD DEVIATION, SUMMED WEIGHT, INTEGRAL LENGTH SCALE AND BANDWIDTHS OF EACH WINDOW ASSOCIATED WITH EACH NON-ZERO CELL
                     ###
-                    std_estimate = np.zeros(np.shape(naive_estimate))
-                    N_eff = np.zeros(np.shape(naive_estimate))
+                    
+                    std_estimate = np.zeros(np.shape(preGRID_active_counts))
+                    N_eff = np.zeros(np.shape(preGRID_active_counts))
 
-                    weight_estimate = np.zeros(np.shape(naive_estimate))
-                    integral_length_scale_matrix = np.zeros(np.shape(naive_estimate))
+                    weight_estimate = np.zeros(np.shape(preGRID_active_counts))
+                    integral_length_scale_matrix = np.zeros(np.shape(preGRID_active_counts))
                     #get non_zero indices
-                    non_zero_indices = np.argwhere(naive_estimate_padded > 0)
+                    non_zero_indices = np.argwhere(preGRID_active_counts_padded > 0)
+                    # Remove all indices outside of the original grid
+                    non_zero_indices = non_zero_indices[np.where((non_zero_indices[:,0] >= 0) &
+                    (non_zero_indices[:,0] < len(bin_x)) &   (non_zero_indices[:,1] >= 0) & (non_zero_indices[:,1] < len(bin_y)))]
+                    
                     #calculate standard deviations for each data subset window
                     for idx in non_zero_indices:
                         row, col = idx
-                        data_subset = naive_estimate_padded[row:row+window_size, col:col+window_size]  # using the padded matrix, so no dividing here...
+                        data_subset = preGRID_active_counts_padded[row:row+window_size, col:col+window_size]  # using the padded matrix, so no dividing here...
                         # WEIGHT
                         weight_estimate[row, col] = np.sum(data_subset)
                         # INTEGRAL LENGTH SCALE
@@ -1698,19 +1724,23 @@ if run_all == True:
                         std_estimate[row, col] = histogram_std(data_subset/weight_estimate[row, col],effective_samples = N_eff[row, col])
                     
                     h_matrix_adaptive = ((silverman_coeff*N_eff**(-silverman_exponent))*std_estimate)*dxy_grid #multiply with dxy_grid to get the bandwidth in meters
-                    
+                    #square it to get h (silverman in 2 dimensions give the square root)
+                    #h_matrix_adaptive = h_matrix_adaptive**2
+
                     #Do the KDE using the grid_proj_kde function
                     GRID_active = grid_proj_kde(bin_x,
                                                 bin_y,
-                                                naive_estimate,
+                                                PreGRID_active,
                                                 gaussian_kernels,
                                                 gaussian_bandwidths_h,
                                                 h_matrix_adaptive)
-
+                    
                     end_time = time.time()
                     elapsed_time = end_time - start_time
-                    print(f"KDE took {elapsed_time:.6f} seconds")
+                    print(f"KDE {elapsed_time:.6f} seconds")
                     kde_time_vector[kkk] = elapsed_time
+                    #print 
+                    print(f"Integral_length_scale = {integral_length_scale_full[kkk]*dxy_grid} meter")
 
                 if run_test == True:
                     GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3
@@ -1779,6 +1809,8 @@ if run_all == True:
                 #R_ox = (10**-7)*3600 #half life per hour
                 #Store the active grid into the GRID sparse matrix
                 GRID[kkk][i]=csr_matrix(GRID_active)
+                integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
+                standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
 
                 GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop
                 #need this to adjust the weights for next loop
@@ -1786,7 +1818,10 @@ if run_all == True:
                 total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
                 #update the weights of the particles due to microbial oxidation is done globally at each timestep since
                 #the loss is not dependent on the depth layer (this is more efficient)
-
+        end_time_full = time.time()
+        elapsed_time_full = end_time_full - start_time_full
+        print(f"Total time= {elapsed_time_full:.5f} seconds.")
+        
 if plotting == True:
     #create a gif from the images
     imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration.gif', images_conc, duration=0.5)
@@ -1890,6 +1925,7 @@ times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_da
 twentiethofMay = 720
 time_steps = 1495
 
+
 do = True
 if do == True:
     for i in range(twentiethofMay,time_steps,1):
@@ -1979,6 +2015,8 @@ percent_of_release = np.round((total_sum/total_seabed_release)*100,4) #why multi
 GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol. THIS IS ALREADY IN MOLAR. But divide to get per square meter
 levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),100)
 levels = levels[:-50]*0.25
+#flip the lon_vector right/left
+
 
 plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
                     lon=lon_vec,

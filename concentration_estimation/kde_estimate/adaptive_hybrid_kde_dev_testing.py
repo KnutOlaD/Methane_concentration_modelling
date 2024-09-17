@@ -42,7 +42,7 @@ num_particles = num_particles_per_timestep*time_steps
 
 #Change the default colormap to something bright other than viridis
 #use rocket from sns
-plt.rcParams['image.cmap'] = 'rocket'
+plt.rcParams['image.cmap'] = 'mako_r'
 
 
 # ------------------------------------------------------- #
@@ -496,18 +496,82 @@ def histogram_std(binned_data, effective_samples = None, bin_size=1):
     X = np.arange(0,grid_size*bin_size,bin_size)
     Y = np.arange(0,grid_size*bin_size,bin_size)
     #Calculate the weigthed average position in the binned data
+    [mu_x,mu_y] = np.sum(binned_data*X)/np.sum(binned_data),np.sum(binned_data*Y)/np.sum(binned_data)
+    #Calculate the variance
+    variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(np.sum(binned_data)-1))-1/12*bin_size*bin_size#*(effective_samples/(effective_samples-1))
+    std_data = np.sqrt(variance)
+    #std_data = np.sqrt(std_x**2+std_y**2+2*std_xy**2)/4
+    #std_data = (std_x+std_y+2*std_xy)/4
+    #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
+    #Sheppards correction
+    std_data = std_data #- 1/12*bin_size*bin_size
+    return std_data
+
+def histogram_std_sep(binned_data, effective_samples = None, bin_size=1):
+    '''
+    Calculate the simple variance of the binned data using ...
+    '''
+    #set integral length scale to the size of the grid if not provided
+    if effective_samples == None:
+        effective_samples = np.sum(binned_data)
+    #get 
+    #check that there's data in the binned data
+    if np.sum(binned_data) == 0:
+        return 0
+    #get the central value of all bins
+    grid_size = len(binned_data)
+    #Central point of all grid cells
+    X = np.arange(0,grid_size*bin_size,bin_size)
+    Y = np.arange(0,grid_size*bin_size,bin_size)
+    #Calculate the weigthed average position in the binned data
     mu_x = np.sum(binned_data*X)/np.sum(binned_data)
     mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
     #Calculate the variance
-    std_y = np.sqrt(np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
-    std_x = np.sqrt(np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
+    std_y = np.sqrt(np.sum(binned_data*(X-mu_x)**2)/(np.sum(binned_data)-1))#*(effective_samples/(effective_samples-1)))
+    std_x = np.sqrt(np.sum(binned_data*(Y-mu_y)**2)/(np.sum(binned_data)-1))#*(effective_samples/(effective_samples-1)))
     #Calculate the covariance
-    std_xy = np.sqrt(np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)*(effective_samples/(effective_samples-1)))
+    std_xy = np.sqrt(np.sum(binned_data*(X-mu_x)*(Y-mu_y))/(np.sum(binned_data)-1))#*(effective_samples/(effective_samples-1)))
     #Calculate the total variance
-    std_data = (std_x+std_y+2*std_xy)/4
+    std_data = np.sqrt(std_x**2+std_y**2+2*std_xy**2)
+    #std_data = (std_x+std_y+2*std_xy)/4
     #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
     #Sheppards correction
     std_data = std_data - 1/12*(3*bin_size**2)
+    return std_data
+
+
+def histogram_std_matrix(binned_data, effective_samples = None, bin_size=1):
+    '''
+    Calculate the simple variance of the binned data using ...
+    '''
+    #set integral length scale to the size of the grid if not provided
+    if effective_samples == None:
+        effective_samples = np.sum(binned_data)
+    #get 
+    #check that there's data in the binned data
+    if np.sum(binned_data) == 0:
+        return 0
+    #get the central value of all bins
+    grid_size = len(binned_data)
+    #Central point of all grid cells
+    X = np.arange(0,grid_size*bin_size,bin_size)
+    Y = np.arange(0,grid_size*bin_size,bin_size)
+    #Calculate the weigthed average position in the binned data
+    mu_x = np.sum(binned_data*X)/np.sum(binned_data)
+    mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
+    #Calculate the variance for each variable
+    var_x = np.sum(binned_data*(X-mu_x)**2)#/(np.sum(binned_data)-1)
+    var_y = np.sum(binned_data*(Y-mu_y)**2)#/(np.sum(binned_data)-1)
+    #Calculate the covariance
+    cov_xy = np.sum(binned_data*(X-mu_x)*(Y-mu_y))#/(np.sum(binned_data)-1)
+    cov_yx = np.sum(binned_data*(Y-mu_y)*(X-mu_x))#/(np.sum(binned_data)-1)
+    #define the covariance matrix
+    cov_matrix = np.array([[var_x,cov_xy],[cov_yx,var_y]])
+    #Calculate the determinant of the covariance matrix - this represents the volume of the data
+    det_cov = np.linalg.det(cov_matrix)
+    #use the square root and add the 1/12 factor to get the standard deviation
+    std_data = np.sqrt(det_cov) + 1/12*bin_size*bin_size
+    #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
     return std_data
 
 def window_sum(data):
@@ -640,12 +704,14 @@ def get_integral_length_scale(histogram_prebinned, window_size):
 # Add folder path
 #get the test data
 trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=load_test_data,frac_diff=frac_diff)
+#reduce size of test data by picking only every 10th particle
+trajectories = trajectories[::1]
+bw = bw[::1]
 bw_full = np.ones(len(trajectories_full))
 weights_full = weights
 #Set weights_full and weights to 1
 weights_full = np.ones(len(trajectories_full))
 weights_test = np.ones(len(trajectories))
-
 
 grid_size = 100
 #Get the grid
@@ -724,8 +790,10 @@ autocorr = (autocorr_rows + autocorr_cols) / 2
 integral_length_scale = np.sum(autocorr) / autocorr[0]
 window_size = int(np.ceil(np.mean(integral_length_scale)))
 
+print('Window size:',window_size)
+
 #Define window size, i.e. the size the adaptation is applied to
-window_size = 17
+#window_size = 17
 pad_size = window_size // 2
 #pad the naive estimate with zeros (reflective padding) to avoid problems at the edges.
 histogram_prebinned_padded = np.pad(histogram_prebinned, pad_size, mode='reflect')
@@ -736,34 +804,63 @@ count_prebinned_padded = np.pad(count_prebinned, pad_size, mode='reflect')
 #ESTIMATE THE STANDARD DEVIATION IN EACH WINDOW ASSOCIATED WITH EACH NON-ZERO CELL.
 ###
 
+#set a threshold where the statistics are not calculated
+stats_threshold = window_size
+
 variance_estimate = np.zeros(np.shape(naive_estimate))
 weight_estimate = np.zeros(np.shape(naive_estimate))
 integral_length_scale_matrix = np.zeros(np.shape(naive_estimate))
-h_matrix = np.zeros(np.shape(naive_estimate))
+h_matrix = np.zeros(np.shape(naive_estimate))*np.nan
 #get non_zero indices
 non_zero_indices = np.argwhere(histogram_prebinned != 0)
 N_eff_advanced = np.zeros(np.shape(naive_estimate))
 N_eff_simple = np.zeros(np.shape(naive_estimate))
-std_estimate = np.zeros(np.shape(naive_estimate))
+std_estimate = np.zeros(np.shape(naive_estimate))*np.nan
 N_silv = np.zeros(np.shape(naive_estimate))
-
+small_n_eff = np.zeros(np.shape(naive_estimate))
 
 #calculate variances, weights, integral length scales and hs for all non-zero cells
 for idx in non_zero_indices:
     i,j = idx
     data_subset = naive_estimate_padded[i:i+window_size,j:j+window_size] #using the padded matrix, so no dividing here...
+    data_subset_counts = count_prebinned_padded[i:i+window_size,j:j+window_size]
     subset_indices = np.argwhere(data_subset != 0)
+    #normalize the data subset to psi
+    data_subset = (data_subset/np.sum(data_subset))*np.sum(data_subset_counts)
+    weight_estimate[i,j] = np.sum(data_subset)
+    
 
-    weight_estimate[i,j] = np.sum(data_subset)#CALCULATE N, I.E. NUMBER OF PARTICLES IN ALL ALL NON-ZERO CELLS
-    autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
-    autocorr = (autocorr_rows + autocorr_cols) / 2
-    integral_length_scale = np.sum(autocorr) / autocorr[0]
-    integral_length_scale_matrix[i, j] = integral_length_scale
-    N_eff_simple[i,j] = weight_estimate[i,j]/window_size #CALCULATE ADVANCED EFFECTIVE N_eff_advanced simply
-    N_eff_advanced_ij = weight_estimate[i,j]/integral_length_scale
-    N_eff_advanced[i,j] = N_eff_advanced_ij
-    std_estimate[i,j] = histogram_std(data_subset/np.sum(data_subset),effective_samples=N_eff_advanced_ij,bin_size=1)
-    h_matrix[i,j] = silvermans_simple_2d(weight_estimate[i,j], 2)*(std_estimate[i,j])
+    #Calculate (depending on the number of particles in the window)
+    if np.sum(data_subset) < stats_threshold:
+        #print('Too few particles in window, using window size and simple N_eff')
+        #the standard deviation is set tohalf the window_size if there are too few particles in the window
+        #to robustly estimate the standard deviation
+        std_estimate[i,j] = window_size/2#np.sqrt(window_size)*(1/12) #assuming uniform distribution within the window
+        N_eff_advanced[i,j] = np.sum(data_subset)/window_size
+    else:
+        std_estimate[i,j] = histogram_std(data_subset,effective_samples=None,bin_size=1)
+        autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
+        autocorr = (autocorr_rows + autocorr_cols) / 2
+
+        integral_length_scale = np.sum(autocorr) / autocorr[np.argwhere(autocorr != 0)[0]] #just finding first non_zero element in autocorr
+        integral_length_scale_matrix[i, j] = integral_length_scale
+        #get small_n_eff
+        small_n_eff[i,j] = (np.sum(data_subset.flatten())**2)/np.sum(data_subset.flatten()**2)
+        small_n_eff[i,j] = np.sum(data_subset)
+        N_eff_simple[i,j] = small_n_eff[i,j]/window_size #CALCULATE ADVANCED EFFECTIVE N_eff_advanced simply
+        N_eff_advanced_ij = small_n_eff[i,j]/integral_length_scale
+        N_eff_advanced[i,j] = N_eff_advanced_ij
+
+        #print idx if the standard deviation is zero
+        if std_estimate[i,j] == 0:
+            print('Zero standard deviation at index:',idx)
+
+    h_matrix[i,j] = silvermans_simple_2d(N_eff_advanced[i,j], 2)*(std_estimate[i,j])#**2
+    if h_matrix[i,j] == 0:
+        print('Zero bandwidth at index:',idx)
+
+#h_matrix = h_matrix**2
+
 '''
 #plot the variance estimate
 plt.figure()
@@ -808,10 +905,13 @@ plt.show()
 
 '''
 
+#Plot the results
+
 ###
 #CALCULATE THE KERNEL DENSITY ESTIMATE
 ###
 h_grid = h_matrix
+h = h_matrix
 #h_grid[std_estimate == 0] = 1000
 kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid)
 #normalize
@@ -825,7 +925,7 @@ plt.title('Data driven kde estimate using NeffNeff! Full pakke!')
 plt.show()
 
 #set all nan values in h to 0
-h[np.isnan(h)] = 0
+#h[np.isnan(h)] = 0
 #plot everything:
 
 # Determine the global min and max values for the lower three plots
@@ -845,8 +945,8 @@ axs[0, 2].set_title('Bandwidth estimate')
 fig.colorbar(im2, ax=axs[0, 2])
 
 # Plot 3: Integral length scale
-im3 = axs[0, 1].imshow(integral_length_scale_matrix)
-axs[0, 1].set_title('Integral length scale')
+im3 = axs[0, 1].imshow(N_eff_advanced)
+axs[0, 1].set_title('N_eff_advanced')
 fig.colorbar(im3, ax=axs[0, 1])
 
 # Plot 4: Standard deviation estimate
@@ -869,20 +969,42 @@ plt.show()
 
 #plot a histogram of the non-zero elements of the standard deviation matrix and N_eff matrix in a subplot
 plt.figure()
-plt.subplot(1,2,1)
+plt.subplot(1,3,1)
 plt.hist(std_estimate[std_estimate != 0].flatten(),bins=100)
-plt.title('Standard deviation histogram')
-plt.subplot(1,2,2)
+plt.title('Standard deviation')
+plt.subplot(1,3,2)
 plt.hist(N_eff_advanced[N_eff_advanced != 0].flatten(),bins=100)
-plt.title('N_eff histogram')
+plt.title('N_eff')
+plt.subplot(1,3,3)
+plt.hist(h[h != 0].flatten(),bins=100)
+plt.title('Bandwidth')
+plt.show()
+
+#Plot weight estimate, small_n_eff and N_eff_advanced
+fig, axes = plt.subplots(3, 1, figsize=(10, 15))
+# Plot the histogram for N_eff_advanced
+axes[2].hist(N_eff_advanced[N_eff_advanced > 0].flatten(), bins=30, color='blue', edgecolor='black')
+axes[2].set_title('Histogram of N_eff_advanced')
+axes[2].set_xlabel('N_eff_advanced')
+axes[2].set_ylabel('Frequency')
+# Plot the histogram for weight_estimate
+axes[0].hist(weight_estimate[weight_estimate > 0].flatten(), bins=30, color='green', edgecolor='black')
+axes[0].set_title('Histogram of Weight Estimate')
+axes[0].set_xlabel('Weight Estimate')
+axes[0].set_ylabel('Frequency')
+# Plot the histogram for small_n_eff
+axes[1].hist(small_n_eff[small_n_eff > 0].flatten(), bins=30, color='red', edgecolor='black')
+axes[1].set_title('Histogram of Small N_eff')
+axes[1].set_xlabel('Small N_eff')
+axes[1].set_ylabel('Frequency')
+# Adjust layout to prevent overlap
+plt.tight_layout()
+# Show the plot
 plt.show()
 
 
-
-
-
-
-
+#find the most ocurring number in h
+#np.median(h[h != 0])
 
 ### CALCULATE INTEGRAL LENGTH SCALE FOR ALL DATA ###
 

@@ -27,7 +27,7 @@ plt.style.use('default')
 #Triggers
 create_test_data = False
 load_test_data = True
-plotting = True
+plotting = False
 
 # Parameters
 grid_size = 150
@@ -175,7 +175,7 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
         j_min = max(j - kernel_size, 0)
         j_max = min(j + kernel_size + 1, gridsize_y)
 
-        # Calculate the weighted kernel
+        # Calculate the weighted kernel (distribute the contents within i,j to the surrounding grid cells)
         weighted_kernel = kernel * kde_pilot[i, j]
 
         # Add the contribution to the result matrix
@@ -260,15 +260,11 @@ def update_positions(particles, U_a, stdev, dt):
     '''
     # Advective term
     advective_displacement = U_a * dt
-    
     # Stochastic term
     stochastic_displacement = np.random.normal(0, stdev, particles.shape) * np.sqrt(dt)
-    
     # Update positions
     particles += advective_displacement + stochastic_displacement
-    
     #particles = np.mod(particles, grid_size)
-    
     return particles
 
     
@@ -345,16 +341,6 @@ def create_test_data(stdev=1.4, num_particles_per_timestep=5000, time_steps=380,
         else:
             particles_old = particles
 
-            #REMOVING PARTICLES THAT HAVE LEFT THE GRID#
-            #particles_old[np.where(particles_old[:,0] >= grid_size)] = np.nan
-            #particles_old[np.where(particles_old[:,1] >= grid_size)] = np.nan
-            #particles_old[np.where(particles_old[:,0] < 0)] = np.nan
-            #particles_old[np.where(particles_old[:,1] < 0)] = np.nan
-            #if np.sum(np.isnan(particles_old)) > 0:
-            #    print('Particles have left the domain')
-            #    particles_left += np.sum(np.isnan(particles_old))
-            #############################################
-
             # add particles to the particle array
             particles = np.ones([num_particles_per_timestep*(t+1), 2])*release_position
             # add in the old particle positions to the new array
@@ -422,7 +408,7 @@ def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights'):
     return trajectories, trajectories_full, bw, weights, weights_test
 
 
-def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
+def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None, illegal_cells=None):
     '''
     Input:
     x_pos (np.array): x-coordinates of the particles
@@ -431,6 +417,7 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
     grid_y (np.array): grid cell boundaries in the y-direction
     bandwidths (np.array): bandwidths of the particles
     weights (np.array): weights of the particles
+    illegal_cells: list of tuples with illegal cells where no particles are allowed
 
     Output:
     particle_count: np.array of shape (grid_size, grid_size)
@@ -472,6 +459,11 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
     y_indices = y_indices[valid_mask]
     weights = weights[valid_mask]
     bandwidths = bandwidths[valid_mask]
+
+
+
+
+
     
     # Accumulate weights and counts
     np.add.at(total_weight, (y_indices, x_indices), weights)
@@ -731,6 +723,40 @@ p_y = trajectories[:,1]
 num_kernels = 25
 ratio = 1/3
 gaussian_kernels, kernel_bandwidths = generate_gaussian_kernels(num_kernels, ratio)
+#Define illegal grid cells
+illegal_cells = np.zeros((grid_size,grid_size))
+illegal_cells[0:50,0:50] = 1
+#create a true/false mask of illegal cells
+legal_cells = illegal_cells == 0
+#indices of legal cells
+legal_indices = np.argwhere(legal_cells)
+#coordinates
+legal_coordinates = np.array([x_grid[legal_indices[:,0]],y_grid[legal_indices[:,1]]]).T
+from scipy.spatial import KDTree
+tree = KDTree(legal_coordinates)
+#get only p_x and p_ys that are within the grid
+p_x[p_x < 0] = 0
+p_x[p_x >= grid_size] = grid_size-1
+p_y[p_y < 0] = 0
+p_y[p_y >= grid_size] = grid_size-1
+#remove nans
+p_x = p_x[~np.isnan(p_x)]
+p_y = p_y[~np.isnan(p_y)]
+#do the same with particle positions
+particle_positions = np.array([p_x,p_y]).T
+is_illegal = ~legal_cells[p_x.astype(int),p_y.astype(int)] #boolean array of illegal particles
+#Find nearest legal cells only for illegal particles
+illegal_positions = particle_positions[is_illegal]
+
+_,nearest_indices = tree.query(illegal_positions) #get the nearest legal cell using the KDTree
+
+mapped_positions = legal_coordinates[nearest_indices] #get the mapped positions
+
+#Insert the mapped positions into th eillegal positions in p_x
+p_x[is_illegal] = mapped_positions[:,0]
+p_y[is_illegal] = mapped_positions[:,1]
+
+
 
 ######################################
 ############ GROUND TRUTH ############
@@ -908,8 +934,6 @@ plt.show()
 
 '''
 
-#Plot the results
-
 ###
 #CALCULATE THE KERNEL DENSITY ESTIMATE
 ###
@@ -937,9 +961,6 @@ kde_silverman_naive = Z / np.sum(Z)
 ################### PLOT EVERYTHING ####################
 ########################################################
 
-#set limits for the ground truth plot
-
-
 # Replace NaN values with zeros
 kde_data_driven = np.nan_to_num(kde_data_driven, nan=0.0)
 naive_estimate = np.nan_to_num(naive_estimate, nan=0.0)
@@ -955,181 +976,183 @@ kde_time_bw = kde_time_bw/np.sum(kde_time_bw)
 vmin = min(np.min(kde_data_driven), np.min(naive_estimate), np.min(ground_truth))
 vmax = max(np.max(kde_data_driven), np.max(naive_estimate), np.max(ground_truth))
 
-######### PLOT FOR ADAPTATION PARAMETERS #########
+    ######### PLOT FOR ADAPTATION PARAMETERS #########
 
-fig, axs = plt.subplots(2, 3, figsize=(15, 10))
+if plotting == True:
 
-# Plot 1: Data driven kde estimate using NeffNeff! Full pakke!
-im1 = axs[1, 2].imshow(kde_data_driven, vmin=vmin, vmax=vmax)
-axs[1, 2].set_title('Data driven estimator')
-fig.colorbar(im1, ax=axs[1, 2], shrink=0.8)
+    fig, axs = plt.subplots(2, 3, figsize=(15, 10))
 
-# Plot 2: Bandwidth estimate
-im2 = axs[0, 2].imshow(h)
-axs[0, 2].set_title('Bandwidth estimate')
-fig.colorbar(im2, ax=axs[0, 2], shrink=0.8)
+    # Plot 1: Data driven kde estimate using NeffNeff! Full pakke!
+    im1 = axs[1, 2].imshow(kde_data_driven, vmin=vmin, vmax=vmax)
+    axs[1, 2].set_title('Data driven estimator')
+    fig.colorbar(im1, ax=axs[1, 2], shrink=0.8)
 
-# Plot 3: Integral length scale
-im3 = axs[0, 1].imshow(N_eff_advanced)
-axs[0, 1].set_title('N_eff_advanced')
-fig.colorbar(im3, ax=axs[0, 1], shrink=0.8)
+    # Plot 2: Bandwidth estimate
+    im2 = axs[0, 2].imshow(h)
+    axs[0, 2].set_title('Bandwidth estimate')
+    fig.colorbar(im2, ax=axs[0, 2], shrink=0.8)
 
-# Plot 4: Standard deviation estimate
-im4 = axs[0, 0].imshow(std_estimate)
-axs[0, 0].set_title('Standard deviation estimate')
-fig.colorbar(im4, ax=axs[0, 0], shrink=0.8)
+    # Plot 3: Integral length scale
+    im3 = axs[0, 1].imshow(N_eff_advanced)
+    axs[0, 1].set_title('N_eff_advanced')
+    fig.colorbar(im3, ax=axs[0, 1], shrink=0.8)
 
-# Plot 5: Naive histogram estimate
-im5 = axs[1, 1].imshow(naive_estimate, vmin=vmin, vmax=vmax)
-axs[1, 1].set_title('Naive histogram estimate')
-fig.colorbar(im5, ax=axs[1, 1], shrink=0.8)
+    # Plot 4: Standard deviation estimate
+    im4 = axs[0, 0].imshow(std_estimate)
+    axs[0, 0].set_title('Standard deviation estimate')
+    fig.colorbar(im4, ax=axs[0, 0], shrink=0.8)
 
-# Plot 6: Ground truth
-im6 = axs[1, 0].imshow(ground_truth, vmin=vmin, vmax=vmax)
-axs[1, 0].set_title('Ground truth')
-fig.colorbar(im6, ax=axs[1, 0], shrink=0.8)
+    # Plot 5: Naive histogram estimate
+    im5 = axs[1, 1].imshow(naive_estimate, vmin=vmin, vmax=vmax)
+    axs[1, 1].set_title('Naive histogram estimate')
+    fig.colorbar(im5, ax=axs[1, 1], shrink=0.8)
 
-plt.tight_layout()
-plt.show()
+    # Plot 6: Ground truth
+    im6 = axs[1, 0].imshow(ground_truth, vmin=vmin, vmax=vmax)
+    axs[1, 0].set_title('Ground truth')
+    fig.colorbar(im6, ax=axs[1, 0], shrink=0.8)
 
-#plot a histogram of the non-zero elements of the standard deviation matrix and N_eff matrix in a subplot
-plt.figure()
-plt.subplot(1,3,1)
-plt.hist(std_estimate[std_estimate != 0].flatten(),bins=100)
-plt.title('Standard deviation')
-plt.subplot(1,3,2)
-plt.hist(N_eff_advanced[N_eff_advanced != 0].flatten(),bins=100)
-plt.title('N_eff')
-plt.subplot(1,3,3)
-plt.hist(h[h != 0].flatten(),bins=100)
-plt.title('Bandwidth')
-plt.show()
+    plt.tight_layout()
+    plt.show()
 
-#Plot weight estimate, small_n_eff and N_eff_advanced
-fig, axes = plt.subplots(3, 1, figsize=(10, 15))
-# Plot the histogram for N_eff_advanced
-axes[2].hist(N_eff_advanced[N_eff_advanced > 0].flatten(), bins=30, color='blue', edgecolor='black')
-axes[2].set_title('Histogram of N_eff_advanced')
-axes[2].set_xlabel('N_eff_advanced')
-axes[2].set_ylabel('Frequency')
-# Plot the histogram for weight_estimate
-axes[0].hist(weight_estimate[weight_estimate > 0].flatten(), bins=30, color='green', edgecolor='black')
-axes[0].set_title('Histogram of Weight Estimate')
-axes[0].set_xlabel('Weight Estimate')
-axes[0].set_ylabel('Frequency')
-# Plot the histogram for small_n_eff
-axes[1].hist(small_n_eff[small_n_eff > 0].flatten(), bins=30, color='red', edgecolor='black')
-axes[1].set_title('Histogram of Small N_eff')
-axes[1].set_xlabel('Small N_eff')
-axes[1].set_ylabel('Frequency')
-# Adjust layout to prevent overlap
-plt.tight_layout()
-# Show the plot
-plt.show()
+    #plot a histogram of the non-zero elements of the standard deviation matrix and N_eff matrix in a subplot
+    plt.figure()
+    plt.subplot(1,3,1)
+    plt.hist(std_estimate[std_estimate != 0].flatten(),bins=100)
+    plt.title('Standard deviation')
+    plt.subplot(1,3,2)
+    plt.hist(N_eff_advanced[N_eff_advanced != 0].flatten(),bins=100)
+    plt.title('N_eff')
+    plt.subplot(1,3,3)
+    plt.hist(h[h != 0].flatten(),bins=100)
+    plt.title('Bandwidth')
+    plt.show()
 
-
-#Set colormap to be used for the pcolor and contour plots
-cmap = 'mako_r'
+    #Plot weight estimate, small_n_eff and N_eff_advanced
+    fig, axes = plt.subplots(3, 1, figsize=(10, 15))
+    # Plot the histogram for N_eff_advanced
+    axes[2].hist(N_eff_advanced[N_eff_advanced > 0].flatten(), bins=30, color='blue', edgecolor='black')
+    axes[2].set_title('Histogram of N_eff_advanced')
+    axes[2].set_xlabel('N_eff_advanced')
+    axes[2].set_ylabel('Frequency')
+    # Plot the histogram for weight_estimate
+    axes[0].hist(weight_estimate[weight_estimate > 0].flatten(), bins=30, color='green', edgecolor='black')
+    axes[0].set_title('Histogram of Weight Estimate')
+    axes[0].set_xlabel('Weight Estimate')
+    axes[0].set_ylabel('Frequency')
+    # Plot the histogram for small_n_eff
+    axes[1].hist(small_n_eff[small_n_eff > 0].flatten(), bins=30, color='red', edgecolor='black')
+    axes[1].set_title('Histogram of Small N_eff')
+    axes[1].set_xlabel('Small N_eff')
+    axes[1].set_ylabel('Frequency')
+    # Adjust layout to prevent overlap
+    plt.tight_layout()
+    # Show the plot
+    plt.show()
 
 
-### MAKE PLOT OF ADAPTATION PARAMETERS ###
-# Replace NaN values with zeros
-std_estimate = np.nan_to_num(std_estimate, nan=0.0)
-N_eff_advanced = np.nan_to_num(N_eff_advanced, nan=0.0)
-h = np.nan_to_num(h, nan=0.0)
+    #Set colormap to be used for the pcolor and contour plots
+    cmap = 'mako_r'
 
-# Create the first 2x2 figure with GridSpec
-fig1 = plt.figure(figsize=(12.5, 10))
-gs = GridSpec(2, 2, width_ratios=[1, 1], height_ratios=[1, 1])
 
-# Plot Standard deviation estimate using pcolor
-ax1 = fig1.add_subplot(gs[0, 0])
-pc1 = ax1.pcolor(std_estimate, cmap=cmap)
-ax1.set_title('Standard Deviation Estimate', fontsize=14)
-fig1.colorbar(pc1, ax=ax1)
+    ### MAKE PLOT OF ADAPTATION PARAMETERS ###
+    # Replace NaN values with zeros
+    std_estimate = np.nan_to_num(std_estimate, nan=0.0)
+    N_eff_advanced = np.nan_to_num(N_eff_advanced, nan=0.0)
+    h = np.nan_to_num(h, nan=0.0)
 
-# Plot N_eff_advanced estimate using pcolor
-ax2 = fig1.add_subplot(gs[0, 1])
-pc2 = ax2.pcolor(N_eff_advanced, cmap=cmap)
-ax2.set_title('N_eff Estimate', fontsize=14)
-fig1.colorbar(pc2, ax=ax2)
+    # Create the first 2x2 figure with GridSpec
+    fig1 = plt.figure(figsize=(12.5, 10))
+    gs = GridSpec(2, 2, width_ratios=[1, 1], height_ratios=[1, 1])
 
-# Plot Bandwidth estimate using pcolor
-ax3 = fig1.add_subplot(gs[1, 0])
-pc3 = ax3.pcolor(h, cmap=cmap)
-ax3.set_title('Bandwidth Estimate', fontsize=14)
-fig1.colorbar(pc3, ax=ax3)
+    # Plot Standard deviation estimate using pcolor
+    ax1 = fig1.add_subplot(gs[0, 0])
+    pc1 = ax1.pcolor(std_estimate, cmap=cmap)
+    ax1.set_title('Standard Deviation Estimate', fontsize=14)
+    fig1.colorbar(pc1, ax=ax1)
 
-# Create a histogram with tighter x-limits
-ax_hist = fig1.add_subplot(gs[1, 1])
+    # Plot N_eff_advanced estimate using pcolor
+    ax2 = fig1.add_subplot(gs[0, 1])
+    pc2 = ax2.pcolor(N_eff_advanced, cmap=cmap)
+    ax2.set_title('N_eff Estimate', fontsize=14)
+    fig1.colorbar(pc2, ax=ax2)
 
-ax_hist.hist(std_estimate[std_estimate != 0].flatten(), bins=100, color='blue', edgecolor='black', alpha=0.5, label='Standard Deviation')
-ax_hist.hist(h[h != 0].flatten(), bins=100, color='red', edgecolor='black', alpha=0.5, label='Bandwidth')
-ax_hist.hist(N_eff_advanced[N_eff_advanced != 0].flatten()**(1/6), bins=100, color='green', edgecolor='black', alpha=0.5, label='N_eff$^{1/6}$')
-#ax_hist.set_xlabel('Value', fontsize=14)
-#ax_hist.set_ylabel(' fontsize=14)
-ax_hist.legend(fontsize=12)
-# Adjust the size of subplot(gs[1,1]) such that it has the same width and height as the other three plots
-pos1 = ax_hist.get_position()  # get the original position
-pos2 = [pos1.x0, pos1.y0, pos1.width , pos1.height]
-ax_hist.set_position(pos2)  # set a new position
+    # Plot Bandwidth estimate using pcolor
+    ax3 = fig1.add_subplot(gs[1, 0])
+    pc3 = ax3.pcolor(h, cmap=cmap)
+    ax3.set_title('Bandwidth Estimate', fontsize=14)
+    fig1.colorbar(pc3, ax=ax3)
 
-# Manually remove whitespace between subplots
-plt.tight_layout()
+    # Create a histogram with tighter x-limits
+    ax_hist = fig1.add_subplot(gs[1, 1])
 
-plt.show()
+    ax_hist.hist(std_estimate[std_estimate != 0].flatten(), bins=100, color='blue', edgecolor='black', alpha=0.5, label='Standard Deviation')
+    ax_hist.hist(h[h != 0].flatten(), bins=100, color='red', edgecolor='black', alpha=0.5, label='Bandwidth')
+    ax_hist.hist(N_eff_advanced[N_eff_advanced != 0].flatten()**(1/6), bins=100, color='green', edgecolor='black', alpha=0.5, label='N_eff$^{1/6}$')
+    #ax_hist.set_xlabel('Value', fontsize=14)
+    #ax_hist.set_ylabel(' fontsize=14)
+    ax_hist.legend(fontsize=12)
+    # Adjust the size of subplot(gs[1,1]) such that it has the same width and height as the other three plots
+    pos1 = ax_hist.get_position()  # get the original position
+    pos2 = [pos1.x0, pos1.y0, pos1.width , pos1.height]
+    ax_hist.set_position(pos2)  # set a new position
 
-### PLOT THE GROUND TRUTH ###
-# Assuming ground_truth, naive_estimate, kde_data_driven, kde_time_bw, and kde_silverman_naive are defined
-vmin = ground_truth.min()
-vmax = ground_truth.max()
-levels = np.linspace(vmin, vmax, 50)
+    # Manually remove whitespace between subplots
+    plt.tight_layout()
 
-# Plot the ground truth in a single plot using contourf
-plt.figure()
-plt.contourf(ground_truth, levels=levels, cmap=cmap,extend='max')
-plt.colorbar(extend='max')
-plt.title('Ground truth', fontsize=14)
-plt.show()
+    plt.show()
 
-# Create the second 2x2 figure
-fig2, axs2 = plt.subplots(2, 2, figsize=(12.5, 10))
+    ### PLOT THE GROUND TRUTH ###
+    # Assuming ground_truth, naive_estimate, kde_data_driven, kde_time_bw, and kde_silverman_naive are defined
+    vmin = ground_truth.min()
+    vmax = ground_truth.max()
+    levels = np.linspace(vmin, vmax, 50)
 
-# Plot Naive estimate using contourf
-cf4 = axs2[0, 0].contourf(naive_estimate, levels=levels, cmap=cmap, extend='max')
-axs2[0, 0].set_title('Histogram estimate', fontsize=14)
-cbar4 = fig2.colorbar(cf4, ax=axs2[0, 0], extend='max')
-cbar4.formatter = ScalarFormatter(useMathText=True)
-cbar4.formatter.set_scientific(True)
-cbar4.formatter.set_powerlimits((0, 0))
-cbar4.update_ticks()
+    # Plot the ground truth in a single plot using contourf
+    plt.figure()
+    plt.contourf(ground_truth, levels=levels, cmap=cmap,extend='max')
+    plt.colorbar(extend='max')
+    plt.title('Ground truth', fontsize=14)
+    plt.show()
 
-# Plot Data driven estimate using NeffNeffNeff using contourf
-cf5 = axs2[0, 1].contourf(kde_data_driven, levels=levels, cmap=cmap, extend='max')
-axs2[0, 1].set_title('Adaptive bandwidth estimate', fontsize=14)
-cbar5 = fig2.colorbar(cf5, ax=axs2[0, 1], extend='max')
-cbar5.formatter = ScalarFormatter(useMathText=True)
-cbar5.formatter.set_scientific(True)
-cbar5.formatter.set_powerlimits((0, 0))
-cbar5.update_ticks()
+    # Create the second 2x2 figure
+    fig2, axs2 = plt.subplots(2, 2, figsize=(12.5, 10))
 
-# Plot time dependent bandwidth estimate using contourf
-cf6 = axs2[1, 0].contourf(kde_time_bw, levels=levels, cmap=cmap, extend='max')
-axs2[1, 0].set_title('Time dependent bandwidth estimate', fontsize=14)
-cbar6 = fig2.colorbar(cf6, ax=axs2[1, 0], extend='max')
-cbar6.formatter = ScalarFormatter(useMathText=True)
-cbar6.formatter.set_scientific(True)
-cbar6.formatter.set_powerlimits((0, 0))
-cbar6.update_ticks()
+    # Plot Naive estimate using contourf
+    cf4 = axs2[0, 0].contourf(naive_estimate, levels=levels, cmap=cmap, extend='max')
+    axs2[0, 0].set_title('Histogram estimate', fontsize=14)
+    cbar4 = fig2.colorbar(cf4, ax=axs2[0, 0], extend='max')
+    cbar4.formatter = ScalarFormatter(useMathText=True)
+    cbar4.formatter.set_scientific(True)
+    cbar4.formatter.set_powerlimits((0, 0))
+    cbar4.update_ticks()
 
-# Plot Silverman (naive) estimate using contourf
-cf7 = axs2[1, 1].contourf(kde_silverman_naive, levels=levels, cmap=cmap, extend='max')
-axs2[1, 1].set_title('Silverman (non-adaptive) estimate', fontsize=14)
-cbar7 = fig2.colorbar(cf7, ax=axs2[1, 1], extend='max')
-cbar7.formatter = ScalarFormatter(useMathText=True)
-cbar7.formatter.set_scientific(True)
-cbar7.formatter.set_powerlimits((0, 0))
-cbar7.update_ticks()
+    # Plot Data driven estimate using NeffNeffNeff using contourf
+    cf5 = axs2[0, 1].contourf(kde_data_driven, levels=levels, cmap=cmap, extend='max')
+    axs2[0, 1].set_title('Adaptive bandwidth estimate', fontsize=14)
+    cbar5 = fig2.colorbar(cf5, ax=axs2[0, 1], extend='max')
+    cbar5.formatter = ScalarFormatter(useMathText=True)
+    cbar5.formatter.set_scientific(True)
+    cbar5.formatter.set_powerlimits((0, 0))
+    cbar5.update_ticks()
 
-plt.tight_layout()
-plt.show()
+    # Plot time dependent bandwidth estimate using contourf
+    cf6 = axs2[1, 0].contourf(kde_time_bw, levels=levels, cmap=cmap, extend='max')
+    axs2[1, 0].set_title('Time dependent bandwidth estimate', fontsize=14)
+    cbar6 = fig2.colorbar(cf6, ax=axs2[1, 0], extend='max')
+    cbar6.formatter = ScalarFormatter(useMathText=True)
+    cbar6.formatter.set_scientific(True)
+    cbar6.formatter.set_powerlimits((0, 0))
+    cbar6.update_ticks()
+
+    # Plot Silverman (naive) estimate using contourf
+    cf7 = axs2[1, 1].contourf(kde_silverman_naive, levels=levels, cmap=cmap, extend='max')
+    axs2[1, 1].set_title('Silverman (non-adaptive) estimate', fontsize=14)
+    cbar7 = fig2.colorbar(cf7, ax=axs2[1, 1], extend='max')
+    cbar7.formatter = ScalarFormatter(useMathText=True)
+    cbar7.formatter.set_scientific(True)
+    cbar7.formatter.set_powerlimits((0, 0))
+    cbar7.update_ticks()
+
+    plt.tight_layout()
+    plt.show()

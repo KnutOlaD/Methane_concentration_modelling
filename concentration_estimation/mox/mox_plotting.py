@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from matplotlib.ticker import MaxNLocator
+import numpy as np
 
 color_1 = '#7e1e9c'
 color_2 = '#014d4e'
@@ -45,27 +46,30 @@ df = pd.DataFrame(data)
 average_k_ox = df["k_ox (10^{-6} s^{-1})"].mean()
 
 # Set up the matplotlib figure with a narrower width
-plt.figure(figsize=(7.5, 6))
+plt.figure(figsize=(7, 6))
+
 sns.set(style="whitegrid")
 
+sns.set_style('ticks')
+
 # Plot the histogram of k_ox values with a logarithmic scale on the x-axis and KDE line
-sns.histplot(df["k_ox (10^{-6} s^{-1})"], bins=8, color=color_1, kde=True, log_scale=(True, False), kde_kws={'bw_method': 'silverman'})
+sns.histplot(df["k_ox (10^{-6} s^{-1})"], bins=8, color=color_1, kde=True, log_scale=(True, False), kde_kws={'bw_method': 'silverman'},label='Number of Datasets')
 
 # Add a vertical line at the average value
-plt.axvline(average_k_ox, color=color_2, linestyle='dashed', linewidth=2, label=f'Average: {average_k_ox:.2e}',)
+plt.axvline(average_k_ox, color=color_2, linestyle='dashed', linewidth=2,label=f'Average: {average_k_ox:.2e}')
 
 # Add a dummy line for the KDE label
-plt.plot([], [], color=color_1, label='Gaussian KDE', linewidth=2.5)
+plt.plot([], [], color=color_1, label='Frequency density', linewidth=2.5)
+
+#Make dummy line for average label
+#plt.plot([], [], color=color_2, linewidth=2.5, linestyle='dashed')
 
 # Customize the plot
-plt.title("Methane Oxidation Rate Coefficients ($k_{ox}$)", fontsize=14)
-plt.xlabel(r"$k_{ox} \, (10^{-6} \, \text{s}^{-1})$, logarithmic scale", fontsize=14)
+#plt.title("Methane Oxidation Rate Coefficients ($k_{ox}$)", fontsize=14)
+plt.xlabel(r"$k_{ox} \, (10^{-6} \, \text{s}^{-1})$, logarithmic scale", fontsize=16)
 plt.ylabel("Frequency", fontsize=16)
-plt.legend(fontsize=12,loc=[0.2,0.8])
-plt.grid(True)
-
-#adjust x-axis limits
-plt.xlim(np.min(df["k_ox (10^{-6} s^{-1})"]), np.max(df["k_ox (10^{-6} s^{-1})"]))
+plt.legend(fontsize=12,loc=[0.2,0.81])
+plt.grid(False)
 
 #Increase size of ticks
 plt.xticks(fontsize=14)
@@ -73,7 +77,17 @@ plt.yticks(fontsize=14)
 
 # Ensure y-axis has only integer values
 plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True))
+#Create a list of xticks. Should go from min to max of k_ox in logspace with
+#ticks at 0.01,0.011,0.012,0.013,0.014,0.015,0.016,0.017,0.018,0.019,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,2,3,4,5,6,7,8,9,10
+xticks = [0.01,0.011,0.012,0.013,0.014,0.015,0.016,0.017,0.018,0.019,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,2,3,4,5,6,7,8,9,10]
+#force xticks
+plt.xticks(xticks)
+#and labels at each order of magnitude
+plt.xticks([0.01,0.1,1,10],['$10^{-2}$','$10^{-1}$','$10^{0}$','$10^{1}$'])
 
+#adjust x-axis limits
+plt.xlim(np.min(df["k_ox (10^{-6} s^{-1})"]), np.max(df["k_ox (10^{-6} s^{-1})"]))
+   
 # Show the plot
 plt.tight_layout()
 plt.show()
@@ -175,3 +189,48 @@ plt.show()
 
 # Bubble rising speed averages.. 
 
+#Calculate average of all seep location mox rates
+
+#make a vector of all the seep mox rates
+seep_mox_rates = [0.08,0.09,0.5,0.04,0.93,0.12,0.06,0.23,0.98,0.02,0.02,0.21,0.41,0.62,0.22,0.35]
+
+seep_mox_rates_avg = np.mean(seep_mox_rates)
+seep_mox_rates_median = np.median(seep_mox_rates)
+seep_mox_rates_std = np.std(seep_mox_rates)
+
+print(f"Average: {seep_mox_rates_avg:.2e}")
+print(f"Median: {seep_mox_rates_median:.2e}")
+print(f"Standard Deviation: {seep_mox_rates_std:.2e}")
+
+#create a histogram similar to the first histogram in this script
+plt.figure(figsize=(7, 6))
+sns.set(style="whitegrid")
+
+# Plot the histogram of k_ox values with a logarithmic scale on the x-axis and KDE line
+sns.histplot(seep_mox_rates, bins=8, color=color_1, kde=True, log_scale=(True, False), kde_kws={'bw_method': 'silverman'})
+
+# Add a vertical line at the average value
+#plt.axvline(seep_mox_rates, color=color_2, linestyle='dashed', linewidth=2, label=f'Average: {seep_mox_rates:.2e}',)
+
+# Add a dummy line for the KDE label
+plt.plot([], [], color=color_1, label='Gaussian KDE', linewidth=2.5)
+
+# Customize the plot
+#plt.title("Methane Oxidation Rate Coefficients ($k_{ox}$)", fontsize=14)
+plt.xlabel(r"$k_{ox} \, (10^{-6} \, \text{s}^{-1})$, logarithmic scale", fontsize=16)
+plt.ylabel("Frequency", fontsize=16)
+plt.legend(fontsize=12,loc=[0.2,0.85])
+plt.grid(True)
+
+#adjust x-axis limits
+plt.xlim(np.min(seep_mox_rates), np.max(seep_mox_rates))
+
+#Increase size of ticks
+plt.xticks(fontsize=14)
+
+# Ensure y-axis has only integer values
+plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True))
+
+# Show the plot
+plt.tight_layout()
+plt.show()

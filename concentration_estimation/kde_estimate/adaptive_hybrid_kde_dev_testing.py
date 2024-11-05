@@ -18,6 +18,12 @@ from scipy.ndimage import generic_filter
 from matplotlib.ticker import ScalarFormatter
 #import gridspec
 from matplotlib.gridspec import GridSpec as GridSpec
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import ScalarFormatter
+import numpy as np
+from scipy.spatial import KDTree
+
 
 #set plotting style
 plt.style.use('dark_background')
@@ -25,9 +31,9 @@ plt.style.use('dark_background')
 plt.style.use('default')
 
 #Triggers
-create_test_data = False
-load_test_data = True
-plotting = False
+create_test_data_this_run = False
+load_test_data = False
+plotting = True
 
 # Parameters
 grid_size = 150
@@ -122,8 +128,15 @@ def histogram_estimator_numba(particles, grid_size, weights=None, bandwidths=Non
 
     return total_weight, particle_count, cell_bandwidths
 
+#reflect_kernel_contribution(kernel, x, y, legal_grid, density_grid)
 #Function to calculate the grid projected kernel density estimator
-def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths, cell_bandwidths):
+def grid_proj_kde(grid_x, 
+                  grid_y, 
+                  kde_pilot, 
+                  gaussian_kernels, 
+                  kernel_bandwidths, 
+                  cell_bandwidths,
+                  illegal_cells = None):
     """
     Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
 
@@ -134,6 +147,7 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
     gaussian_kernels (list): List of Gaussian kernel matrices.
     kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
     cell_bandwidths (np.array): Array of bandwidths of the particles.
+    illegal_cells = array of size grid_x,grid_y with True/False values for illegal cells
 
     Returns:
     np.array: The resulting KDE projected onto the grid.
@@ -145,8 +159,15 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
     - The function iterates over non-zero values in the pilot KDE and applies the corresponding Gaussian kernel.
     - The appropriate Gaussian kernel is selected based on the bandwidth of each particle.
     - The resulting KDE is accumulated in the output grid n_u.
+    - Uses the reflection method to handle boundary conditions.
     """
     # ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
+
+    if illegal_cells is None:
+        illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=bool)
+    #else:
+        #illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=bool)
+        #check if any of the illegal cell positions are within the kernel area
     
     # Get the grid size
     gridsize_x = len(grid_x)
@@ -175,8 +196,20 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
         j_min = max(j - kernel_size, 0)
         j_max = min(j + kernel_size + 1, gridsize_y)
 
-        # Calculate the weighted kernel (distribute the contents within i,j to the surrounding grid cells)
-        weighted_kernel = kernel * kde_pilot[i, j]
+        #Check if there are illegal cells in the kernel area and run reflect_kernel_contribution if there are
+        #if np.any(illegal_cells[i_min:i_max, j_min:j_max]):
+
+        #Handle illegal cells
+        if np.any(np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])):
+            illegal_indices = np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])
+            #Sum contribution for all illegal cells in the kernel
+            illegal_kernel_sum = np.sum(kernel[illegal_indices[:,0],illegal_indices[:,1]])
+            #set them to zero
+            kernel[illegal_indices[:,0],illegal_indices[:,1]] = 0
+            #calculat the weighted kernel sum
+            weighted_kernel = kernel*(kde_pilot[i,j]+illegal_kernel_sum)
+        else:
+            weighted_kernel = kernel * kde_pilot[i, j]
 
         # Add the contribution to the result matrix
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
@@ -310,54 +343,99 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 #
 #Create test data function
 #
-def create_test_data(stdev=1.4, num_particles_per_timestep=5000, time_steps=380, dt=0.1, grid_size=150, num_particles=5000):
-    #Creates a bunch of particles and the time dependant bandwidth parameter. 
-    #returns the particle trajectories and the bandwidth vector
+def create_test_data(stdev=1.4, 
+                     num_particles_per_timestep=5000, 
+                     time_steps=380, 
+                     dt=0.1, 
+                     grid_size=100,
+                     illegal_positions=None):
+    # Define illegal cells
+    if illegal_positions is None:
+        illegal_positions = np.zeros((grid_size, grid_size), dtype=bool)
+        a = 35
+        b = 20
+        x0 = 55
+        y0 = 95
+        for i in range(grid_size):
+            for j in range(grid_size):
+                if ((i - x0) / a)**2 + ((j - y0) / b)**2 <= 1:
+                    illegal_positions[i, j] = 1
+
+        # Make also every number where y is larger than 80 and x smaller than 50 illegal
+        illegal_positions[:50, 80:] = 1
+
+        #add a narrow obstacle in the middle of the grid oriented 30 degrees from the x-axis
+        #illegal_positions[0:60, 20:30] = 1
+
+    # Create a true/false mask of illegal cells
+    legal_cells = ~illegal_positions
+    # Indices of legal cells
+    legal_indices = np.argwhere(legal_cells)
+    # Coordinates
+    x_grid = np.arange(illegal_positions.shape[0])
+    y_grid = np.arange(illegal_positions.shape[1])
+    legal_coordinates = np.array([x_grid[legal_indices[:, 0]], y_grid[legal_indices[:, 1]]]).T
+    from scipy.spatial import KDTree
+    tree = KDTree(legal_coordinates)
+
     # Release position
     release_position = np.array([10, 10])
-    #Make U_a a periodic function with size time_steps
-    U_a = [0,5] #Initial value
-    #Initial magnitude
-    magU = np.sqrt(U_a[0]**2+U_a[1]**2)
+    # Make U_a a periodic function with size time_steps
+    U_a = [0, 5]  # Initial value
+    # Initial magnitude
+    magU = np.sqrt(U_a[0]**2 + U_a[1]**2)
     U_a = np.tile(U_a, (time_steps, 1))
     for i in range(1, time_steps):
-        U_a[i][:][0] = 2*magU+ np.sin(i/50)*2*magU
-        #make it a bit more complex by adding another sine function with different
-        #frequency
-        #U_a[i][:][1] = 2*magU+ np.sin(i/50)*2*magU + np.sin(i/10)*2*magU
-        print(np.sin(i/10))
-        #L2 normalize the velocity
-        U_a[i] = (U_a[i]/(np.sqrt(U_a[i][0]**2+U_a[i][1]**2)))*magU #Concervation of mass
+        U_a[i][:][0] = 2 * magU + np.sin(i / 50) * 2 * magU
+        # make it a bit more complex by adding another sine function with different frequency
+        # U_a[i][:][1] = 2*magU+ np.sin(i/50)*2*magU + np.sin(i/10)*2*magU
+        print(np.sin(i / 10))
+        # L2 normalize the velocity
+        U_a[i] = (U_a[i] / (np.sqrt(U_a[i][0]**2 + U_a[i][1]**2))) * magU  # Conservation of mass
 
     # Simulate particle trajectories
-    trajectories = np.zeros((time_steps-1, num_particles, 2))*np.nan
-    #create the bandwidth vector for each particle
-    bw = np.ones(num_particles)*0
+    trajectories = np.zeros((num_particles_per_timestep * time_steps, 2)) * np.nan
+    # Create the bandwidth vector for each particle
+    bw = np.ones(num_particles_per_timestep * time_steps) * 0
 
-    for t in range(time_steps-1):
+    for t in range(time_steps - 1):
         if t == 0:
             # Initialize particle matrix at first timestep
-            particles = np.ones([num_particles_per_timestep, 2])*release_position
+            particles = np.ones([num_particles_per_timestep, 2]) * release_position
         else:
             particles_old = particles
 
-            # add particles to the particle array
-            particles = np.ones([num_particles_per_timestep*(t+1), 2])*release_position
-            # add in the old particle positions to the new array
-            particles[:num_particles_per_timestep*(t)] = particles_old
-            #Set particles that has left the dodmain to nan
-            #Update the bw vector
+            # Add particles to the particle array
+            particles = np.ones([num_particles_per_timestep * (t + 1), 2]) * release_position
+            # Add in the old particle positions to the new array
+            particles[:num_particles_per_timestep * t] = particles_old
+            # Set particles that have left the domain to nan
+            # Update the bw vector
 
+        print(np.shape(particles))
         particles = update_positions(particles, U_a[t], stdev, dt)
-        trajectories[t,:len(particles)] = particles
-        bw[:len(particles)] = bw[:len(particles)] + np.sqrt(stdev*0.001)
-        #limit bw to a maximum value
-        #bw[bw > 20] = 20
+
+        # Reposition illegal particles
+        p_x, p_y = particles[:, 0], particles[:, 1]
+        valid_indices = ~np.isnan(p_x) & ~np.isnan(p_y) & (p_x >= 0) & (p_x < grid_size) & (p_y >= 0) & (p_y < grid_size)
+        is_illegal = np.zeros(p_x.shape, dtype=bool)
+        is_illegal[valid_indices] = ~legal_cells[p_x[valid_indices].astype(int), p_y[valid_indices].astype(int)]
+        illegal_positions = particles[is_illegal]
+        _, nearest_indices = tree.query(illegal_positions)
+        mapped_positions = legal_coordinates[nearest_indices]
+        particles[is_illegal, 0] = mapped_positions[:, 0]
+        particles[is_illegal, 1] = mapped_positions[:, 1]
+
+        trajectories[:len(particles)] = particles
+        bw[:len(particles)] = bw[:len(particles)] + np.sqrt(stdev * 0.001)
+        # Limit bw to a maximum value
+        # bw[bw > 20] = 20
+
     with open('trajectories_full.pkl', 'wb') as f:
         pickle.dump(trajectories[-1], f)
     with open('bw.pkl', 'wb') as f:
         pickle.dump(bw, f)
-    
+
     return trajectories, bw
 
 def silvermans_simple_2d(n,dim):
@@ -386,7 +464,7 @@ def silvermans_h(data,dim):
     silvermans_factor = silvermans_factor
     return silvermans_factor
 
-def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights'):
+def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights',illegal_positions=None):
     if load_test_data == True:
         # Load test data
         with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\trajectories_full.pkl', 'rb') as f:
@@ -395,7 +473,12 @@ def get_test_data(load_test_data=True,frac_diff = 1000,weights = 'log_weights'):
             bw = pickle.load(f)
     else:
         # Create test data
-        trajectories_full, bw = create_test_data()
+        trajectories_full, bw = create_test_data(illegal_positions=illegal_positions)
+        # Save test data to the same locations
+        with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\trajectories_full.pkl', 'wb') as f:
+            pickle.dump(trajectories_full, f)
+        with open(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Dispersion_modelling\concentration_estimation\kde_estimate\bw.pkl', 'wb') as f:
+            pickle.dump(bw, f)
 
     trajectories = trajectories_full[::frac_diff,:]
     #pick only the right data from the bw vector
@@ -460,11 +543,6 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
     weights = weights[valid_mask]
     bandwidths = bandwidths[valid_mask]
 
-
-
-
-
-    
     # Accumulate weights and counts
     np.add.at(total_weight, (y_indices, x_indices), weights)
     np.add.at(particle_count, (y_indices, x_indices), 1)
@@ -691,14 +769,182 @@ def get_integral_length_scale(histogram_prebinned, window_size):
     return integral_length_scale_matrix
 
 
+#make the illegal cells an elliptic shape
+def create_illegal_dataset(grid_size,p_x,p_y,x_grid,y_grid):
+
+    #Define illegal grid cells
+    illegal_cells = np.zeros((grid_size,grid_size))
+    #illegal_cells[55:65,70:85] = 1
+
+    a = 30
+    b = 15
+    x0 = 55
+    y0 = 95
+    for i in range(grid_size):
+        for j in range(grid_size):
+            if ((i-x0)/a)**2 + ((j-y0)/b)**2 <= 1:
+                illegal_cells[i,j] = 1
+
+    #make also eevry number where y is larger than 80 and x smaller than 50 illegal
+    illegal_cells[:50,80:] = 1
+    #make a plot of the illegal cells
+
+    #create a true/false mask of illegal cells
+    legal_cells = illegal_cells == 0
+    #indices of legal cells
+    legal_indices = np.argwhere(legal_cells)
+    #coordinates
+    legal_coordinates = np.array([x_grid[legal_indices[:,0]],y_grid[legal_indices[:,1]]]).T
+    from scipy.spatial import KDTree
+    tree = KDTree(legal_coordinates)
+    #get only p_x and p_ys that are within the grid
+    #p_x[p_x < 0] = 0
+    #p_x[p_x >= grid_size] = grid_size-1
+    #p_y[p_y < 0] = 0
+    #p_y[p_y >= grid_size] = grid_size-1
+    #remove nans
+    #p_x = p_x[~np.isnan(p_x)]
+    #p_y = p_y[~np.isnan(p_y)]
+    #do the same with particle positions
+    particle_positions = np.array([p_x,p_y]).T
+    # Initialize is_illegal with False values
+    is_illegal = np.zeros(p_x.shape, dtype=bool)
+    # Filter out NaN values and ensure positions are within the grid domain
+    valid_indices = ~np.isnan(p_x) & ~np.isnan(p_y) & (p_x >= 0) & (p_x < grid_size) & (p_y >= 0) & (p_y < grid_size)
+    # Update is_illegal only for valid indices
+    is_illegal[valid_indices] = ~legal_cells[p_x[valid_indices].astype(int), p_y[valid_indices].astype(int)]
+    # Find nearest legal cells only for illegal particles
+    illegal_positions = particle_positions[is_illegal]
+    _, nearest_indices = tree.query(illegal_positions)  # get the nearest legal cell using the KDTree
+    mapped_positions = legal_coordinates[nearest_indices]  # get the mapped positions
+    # Insert the mapped positions into the illegal positions in p_x
+    p_x[is_illegal] = mapped_positions[:,0]
+    p_y[is_illegal] = mapped_positions[:,1]
+
+    return p_x,p_y
+
+#@njit
+def reflect_kernel_contribution(kernel, x, y, legal_grid, density_grid):
+    kernel_size = kernel.shape[0]
+    half_k = kernel_size // 2
+    
+    # Iterate over each cell within the kernel
+    for i in range(kernel_size):
+        for j in range(kernel_size):
+            xi, yj = x + i - half_k, y + j - half_k
+            
+            # Skip if the kernel cell is out of bounds
+            #if xi < 0 or yj < 0 or xi >= legal_grid.shape[0] or yj >= legal_grid.shape[1]:
+            #    continue
+            
+            # Check if the path from particle to this cell is blocked
+            if not legal_grid[xi, yj]:  # "illegal" cell found
+                # Reflect across the closest "legal" boundary cell
+                x_reflect, y_reflect = reflect_with_shadow(x, y, xi, yj, legal_grid)
+                
+                # Apply reflection if reflected position is legal and within bounds
+                if x_reflect is not None and y_reflect is not None:
+                    density_grid[x_reflect, y_reflect] += kernel[i, j]
+            else:
+                # If no barrier, add kernel contribution directly
+                density_grid[xi, yj] += kernel[i, j]
+
+#@njit
+def reflect_with_shadow(x, y, xi, yj, legal_grid):
+    """
+    Helper function to reflect (xi, yj) back to a legal position
+    across the barrier while respecting the shadow.
+    """
+    x_reflect, y_reflect = xi, yj
+
+    # Reflect along x-axis if needed
+    while not legal_grid[x_reflect, yj] and x_reflect != x:
+        x_reflect += np.sign(x - xi)  # Step towards the particle
+
+    # Reflect along y-axis if needed
+    while not legal_grid[xi, y_reflect] and y_reflect != y:
+        y_reflect += np.sign(y - yj)  # Step towards the particle
+    
+    # Check final reflection position legality
+    if legal_grid[x_reflect, y_reflect]:
+        return x_reflect, y_reflect
+    else:
+        return None, None  # No valid reflection found
+    
+def bresenham(x0, y0, x1, y1):
+    """
+    Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
+    """
+    points = []
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+
+    while True:
+        points.append((x0, y0))
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = err * 2
+        if e2 > -dy:
+            err -= dy
+            x0 += sx
+        if e2 < dx:
+            err += dx
+            y0 += sy
+
+    return points
+    
+def identify_shadowed_cells(x0, y0, xi, yj, legal_grid):
+    """
+    Identify shadowed cells in the legal grid.
+
+    Input: 
+    x0: x-coordinate of the kernel origin grid cell (for grid projected)
+    y0: y-coordinate of the kernel origin grid cell (for grid projected)
+    xi: x-coordinates of the kernel
+    yj: y-coordinates of the kernel
+    legal_grid: 2D boolean array with legal cells (true means legal)
+    """
+    shadowed_cells = []
+    for i in xi:
+        for j in yj:
+            cells = bresenham(x0, y0, i, j)
+            for cell in cells:
+                if not legal_grid[cell[0], cell[1]]:
+                    shadowed_cells.append((i,j))
+    return shadowed_cells
+
+
 # ------------------------------------------------------- #
 ###########################################################
 ##################### INITIATION ##########################
 ###########################################################
 # ------------------------------------------------------- #
 # Add folder path
+# Define illegal positions
+### For the plotting we need the illegal cells ###
+illegal_positions = np.zeros((grid_size_plot, grid_size_plot), dtype=bool)
+a = 35
+b = 20
+x0 = 55
+y0 = 95
+for i in range(grid_size_plot):
+    for j in range(grid_size_plot):
+        if ((i - x0) / a)**2 + ((j - y0) / b)**2 <= 1:
+            illegal_positions[i, j] = 1
+# Make also every number where y is larger than 80 and x smaller than 50 illegal
+illegal_positions[:50, 80:100] = 1
+#add a narrow obstacle in the middle of the grid
+#illegal_positions[0:60, 20:22] = 1
+illegal_positions = illegal_positions.T
 #get the test data
-trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=load_test_data,frac_diff=frac_diff)
+if create_test_data_this_run == True:
+    trajectories,trajectories_full,bw,weights,weights_test = get_test_data(load_test_data=False,frac_diff=frac_diff,illegal_positions=illegal_positions.T)
+else:
+    trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=True,frac_diff=frac_diff,illegal_positions=illegal_positions.T)   
+
 #reduce size of test data by picking only every 10th particle
 trajectories = trajectories[::1]
 bw = bw[::1]
@@ -723,40 +969,14 @@ p_y = trajectories[:,1]
 num_kernels = 25
 ratio = 1/3
 gaussian_kernels, kernel_bandwidths = generate_gaussian_kernels(num_kernels, ratio)
-#Define illegal grid cells
-illegal_cells = np.zeros((grid_size,grid_size))
-illegal_cells[0:50,0:50] = 1
-#create a true/false mask of illegal cells
-legal_cells = illegal_cells == 0
-#indices of legal cells
-legal_indices = np.argwhere(legal_cells)
-#coordinates
-legal_coordinates = np.array([x_grid[legal_indices[:,0]],y_grid[legal_indices[:,1]]]).T
-from scipy.spatial import KDTree
-tree = KDTree(legal_coordinates)
-#get only p_x and p_ys that are within the grid
-p_x[p_x < 0] = 0
-p_x[p_x >= grid_size] = grid_size-1
-p_y[p_y < 0] = 0
-p_y[p_y >= grid_size] = grid_size-1
-#remove nans
-p_x = p_x[~np.isnan(p_x)]
-p_y = p_y[~np.isnan(p_y)]
-#do the same with particle positions
-particle_positions = np.array([p_x,p_y]).T
-is_illegal = ~legal_cells[p_x.astype(int),p_y.astype(int)] #boolean array of illegal particles
-#Find nearest legal cells only for illegal particles
-illegal_positions = particle_positions[is_illegal]
 
-_,nearest_indices = tree.query(illegal_positions) #get the nearest legal cell using the KDTree
+#trajectories_full[:,0],trajectories_full[:,1] = create_illegal_dataset(grid_size,p_full_x,p_full_y,x_grid,y_grid)
+#and corresponding test data
+#trajectories = trajectories_full[::frac_diff]
+#weights = weights_full[::frac_diff]
 
-mapped_positions = legal_coordinates[nearest_indices] #get the mapped positions
-
-#Insert the mapped positions into th eillegal positions in p_x
-p_x[is_illegal] = mapped_positions[:,0]
-p_y[is_illegal] = mapped_positions[:,1]
-
-
+plt.figure()
+plt.scatter(trajectories[:,0],trajectories[:,1])
 
 ######################################
 ############ GROUND TRUTH ############
@@ -775,6 +995,9 @@ plt.show()
 ################################################
 ########### NAIVE HISTOGRAM ESTIMATE ###########
 ################################################
+
+p_x = trajectories[:,0]
+p_y = trajectories[:,1]
 
 naive_estimate,count_naive,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test
 )/np.sum(histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test))
@@ -796,7 +1019,7 @@ plt.show()
 #with the particle count to get the average bandwidth in each cell using np.divide
 
 pre_estimate,count_pre,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
-kde_time_bw = grid_proj_kde(x_grid, y_grid, pre_estimate, gaussian_kernels, kernel_bandwidths, cell_bandwidths)
+kde_time_bw = grid_proj_kde(x_grid, y_grid, pre_estimate, gaussian_kernels, kernel_bandwidths, cell_bandwidths, illegal_cells = illegal_positions)
 
 #make a plot of the time dependent bandwidth estimate
 plt.figure()
@@ -939,8 +1162,13 @@ plt.show()
 ###
 h_grid = h_matrix
 h = h_matrix
+#DO a data driven estimate without boundary control
+kde_data_driven_naive = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid, illegal_cells = np.zeros(np.shape(histogram_prebinned)))
+# normalize
+kde_data_driven_naive = kde_data_driven_naive / np.sum(kde_data_driven_naive)
+#Do a data driven estimate with boundary control
 #h_grid[std_estimate == 0] = 1000
-kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid)
+kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid, illegal_cells = illegal_positions)
 #normalize
 kde_data_driven = kde_data_driven/np.sum(kde_data_driven)
 
@@ -1104,55 +1332,181 @@ if plotting == True:
 
     ### PLOT THE GROUND TRUTH ###
     # Assuming ground_truth, naive_estimate, kde_data_driven, kde_time_bw, and kde_silverman_naive are defined
+
     vmin = ground_truth.min()
     vmax = ground_truth.max()
     levels = np.linspace(vmin, vmax, 50)
 
-    # Plot the ground truth in a single plot using contourf
-    plt.figure()
-    plt.contourf(ground_truth, levels=levels, cmap=cmap,extend='max')
-    plt.colorbar(extend='max')
-    plt.title('Ground truth', fontsize=14)
-    plt.show()
+    # Create a figure with a GridSpec layout
+    fig = plt.figure(figsize=(12.5, 15))
+    gs = GridSpec(3, 2, figure=fig)
 
-    # Create the second 2x2 figure
-    fig2, axs2 = plt.subplots(2, 2, figsize=(12.5, 10))
+    # Plot the ground truth in the center top position
+    ax1 = fig.add_subplot(gs[0, 0])
+    cf1 = ax1.contourf(ground_truth, levels=levels, cmap=cmap, extend='max')
+    ax1.set_title('Ground truth', fontsize=14)
+    cbar1 = fig.colorbar(cf1, ax=ax1, extend='max')
+    cbar1.formatter = ScalarFormatter(useMathText=True)
+    cbar1.formatter.set_scientific(True)
+    cbar1.formatter.set_powerlimits((0, 0))
+    cbar1.update_ticks()
+
+    # Add a black line around the illegal cells
+    ax1.contour(illegal_positions, levels=[0.5], colors='black', linewidths=1)
+
+    # Hide the top right subplot
+    fig.delaxes(fig.add_subplot(gs[0, 1]))
 
     # Plot Naive estimate using contourf
-    cf4 = axs2[0, 0].contourf(naive_estimate, levels=levels, cmap=cmap, extend='max')
-    axs2[0, 0].set_title('Histogram estimate', fontsize=14)
-    cbar4 = fig2.colorbar(cf4, ax=axs2[0, 0], extend='max')
+    ax2 = fig.add_subplot(gs[1, 0])
+    cf2 = ax2.contourf(naive_estimate, levels=levels, cmap=cmap, extend='max')
+    ax2.set_title('Histogram estimate', fontsize=14)
+    cbar2 = fig.colorbar(cf2, ax=ax2, extend='max')
+    cbar2.formatter = ScalarFormatter(useMathText=True)
+    cbar2.formatter.set_scientific(True)
+    cbar2.formatter.set_powerlimits((0, 0))
+    cbar2.update_ticks()
+
+    # Plot Data driven estimate using NeffNeffNeff using contourf
+    ax3 = fig.add_subplot(gs[1, 1])
+    cf3 = ax3.contourf(kde_data_driven_naive, levels=levels, cmap=cmap, extend='max')
+    ax3.set_title('AKDE', fontsize=14)
+    cbar3 = fig.colorbar(cf3, ax=ax3, extend='max')
+    cbar3.formatter = ScalarFormatter(useMathText=True)
+    cbar3.formatter.set_scientific(True)
+    cbar3.formatter.set_powerlimits((0, 0))
+    cbar3.update_ticks()
+
+    # Plot time dependent bandwidth estimate using contourf
+    ax4 = fig.add_subplot(gs[2, 0])
+    cf4 = ax4.contourf(kde_time_bw, levels=levels, cmap=cmap, extend='max')
+    ax4.set_title('Time dependent bandwidth estimate with boundary control', fontsize=14)
+    cbar4 = fig.colorbar(cf4, ax=ax4, extend='max')
     cbar4.formatter = ScalarFormatter(useMathText=True)
     cbar4.formatter.set_scientific(True)
     cbar4.formatter.set_powerlimits((0, 0))
     cbar4.update_ticks()
 
-    # Plot Data driven estimate using NeffNeffNeff using contourf
-    cf5 = axs2[0, 1].contourf(kde_data_driven, levels=levels, cmap=cmap, extend='max')
-    axs2[0, 1].set_title('Adaptive bandwidth estimate', fontsize=14)
-    cbar5 = fig2.colorbar(cf5, ax=axs2[0, 1], extend='max')
+    # Plot Silverman (naive) estimate using contourf
+    ax5 = fig.add_subplot(gs[2, 1])
+    cf5 = ax5.contourf(kde_silverman_naive, levels=levels, cmap=cmap, extend='max')
+    ax5.set_title('Silverman (non-adaptive) estimate', fontsize=14)
+    cbar5 = fig.colorbar(cf5, ax=ax5, extend='max')
     cbar5.formatter = ScalarFormatter(useMathText=True)
     cbar5.formatter.set_scientific(True)
     cbar5.formatter.set_powerlimits((0, 0))
     cbar5.update_ticks()
 
-    # Plot time dependent bandwidth estimate using contourf
-    cf6 = axs2[1, 0].contourf(kde_time_bw, levels=levels, cmap=cmap, extend='max')
-    axs2[1, 0].set_title('Time dependent bandwidth estimate', fontsize=14)
-    cbar6 = fig2.colorbar(cf6, ax=axs2[1, 0], extend='max')
+    # Plot the data adaptive data driven estimate with boundary control in the remaining subplot
+    ax6 = fig.add_subplot(gs[0, 1])
+    cf6 = ax6.contourf(kde_data_driven, levels=levels, cmap=cmap, extend='max')
+    ax6.set_title('AKDE with boundary control', fontsize=14)
+    cbar6 = fig.colorbar(cf6, ax=ax6, extend='max')
     cbar6.formatter = ScalarFormatter(useMathText=True)
     cbar6.formatter.set_scientific(True)
     cbar6.formatter.set_powerlimits((0, 0))
     cbar6.update_ticks()
 
-    # Plot Silverman (naive) estimate using contourf
-    cf7 = axs2[1, 1].contourf(kde_silverman_naive, levels=levels, cmap=cmap, extend='max')
-    axs2[1, 1].set_title('Silverman (non-adaptive) estimate', fontsize=14)
-    cbar7 = fig2.colorbar(cf7, ax=axs2[1, 1], extend='max')
-    cbar7.formatter = ScalarFormatter(useMathText=True)
-    cbar7.formatter.set_scientific(True)
-    cbar7.formatter.set_powerlimits((0, 0))
-    cbar7.update_ticks()
+
+
+    # Add a black line around the illegal cells for each plot
+    for ax in [ax2, ax3, ax4, ax5, ax6]:
+        ax.contour(illegal_positions, levels=[0.5], colors='black', linewidths=1)
 
     plt.tight_layout()
     plt.show()
+
+
+
+
+
+    ########################################
+
+    ###### testing reflection stuff #######
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+# Example usage
+x0, y0 = 5, 5
+xi = np.arange(10)
+yj = np.arange(10)
+legal_grid = np.ones((10, 10), dtype=bool)
+legal_grid[6, 7] = False  # Example of an illegal cell
+
+shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, legal_grid)
+
+#Plot all shadowed cells in yellow, the illegal cell in red and the origin as a green dot
+fig, ax = plt.subplots()
+ax.set_aspect('equal')
+ax.set_xticks(np.arange(0, 10, 1))
+ax.set_yticks(np.arange(0, 10, 1))
+ax.grid(True)
+
+# Plot the legal and illegal cells
+for m in range(10):
+    for n in range(10):
+        if legal_grid[m, n]:
+            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, fill=None, edgecolor='black'))
+        else:
+            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, color='red'))
+
+# Plot the shadowed cells
+for cell in shadowed_cells:
+    ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='yellow', alpha=0.5))
+
+# Plot the origin
+ax.plot(x0, y0, color='green', marker='o')
+
+plt.xlim(-1, 10)
+plt.ylim(-1, 10)
+plt.xlabel('X')
+plt.ylabel('Y')
+
+plt.show()
+
+
+# Plot the grid and the shadowed cells for each iteration
+not_now = 1
+if not_now == 0:
+    for i in xi:
+        for j in yj:
+            fig, ax = plt.subplots()
+            ax.set_aspect('equal')
+            ax.set_xticks(np.arange(0, 10, 1))
+            ax.set_yticks(np.arange(0, 10, 1))
+            ax.grid(True)
+
+            # Plot the legal and illegal cells
+            for m in range(10):
+                for n in range(10):
+                    if legal_grid[m, n]:
+                        ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, fill=None, edgecolor='black'))
+                    else:
+                        ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, color='red'))
+
+            # Get the intersecting cells
+            cells = bresenham(x0, y0, i, j)
+
+            # Plot the intersecting cells
+            for cell in cells:
+                ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='blue', alpha=0.5))
+
+            # Identify shadowed cells
+            shadowed_cells = identify_shadowed_cells(x0, y0, [i], [j], legal_grid)
+
+            # Plot the shadowed cells
+            for cell in shadowed_cells:
+                ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='yellow', alpha=0.5))
+
+            # Plot the line
+            ax.plot([x0, i], [y0, j], color='green', marker='o')
+
+            plt.xlim(-1, 10)
+            plt.ylim(-1, 10)
+            plt.xlabel('X')
+            plt.ylabel('Y')
+            plt.title(f'Line from ({x0}, {y0}) to ({i}, {j})')
+            plt.show()
+    

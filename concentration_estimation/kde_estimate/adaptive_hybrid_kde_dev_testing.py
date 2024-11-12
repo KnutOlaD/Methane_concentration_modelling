@@ -878,19 +878,19 @@ def bresenham(x0, y0, x1, y1):
     points = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
+    # checking the direction of the line and which octant it is in
     sx = 1 if x0 < x1 else -1
     sy = 1 if y0 < y1 else -1
-    err = dx - dy
+    err = dx - dy #This is the difference between the distances in the two directions
 
     while True:
         points.append((x0, y0))
         if x0 == x1 and y0 == y1:
             break
-        e2 = err * 2
-        if e2 > -dy:
+        if 2*err > -dy: #This means that ||dx|| > ||dy||
             err -= dy
-            x0 += sx
-        if e2 < dx:
+            x0 += sx #...which means that we should move in the x direction
+        if 2*err < dx:
             err += dx
             y0 += sy
 
@@ -1019,14 +1019,7 @@ plt.show()
 #with the particle count to get the average bandwidth in each cell using np.divide
 
 pre_estimate,count_pre,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test)
-kde_time_bw = grid_proj_kde(x_grid, y_grid, pre_estimate, gaussian_kernels, kernel_bandwidths, cell_bandwidths, illegal_cells = illegal_positions)
 
-#make a plot of the time dependent bandwidth estimate
-plt.figure()
-plt.imshow(kde_time_bw)
-plt.colorbar()
-plt.title('Time dependent bandwidth estimate (old method)')
-plt.show()
 
 ########################################################
 ########### DATA DRIVEN BANDWIDTH ESTIMATE #############
@@ -1160,17 +1153,29 @@ plt.show()
 ###
 #CALCULATE THE KERNEL DENSITY ESTIMATE
 ###
+#pad x_grid and y_grid to avoid edge effects
+x_grid_padded = np.pad(x_grid, pad_size, mode='reflect')
+y_grid_padded = np.pad(y_grid, pad_size, mode='reflect')
+#pad h_grid
+h_grid_padded = np.pad(h_matrix, pad_size, mode='reflect')
+#pad illegal positions
+illegal_positions_padded = np.pad(illegal_positions, pad_size, mode='reflect')
+
 h_grid = h_matrix
 h = h_matrix
 #DO a data driven estimate without boundary control
-kde_data_driven_naive = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid, illegal_cells = np.zeros(np.shape(histogram_prebinned)))
+kde_data_driven_naive = grid_proj_kde(x_grid_padded, y_grid_padded, histogram_prebinned_padded, gaussian_kernels, kernel_bandwidths, h_grid_padded, illegal_cells = np.zeros(np.shape(histogram_prebinned_padded)))
 # normalize
 kde_data_driven_naive = kde_data_driven_naive / np.sum(kde_data_driven_naive)
 #Do a data driven estimate with boundary control
 #h_grid[std_estimate == 0] = 1000
-kde_data_driven = grid_proj_kde(x_grid, y_grid, histogram_prebinned, gaussian_kernels, kernel_bandwidths, h_grid, illegal_cells = illegal_positions)
+kde_data_driven = grid_proj_kde(x_grid_padded, y_grid_padded, histogram_prebinned_padded, gaussian_kernels, kernel_bandwidths, h_grid_padded, illegal_cells = illegal_positions_padded)
 #normalize
 kde_data_driven = kde_data_driven/np.sum(kde_data_driven)
+#Calculate estimate using time dependent bandwidth
+cell_bandwidths_padded = np.pad(cell_bandwidths, pad_size, mode='reflect')
+kde_time_bw = grid_proj_kde(x_grid_padded, y_grid_padded, histogram_prebinned_padded, gaussian_kernels, kernel_bandwidths, cell_bandwidths_padded, illegal_cells = illegal_positions_padded)
+
 
 
 # Compute 2D Silverman estimate using Gaussian KDE with trajectory data
@@ -1337,6 +1342,17 @@ if plotting == True:
     vmax = ground_truth.max()
     levels = np.linspace(vmin, vmax, 50)
 
+    # Adjust for padding
+#    ground_truth = ground_truth[pad_size:-pad_size, pad_size:-pad_size]
+#    naive_estimate = naive_estimate[pad_size:-pad_size, pad_size:-pad_size]
+    kde_data_driven = kde_data_driven[pad_size:-pad_size, pad_size:-pad_size]
+    kde_time_bw = kde_time_bw[pad_size:-pad_size, pad_size:-pad_size]
+    kde_data_driven_naive = kde_data_driven_naive[pad_size:-pad_size, pad_size:-pad_size]
+#    kde_silverman_naive = kde_silverman_naive[pad_size:-pad_size, pad_size:-pad_size]
+#    illegal_positions = illegal_positions[pad_size:-pad_size, pad_size:-pad_size]
+
+    cmap = 'mako_r'
+
     # Create a figure with a GridSpec layout
     fig = plt.figure(figsize=(12.5, 15))
     gs = GridSpec(3, 2, figure=fig)
@@ -1345,14 +1361,15 @@ if plotting == True:
     ax1 = fig.add_subplot(gs[0, 0])
     cf1 = ax1.contourf(ground_truth, levels=levels, cmap=cmap, extend='max')
     ax1.set_title('Ground truth', fontsize=14)
-    cbar1 = fig.colorbar(cf1, ax=ax1, extend='max')
+    ax1.contour(ground_truth, levels=levels[::2], colors='black', linewidths=0.25)
+    cbar1 = fig.colorbar(cf1, ax=ax1, extend='max', location='right')
     cbar1.formatter = ScalarFormatter(useMathText=True)
     cbar1.formatter.set_scientific(True)
     cbar1.formatter.set_powerlimits((0, 0))
     cbar1.update_ticks()
 
     # Add a black line around the illegal cells
-    ax1.contour(illegal_positions, levels=[0.5], colors='black', linewidths=1)
+    #ax1.contour(illegal_positions, levels=[0.5], colors='black', linewidths=1)
 
     # Hide the top right subplot
     fig.delaxes(fig.add_subplot(gs[0, 1]))
@@ -1360,8 +1377,10 @@ if plotting == True:
     # Plot Naive estimate using contourf
     ax2 = fig.add_subplot(gs[1, 0])
     cf2 = ax2.contourf(naive_estimate, levels=levels, cmap=cmap, extend='max')
+    #cf2 = ax2.pcolor(naive_estimate, vmin = np.min(levels),vmax = np.max(levels))
     ax2.set_title('Histogram estimate', fontsize=14)
-    cbar2 = fig.colorbar(cf2, ax=ax2, extend='max')
+    ax2.contour(naive_estimate, levels=levels[::2], colors='black', linewidths=0.25)
+    cbar2 = fig.colorbar(cf2, ax=ax2, extend='max', location='right')
     cbar2.formatter = ScalarFormatter(useMathText=True)
     cbar2.formatter.set_scientific(True)
     cbar2.formatter.set_powerlimits((0, 0))
@@ -1371,7 +1390,8 @@ if plotting == True:
     ax3 = fig.add_subplot(gs[1, 1])
     cf3 = ax3.contourf(kde_data_driven_naive, levels=levels, cmap=cmap, extend='max')
     ax3.set_title('AKDE', fontsize=14)
-    cbar3 = fig.colorbar(cf3, ax=ax3, extend='max')
+    ax3.contour(kde_data_driven_naive, levels=levels[::2], colors='black', linewidths=0.25)
+    cbar3 = fig.colorbar(cf3, ax=ax3, extend='max', location='right')
     cbar3.formatter = ScalarFormatter(useMathText=True)
     cbar3.formatter.set_scientific(True)
     cbar3.formatter.set_powerlimits((0, 0))
@@ -1380,8 +1400,9 @@ if plotting == True:
     # Plot time dependent bandwidth estimate using contourf
     ax4 = fig.add_subplot(gs[2, 0])
     cf4 = ax4.contourf(kde_time_bw, levels=levels, cmap=cmap, extend='max')
-    ax4.set_title('Time dependent bandwidth estimate with boundary control', fontsize=14)
-    cbar4 = fig.colorbar(cf4, ax=ax4, extend='max')
+    ax4.set_title('TKDE and boundary control', fontsize=14)
+    ax4.contour(kde_time_bw, levels=levels[::2], colors='black', linewidths=0.25)
+    cbar4 = fig.colorbar(cf4, ax=ax4, extend='max', location='right')
     cbar4.formatter = ScalarFormatter(useMathText=True)
     cbar4.formatter.set_scientific(True)
     cbar4.formatter.set_powerlimits((0, 0))
@@ -1390,8 +1411,9 @@ if plotting == True:
     # Plot Silverman (naive) estimate using contourf
     ax5 = fig.add_subplot(gs[2, 1])
     cf5 = ax5.contourf(kde_silverman_naive, levels=levels, cmap=cmap, extend='max')
-    ax5.set_title('Silverman (non-adaptive) estimate', fontsize=14)
-    cbar5 = fig.colorbar(cf5, ax=ax5, extend='max')
+    ax5.set_title('Silverman (non-adaptive) KDE', fontsize=14)
+    ax5.contour(kde_silverman_naive, levels=levels[::2], colors='black', linewidths=0.25)
+    cbar5 = fig.colorbar(cf5, ax=ax5, extend='max', location='right')
     cbar5.formatter = ScalarFormatter(useMathText=True)
     cbar5.formatter.set_scientific(True)
     cbar5.formatter.set_powerlimits((0, 0))
@@ -1400,23 +1422,30 @@ if plotting == True:
     # Plot the data adaptive data driven estimate with boundary control in the remaining subplot
     ax6 = fig.add_subplot(gs[0, 1])
     cf6 = ax6.contourf(kde_data_driven, levels=levels, cmap=cmap, extend='max')
-    ax6.set_title('AKDE with boundary control', fontsize=14)
-    cbar6 = fig.colorbar(cf6, ax=ax6, extend='max')
+    ax6.set_title('AKDE and boundary control', fontsize=14)
+    ax6.contour(kde_data_driven, levels=levels[::2], colors='black', linewidths=0.25)
+    cbar6 = fig.colorbar(cf6, ax=ax6, extend='max', location='right')
     cbar6.formatter = ScalarFormatter(useMathText=True)
     cbar6.formatter.set_scientific(True)
     cbar6.formatter.set_powerlimits((0, 0))
     cbar6.update_ticks()
 
-
+    illegal_positions_0_1 = np.logical_not(illegal_positions).astype(int)
 
     # Add a black line around the illegal cells for each plot
-    for ax in [ax2, ax3, ax4, ax5, ax6]:
-        ax.contour(illegal_positions, levels=[0.5], colors='black', linewidths=1)
+    for ax in [ax1, ax2, ax3, ax4, ax5, ax6]:
+        ax.contour(illegal_positions, levels=[0,1], colors='black', linewidths=2)
+        ax.pcolormesh(illegal_positions_0_1[1:,:], cmap='gray', alpha=0.2, vmin=0, vmax=1,shading='flat')
+        #fill the illegal positions with a transparent color
+        #ax.imshow(illegal_positions, cmap='gray')
+        
+        #ax.imshow(illegal_positions_0_1, cmap='gray', alpha=0.3, vmin=0, vmax=1, extent=ax6.get_xlim() + ax6.get_ylim(), origin='lower')
+        #Do this in a different way
+        #ax.imshow(illegal_positions, cmap='gray', alpha=0.5)
+
 
     plt.tight_layout()
     plt.show()
-
-
 
 
 
@@ -1425,47 +1454,82 @@ if plotting == True:
     ###### testing reflection stuff #######
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 
 
 # Example usage
 x0, y0 = 5, 5
-xi = np.arange(10)
-yj = np.arange(10)
-legal_grid = np.ones((10, 10), dtype=bool)
-legal_grid[6, 7] = False  # Example of an illegal cell
+xi = np.arange(11)
+yj = np.arange(11)
+legal_grid = np.ones((11, 11), dtype=bool)
+legal_grid[7, 8] = False  # Example of an illegal cell
+legal_grid[8,7] = False
+legal_grid[7,7] = False
+
+#creatte an island in some other octant
+legal_grid[:3,4:6] = False
+legal_grid[2,3] = False
+legal_grid[2,2] = False
+
 
 shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, legal_grid)
-
-#Plot all shadowed cells in yellow, the illegal cell in red and the origin as a green dot
+# Plot all shadowed cells in yellow, the illegal cell in red, and the origin as a green dot
 fig, ax = plt.subplots()
 ax.set_aspect('equal')
-ax.set_xticks(np.arange(0, 10, 1))
-ax.set_yticks(np.arange(0, 10, 1))
-ax.grid(True)
+ax.set_xticks(np.arange(0, 11, 1))
+ax.set_yticks(np.arange(0, 11, 1))
+ax.grid(False)  # Disable the grid
 
-# Plot the legal and illegal cells
-for m in range(10):
-    for n in range(10):
-        if legal_grid[m, n]:
-            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, fill=None, edgecolor='black'))
-        else:
-            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, color='red'))
+# Plot a Gaussian centered at the origin
+x, y = np.mgrid[0:11, 0:11]
+pos = np.empty(x.shape + (2,))
+pos[:, :, 0] = x
+pos[:, :, 1] = y
+rv = multivariate_normal([5, 5], [[4, 0], [0, 4]])
+density = ax.pcolor(x, y, rv.pdf(pos), label='Kernel density')
 
 # Plot the shadowed cells
 for cell in shadowed_cells:
-    ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='yellow', alpha=0.5))
+    ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='yellow', alpha=1))
+
+# Plot the legal and illegal cells
+for m in range(11):
+    for n in range(11):
+        if legal_grid[m, n]:
+            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, fill=None, edgecolor='black'))
+        else:
+            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, color='black'))
+
+# Calculate the line from 5,5 to 8,1 and plot it
+cells = bresenham(x0, y0, 8, 1)
+for cell in cells:
+    ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='grey', alpha=0.7))
+
+# Plot the line
+ax.plot([x0, 8], [y0, 1], color='white', marker='o')
+
+# Create legend patches
+shadowed_patch = mpatches.Patch(color='yellow', label='Blocked cells')
+illegal_patch = mpatches.Patch(color='black', label='Bathymetry/land')
+plt.legend(handles=[illegal_patch, shadowed_patch])
 
 # Plot the origin
 ax.plot(x0, y0, color='green', marker='o')
+ax.text(x0+2.3, y0, 'x_0, y_0', color='white', fontsize=10, ha='right',
+        bbox=dict(facecolor='black', alpha=0.4, edgecolor='none', boxstyle='round,pad=0'))
 
-plt.xlim(-1, 10)
-plt.ylim(-1, 10)
-plt.xlabel('X')
-plt.ylabel('Y')
+# Plot the endpoint
+ax.plot(8, 1, color='white', marker='o')
+ax.text(8+0.34, 1, 'x_1, y_1', color='white', fontsize=10, ha='left',
+        bbox=dict(facecolor='black', alpha=0.4, edgecolor='none', boxstyle='round,pad=0'))
+
+plt.xlim(-1, 11)
+plt.ylim(-1, 11)
+plt.xlabel('x')
+plt.ylabel('y')
 
 plt.show()
-
 
 # Plot the grid and the shadowed cells for each iteration
 not_now = 1

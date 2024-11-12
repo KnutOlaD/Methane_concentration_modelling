@@ -33,7 +33,14 @@ from scipy.ndimage import gaussian_filter
 import seaborn as sns
 import time
 import numba
+from pyproj import Proj, Transformer
 
+############################
+###DEFINE SOM COOL COLORS###
+############################
+
+color_1 = '#7e1e9c'
+color_2 = '#014d4e'
 
 ###############   
 ###SET RULES###
@@ -53,7 +60,7 @@ plot_wind_field = False
 #plot gas transfer velocity
 plot_gt_vel = False
 #Use all depth layers
-use_all_depth_layers = True
+use_all_depth_layers = False
 ### CONSTANTS ###
 #max kernel bandwidth
 max_ker_bw = 10000
@@ -98,6 +105,8 @@ silverman_coeff = (4/(kde_dim+2))**(1/(kde_dim+4))
 silverman_exponent = 1/(kde_dim+4)
 #Set bandwidth estimator preference
 h_adaptive = 'Local_Silverman'
+#Get new bathymetry or not?
+get_new_bathymetry = False
 
 #List of variables in the script:
 #datapath: path to the netcdf file containing the opendrift data|
@@ -566,7 +575,13 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     return gaussian_kernels, bandwidths_h#, kernel_origin
 
 #Function to calculate the grid projected kernel density estimator
-def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths, cell_bandwidths):
+def grid_proj_kde(grid_x, 
+                  grid_y, 
+                  kde_pilot, 
+                  gaussian_kernels, 
+                  kernel_bandwidths, 
+                  cell_bandwidths,
+                  illegal_cells = None):
     """
     Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
 
@@ -577,6 +592,7 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
     gaussian_kernels (list): List of Gaussian kernel matrices.
     kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
     cell_bandwidths (np.array): Array of bandwidths of the particles.
+    illegal_cells = array of size grid_x,grid_y with True/False values for illegal cells
 
     Returns:
     np.array: The resulting KDE projected onto the grid.
@@ -588,9 +604,13 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
     - The function iterates over non-zero values in the pilot KDE and applies the corresponding Gaussian kernel.
     - The appropriate Gaussian kernel is selected based on the bandwidth of each particle.
     - The resulting KDE is accumulated in the output grid n_u.
+    - Uses the reflection method to handle boundary conditions.
     """
     # ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
-    
+
+    if illegal_cells is None:
+        illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=bool)
+
     # Get the grid size
     gridsize_x = len(grid_x)
     gridsize_y = len(grid_y)
@@ -618,8 +638,20 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, kernel_bandwidths
         j_min = max(j - kernel_size, 0)
         j_max = min(j + kernel_size + 1, gridsize_y)
 
-        # Calculate the weighted kernel (distribute the contents within i,j to the surrounding grid cells)
-        weighted_kernel = kernel * kde_pilot[i, j]
+        #Check if there are illegal cells in the kernel area and run reflect_kernel_contribution if there are
+        #if np.any(illegal_cells[i_min:i_max, j_min:j_max]):
+
+        #Handle illegal cells
+        if np.any(np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])):
+            illegal_indices = np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])
+            #Sum contribution for all illegal cells in the kernel
+            illegal_kernel_sum = np.sum(kernel[illegal_indices[:,0],illegal_indices[:,1]])
+            #set them to zero
+            kernel[illegal_indices[:,0],illegal_indices[:,1]] = 0
+            #calculat the weighted kernel sum
+            weighted_kernel = kernel*(kde_pilot[i,j]+illegal_kernel_sum)
+        else:
+            weighted_kernel = kernel * kde_pilot[i, j]
 
         # Add the contribution to the result matrix
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
@@ -1059,7 +1091,125 @@ def get_integral_length_scale(histogram_prebinned, window_size):
 
     return integral_length_scale_matrix
 
+#Reflect kernel density at predefined boundaries
+def reflect_with_shadow(x, y, xi, yj, legal_grid):
+    """
+    Helper function to reflect (xi, yj) back to a legal position
+    across the barrier while respecting the shadow.
+    """
+    x_reflect, y_reflect = xi, yj
 
+    # Reflect along x-axis if needed
+    while not legal_grid[x_reflect, yj] and x_reflect != x:
+        x_reflect += np.sign(x - xi)  # Step towards the particle
+
+    # Reflect along y-axis if needed
+    while not legal_grid[xi, y_reflect] and y_reflect != y:
+        y_reflect += np.sign(y - yj)  # Step towards the particle
+    
+    # Check final reflection position legality
+    if legal_grid[x_reflect, y_reflect]:
+        return x_reflect, y_reflect
+    else:
+        return None, None  # No valid reflection found
+
+#Make a bresenham line
+def bresenham(x0, y0, x1, y1): 
+    """
+    Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
+
+    Intput:
+    x0: x-coordinate of the starting point
+    y0: y-coordinate of the starting point
+    x1: x-coordinate of the ending point
+    y1: y-coordinate of the ending point
+
+    Output:
+    points: List of points between (x0, y0) and (x1, y1)
+    """
+    points = []
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1 # Step direction for x
+    sy = 1 if y0 < y1 else -1 # Step direction for y
+    err = dx - dy
+
+    while True:
+        points.append((x0, y0))
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = err * 2
+        if e2 > -dy:
+            err -= dy
+            x0 += sx
+        if e2 < dx:
+            err += dx
+            y0 += sy
+
+    return points
+
+#Identify shadowed cells
+def identify_shadowed_cells(x0, y0, xi, yj, legal_grid):
+    """
+    Identify shadowed cells in the legal grid.
+
+    Input: 
+    x0: x-coordinate of the kernel origin grid cell (for grid projected)
+    y0: y-coordinate of the kernel origin grid cell (for grid projected)
+    xi: x-coordinates of the kernel
+    yj: y-coordinates of the kernel
+    legal_grid: 2D boolean array with legal cells (true means legal)
+    """
+    shadowed_cells = []
+    for i in xi:
+        for j in yj:
+            cells = bresenham(x0, y0, i, j)
+            for cell in cells:
+                if not legal_grid[cell[0], cell[1]]:
+                    shadowed_cells.append((i,j))
+    return shadowed_cells
+
+def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
+    """
+    Process bathymetry data, transform coordinates, interpolate the data, and save the interpolated data to a pickle file.
+
+    Parameters:
+    bathymetry_path (str): Path to the bathymetry data file.
+    bin_x (np.array): Array of x-coordinates for the target grid.
+    bin_y (np.array): Array of y-coordinates for the target grid.
+    transformer (Transformer): Transformer object for coordinate transformation.
+    output_path (str): Path to save the interpolated bathymetry data.
+
+    Returns:
+    np.array: Interpolated bathymetry data.
+    """
+    # Get the bathymetry data
+    bathy_data = xr.open_dataset(bathymetry_path)
+    x_coords = bathy_data['x'].values
+    y_coords = bathy_data['y'].values
+    bathymetry = bathy_data['z'].values
+
+    # Transform coordinates
+    lon_coords_mesh, lat_coords_mesh = transformer.transform(*np.meshgrid(x_coords, y_coords))
+    lon_coords_mesh += 45  # Adjust longitude values
+
+    # Define the target grid points for interpolation
+    bin_x_mesh, bin_y_mesh = np.meshgrid(bin_x, bin_y)
+    lat_mesh_grid, lon_mesh_grid = utm.to_latlon(bin_x_mesh, bin_y_mesh, zone_number=33, zone_letter='W')
+    points = np.column_stack((lon_coords_mesh.ravel(), lat_coords_mesh.ravel()))
+    values = bathymetry.ravel()
+    target_points = np.column_stack((lon_mesh_grid.ravel(), lat_mesh_grid.ravel()))
+
+    # Perform the interpolation
+    interpolated_bathymetry = griddata(points, values, target_points, method='nearest')
+    interpolated_bathymetry = interpolated_bathymetry.reshape(lat_mesh_grid.shape)
+    interpolated_bathymetry[interpolated_bathymetry > 0] = 0
+
+    # Save the interpolated data to pickle file
+    with open(output_path, 'wb') as f:
+        pickle.dump(interpolated_bathymetry, f)
+
+    return interpolated_bathymetry
 
 #################################
 ########## INITIATION ###########
@@ -1352,7 +1502,54 @@ h_list = list()
 neff_list = list()
 std_list = list()
 
-    
+######################################################################
+###### FIND ILLEGAL CELLS IN THE GRID USING THE BATHYMETRY DATA ######
+######################################################################
+
+# Define projections and transformer
+polar_stereo_proj = Proj(proj="stere", lat_ts=75, lat_0=90, lon_0=-45, datum="WGS84")
+wgs84 = Proj(proj="latlong", datum="WGS84")
+transformer = Transformer.from_proj(polar_stereo_proj, wgs84)
+# Get the bathymetry data
+
+if get_new_bathymetry == True:
+    bathymetry_path = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\bathymetry\IBCAO_v4_400m.nc'
+    output_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle'
+    interpolated_bathymetry = process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path)
+else:
+    # Load the interpolated bathymetry data from pickle file
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle', 'rb') as f:
+        interpolated_bathymetry = pickle.load(f)
+
+# Create matrices for illegal cells using the bathymetry data and delta z
+illegal_cells = np.zeros([len(bin_x), len(bin_y), len(bin_z)])
+bin_z_bath_test = bin_z.copy()
+bin_z_bath_test[0] = 1  # Ensure the surface boundary is respected
+
+# Loop through all grid cells and check if they are illegal
+for i in range(len(bin_x)):
+    for j in range(len(bin_y)):
+        for k in range(len(bin_z)):
+            if bin_z_bath_test[k] > np.abs(interpolated_bathymetry[j, i]):
+                illegal_cells[i, j, k] = 1
+# Plotting
+if plotting == True:
+    # Plot the illegal cell matrices in a 3x3 grid
+    fig, axs = plt.subplots(3, 3, figsize=(20, 20))
+    for i in range(3):
+        for j in range(3):
+            axs[i, j].pcolor(lon_mesh_grid, lat_mesh_grid, illegal_cells[:, :, i + j].T, cmap='rocket')
+            axs[i, j].set_title(f'Illegal cells at z={bin_z[i + j]}')
+    plt.show()
+    # Make a contour plot where the depth levels in bin_z are used as contours
+    plt.figure(figsize=(10, 10))
+    contourf_plot = plt.contourf(lon_mesh_grid, lat_mesh_grid, np.abs(interpolated_bathymetry), cmap='rocket', levels=bin_z, extend='max')
+    plt.contour(lon_mesh_grid, lat_mesh_grid, np.abs(interpolated_bathymetry), levels=bin_z, colors='black', linewidths=0.5)
+    plt.contour(lon_mesh_grid, lat_mesh_grid, np.abs(interpolated_bathymetry), levels=[0], colors='white', linewidths=1)
+    plt.colorbar(contourf_plot, label='Depth (m)', extend='max')
+    plt.show()
+
+
 #############################################################################################
 ################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
 #############################################################################################
@@ -1370,6 +1567,7 @@ time_steps_full = len(ODdata.variables['time'])
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
 kde_time_vector = np.zeros(time_steps_full-1)
+elapsed_time_timestep = np.zeros(time_steps_full-1)
 
 run_all = True
 
@@ -1378,6 +1576,7 @@ GRID_top = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_hs = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_stds = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_neff = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
+
 
 
 if run_all == True:
@@ -1773,10 +1972,11 @@ if run_all == True:
                                                 preGRID_active,
                                                 gaussian_kernels,
                                                 gaussian_bandwidths_h,
-                                                h_matrix_adaptive)
+                                                h_matrix_adaptive,
+                                                illegal_cells = illegal_cells[:,:,i])
                     
                     #make a plot if kkk is modulus 20
-                    if kkk % 25 == 0:
+                    if kkk % 100 == 0:
                         plt.figure()
                         plt.subplot(1,2,1)
                         plt.imshow(h_matrix_adaptive)
@@ -1880,7 +2080,31 @@ if run_all == True:
                 #the loss is not dependent on the depth layer (this is more efficient)
         end_time_full = time.time()
         elapsed_time_full = end_time_full - start_time_full
+        elapsed_time_timestep[kkk] = elapsed_time_full
         print(f"Total time= {elapsed_time_full:.5f} seconds.")
+
+        #Plot and maintain a plot of elapsed time at every 25th timestep
+        if kkk % 50 == 0:
+            fig, ax1 = plt.subplots()
+
+            # Plot elapsed time on the left y-axis
+            ax1.plot(elapsed_time_timestep[:kkk], linewidth=2, color=color_1)
+            ax1.set_xlabel('Iteration')
+            ax1.set_ylabel('Elapsed time [s]', color=color_1)
+            ax1.tick_params(axis='y', labelcolor=color_1)
+            ax1.set_xlim([0, len(elapsed_time_timestep)])
+
+            # Create a second y-axis to plot the number of particles
+            ax2 = ax1.twinx()
+            ax2.plot(total_parts[:kkk], linewidth=2, color=color_2)
+            ax2.set_ylabel('Number of particles', color=color_2)
+            ax2.tick_params(axis='y', labelcolor=color_2)
+
+            plt.show()
+
+
+
+
         
 end_time_whole_script = time.time()
 
@@ -1995,8 +2219,8 @@ do = True
 if do == True:
     for i in range(twentiethofMay,time_steps,1):
         fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
-                                    lon=lon_vec,
-                                     lat=lat_vec,
+                                    lon=lon_mesh,
+                                     lat=lat_mesh,
                                     projection=projection,
                                     levels=levels_atm,
                                     timepassed=[i-twentiethofMay, time_steps-twentiethofMay],
@@ -2023,6 +2247,8 @@ if do == True:
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
 
 #Do the same proceedure for the gt_vel field
+
+
 
 #############################################################
 ############ PLOTTING TIMESERIES OF GT_VEL FIELD ############

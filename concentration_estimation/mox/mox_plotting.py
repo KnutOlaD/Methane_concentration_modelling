@@ -39,11 +39,18 @@ data = {
     ]
 }
 
+# Multiply all the data with 10^-6 since we're doing a log plot we dont need to worry about this
+data["k_ox (10^{-6} s^{-1})"] = [x * 1e-6 for x in data["k_ox (10^{-6} s^{-1})"]]
+data["φ (nM)"] = [x for x in data["φ (nM)"]]
+data["t_{0.5} (days)"] = [x for x in data["t_{0.5} (days)"]]
+data["Temp (℃)"] = [x for x in data["Temp (℃)"]]
+
 # Create a DataFrame
 df = pd.DataFrame(data)
 
 # Calculate the average k_ox value
 average_k_ox = df["k_ox (10^{-6} s^{-1})"].mean()
+average_k_ox_coldseeps = 2.15e-7
 
 # Set up the matplotlib figure with a narrower width
 plt.figure(figsize=(7, 6))
@@ -53,22 +60,26 @@ sns.set(style="whitegrid")
 sns.set_style('ticks')
 
 # Plot the histogram of k_ox values with a logarithmic scale on the x-axis and KDE line
-sns.histplot(df["k_ox (10^{-6} s^{-1})"], bins=8, color=color_1, kde=True, log_scale=(True, False), kde_kws={'bw_method': 'silverman'},label='Number of Datasets')
+sns.histplot(df["k_ox (10^{-6} s^{-1})"], bins=8, color=color_1, kde=True, log_scale=(True, False), kde_kws={'bw_method': 'silverman'},label='Datasets in range')
 
-# Add a vertical line at the average value
-plt.axvline(average_k_ox, color=color_2, linestyle='dashed', linewidth=2,label=f'Average: {average_k_ox:.2e}')
+# Add a vertical line at the average value of all locations
+plt.axvline(average_k_ox, color=color_2, linestyle='dotted', linewidth=2,label=f'Average: {average_k_ox:.2e}')
+
+# Add a vertical line at the average value of cold seeps
+plt.axvline(average_k_ox_coldseeps, color=color_2, linestyle='dashed', linewidth=2,label=f'Average (cold seeps): {average_k_ox_coldseeps:.2e}')
+
 
 # Add a dummy line for the KDE label
-plt.plot([], [], color=color_1, label='Frequency density', linewidth=2.5)
+plt.plot([], [], color=color_1, label='Kernel density fit', linewidth=2.5)
 
 #Make dummy line for average label
 #plt.plot([], [], color=color_2, linewidth=2.5, linestyle='dashed')
 
 # Customize the plot
 #plt.title("Methane Oxidation Rate Coefficients ($k_{ox}$)", fontsize=14)
-plt.xlabel(r"$k_{ox} \, (10^{-6} \, \text{s}^{-1})$, logarithmic scale", fontsize=16)
-plt.ylabel("Frequency", fontsize=16)
-plt.legend(fontsize=12,loc=[0.2,0.81])
+plt.xlabel(r"$k_{ox} \, [\text{s}^{-1}]$, logarithmic scale, max values", fontsize=16)
+plt.ylabel("Datasets", fontsize=16)
+plt.legend(fontsize=12,loc=[0.14,0.77])
 plt.grid(False)
 
 #Increase size of ticks
@@ -79,11 +90,10 @@ plt.yticks(fontsize=14)
 plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True))
 #Create a list of xticks. Should go from min to max of k_ox in logspace with
 #ticks at 0.01,0.011,0.012,0.013,0.014,0.015,0.016,0.017,0.018,0.019,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,2,3,4,5,6,7,8,9,10
-xticks = [0.01,0.011,0.012,0.013,0.014,0.015,0.016,0.017,0.018,0.019,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,2,3,4,5,6,7,8,9,10]
-#force xticks
+xticks = np.array([0.01,0.011,0.012,0.013,0.014,0.015,0.016,0.017,0.018,0.019,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,2,3,4,5,6,7,8,9,10])*10**-6#force xticks
 plt.xticks(xticks)
 #and labels at each order of magnitude
-plt.xticks([0.01,0.1,1,10],['$10^{-2}$','$10^{-1}$','$10^{0}$','$10^{1}$'])
+plt.xticks(np.array([0.01,0.1,1,10])*10**-6,['$10^{-8}$','$10^{-7}$','$10^{6}$','$10^{5}$'])
 
 #adjust x-axis limits
 plt.xlim(np.min(df["k_ox (10^{-6} s^{-1})"]), np.max(df["k_ox (10^{-6} s^{-1})"]))

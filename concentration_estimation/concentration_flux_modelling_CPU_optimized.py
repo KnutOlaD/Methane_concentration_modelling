@@ -12,6 +12,69 @@ TO DO
 - RUN TEST SIMULATION
 
 '''
+#Working on plotting function for everything that's correctly projected
+
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import numpy as np
+from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter  # Add this import
+
+
+def plot_coastline_with_coordinates(coastline_map, lon_grid, lat_grid):
+    """
+    Plot coastline using proper coordinate grids
+    """
+    # Create figure with Lambert Conformal projection
+    fig = plt.figure(figsize=(12, 8))
+    proj = ccrs.LambertConformal(
+        central_longitude=0.0,
+        central_latitude=70.0,
+        standard_parallels=(70.0, 70.0)
+    )
+    
+    # Setup map
+    ax = plt.axes(projection=proj)
+    
+    # Plot coastline data
+    plt.pcolormesh(
+        lon_grid, 
+        lat_grid, 
+        coastline_map,
+        transform=ccrs.PlateCarree(),
+        cmap='binary'
+    )
+    
+    gl = ax.gridlines(
+        crs=ccrs.PlateCarree(),
+        draw_labels=True,
+        linewidth=1,
+        color='gray',
+        alpha=0.5,
+        linestyle='--'
+    )
+    
+    # Use the correct formatter classes
+    gl.xformatter = LongitudeFormatter()
+    gl.yformatter = LatitudeFormatter()
+    
+    # Customize gridlines
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    # Set extent based on your grids
+    ax.set_extent([
+        lon_grid.min(), 
+        lon_grid.max(), 
+        lat_grid.min(), 
+        lat_grid.max()
+    ], crs=ccrs.PlateCarree())
+    
+    plt.title('Coastline Map')
+    plt.show()
+###
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import datetime as dt
@@ -1028,33 +1091,29 @@ def histogram_variance_numba(binned_data, bins): #here, suggest to multiply with
     variance = np.sum(hist * (bin_centers - mean) ** 2) / np.sum(hist)
     return variance
 
-def histogram_std(binned_data, effective_samples = None, bin_size=1):
-    '''
-    Calculate the simple variance of the binned data using ...
-    '''
-    #set integral length scale to the size of the grid if not provided
-    if effective_samples == None:
-        effective_samples = np.sum(binned_data)
-    #get 
-    #check that there's data in the binned data
+@jit(nopython=True)
+def histogram_std(binned_data, effective_samples=None, bin_size=1):
+    '''Calculate the simple variance of the binned data'''
     if np.sum(binned_data) == 0:
         return 0
-    #get the central value of all bins
+        
+    if effective_samples is None:
+        effective_samples = np.sum(binned_data)
+    
     grid_size = len(binned_data)
-    #Central point of all grid cells
-    X = np.arange(0,grid_size*bin_size,bin_size)
-    Y = np.arange(0,grid_size*bin_size,bin_size)
-    #Calculate the weigthed average position in the binned data
-    [mu_x,mu_y] = np.sum(binned_data*X)/np.sum(binned_data),np.sum(binned_data*Y)/np.sum(binned_data)
-    #Calculate the variance
-    variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(np.sum(binned_data)-1))-1/12*bin_size*bin_size#*(effective_samples/(effective_samples-1))
-    std_data = np.sqrt(variance)
-    #std_data = np.sqrt(std_x**2+std_y**2+2*std_xy**2)/4
-    #std_data = (std_x+std_y+2*std_xy)/4
-    #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
-    #Sheppards correction
-    std_data = std_data #- 1/12*bin_size*bin_size
-    return std_data
+    X = np.arange(0, grid_size * bin_size, bin_size)
+    Y = np.arange(0, grid_size * bin_size, bin_size)
+    
+    sum_data = np.sum(binned_data)
+    mu_x = np.sum(binned_data * X) / sum_data
+    mu_y = np.sum(binned_data * Y) / sum_data
+    
+    # Vectorized variance calculation
+    variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / 
+               (sum_data - 1)) - bin_size * bin_size / 12
+    
+    return np.sqrt(variance)
+
 
 def histogram_variance(binned_data, bin_size=1):
     '''
@@ -1107,33 +1166,31 @@ def calculate_autocorrelation_numba(data):
     
     return autocorr_rows, autocorr_cols
 
-def calculate_autocorrelation(data,bin_size=1):
-    '''
-    Calculates the autocorrelation for all lags along rows and columns, separately, as an average.
-    
-    Input:
-    data: 2D matrix with possibly unequal number of rows and columns
-    
-    Output:
-    autocorr_rows: 1D array with the average autocorrelation for each lag along rows
-    autocorr_cols: 1D array with the average autocorrelation for each lag along columns
-    '''
+@jit(nopython=True)
+def calculate_autocorrelation(data, bin_size=1):
+    '''Calculate autocorrelation for rows and columns'''
     num_rows, num_cols = data.shape
     max_lag = min(num_rows, num_cols) - 1
     
-    # Initialize the autocorrelation arrays
     autocorr_rows = np.zeros(max_lag)
     autocorr_cols = np.zeros(max_lag)
     
-    # Precompute denominators for efficiency
-    row_denominators = np.array([1 / (num_cols - k) for k in range(1, max_lag + 1)])
-    col_denominators = np.array([1 / (num_rows - k) for k in range(1, max_lag + 1)])
+    # Precompute denominators
+    row_denominators = 1.0 / np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
+    col_denominators = 1.0 / np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
     
-    # Calculate the autocorrelation for all lags along rows
+    # Vectorized autocorrelation calculation
     for k in range(1, max_lag + 1):
-        autocorr_rows[k - 1] = np.mean([row_denominators[k - 1] * np.sum(data[i, :num_cols - k] * data[i, k:]) for i in range(num_rows)])
-        autocorr_cols[k - 1] = np.mean([col_denominators[k - 1] * np.sum(data[:num_rows - k, j] * data[k:, j]) for j in range(num_cols)])
-    # Calculate the autocorrelation for all lags along columns
+        row_sum = 0.0
+        col_sum = 0.0
+        
+        for i in range(num_rows):
+            row_sum += np.sum(data[i, :num_cols-k] * data[i, k:])
+        for j in range(num_cols):
+            col_sum += np.sum(data[:num_rows-k, j] * data[k:, j])
+            
+        autocorr_rows[k-1] = row_sum * row_denominators[k-1] / num_rows
+        autocorr_cols[k-1] = col_sum * col_denominators[k-1] / num_cols
     
     return autocorr_rows, autocorr_cols
 
@@ -1166,7 +1223,6 @@ def get_integral_length_scale(histogram_prebinned, window_size):
             autocorr = (autocorr_rows + autocorr_cols) / 2
             integral_length_scale = np.sum(autocorr) / autocorr[0]
             integral_length_scale_matrix[i, j] = integral_length_scale
-
 
     return integral_length_scale_matrix
 
@@ -1250,45 +1306,154 @@ def identify_shadowed_cells(x0, y0, xi, yj, legal_grid):
 
 def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
     """
-    Process bathymetry data, transform coordinates, interpolate the data, and save the interpolated data to a pickle file.
+    Process bathymetry data and return bathymetry values with corresponding lon/lat grids.
 
     Parameters:
-    bathymetry_path (str): Path to the bathymetry data file.
-    bin_x (np.array): Array of x-coordinates for the target grid.
-    bin_y (np.array): Array of y-coordinates for the target grid.
-    transformer (Transformer): Transformer object for coordinate transformation.
-    output_path (str): Path to save the interpolated bathymetry data.
+    -----------
+    bathymetry_path : str
+        Path to the bathymetry data file
+    bin_x : np.array
+        Array of x-coordinates (UTM) for target grid
+    bin_y : np.array
+        Array of y-coordinates (UTM) for target grid
+    transformer : Transformer
+        Transformer object for coordinate transformation
+    output_path : str
+        Path to save the processed data
 
     Returns:
-    np.array: Interpolated bathymetry data.
+    --------
+    tuple : (interpolated_bathymetry, latitude_grid, longitude_grid)
+        interpolated_bathymetry : np.array
+            Interpolated bathymetry data
+        latitude_grid : np.array
+            Grid of latitude values
+        longitude_grid : np.array
+            Grid of longitude values
     """
-    # Get the bathymetry data
-    bathy_data = xr.open_dataset(bathymetry_path)
-    x_coords = bathy_data['x'].values
-    y_coords = bathy_data['y'].values
-    bathymetry = bathy_data['z'].values
+    # Input validation
+    if not os.path.exists(bathymetry_path):
+        raise FileNotFoundError(f"Bathymetry file not found: {bathymetry_path}")
+    
+    try:
+        # Load bathymetry data
+        bathy_data = xr.open_dataset(bathymetry_path)
+        x_coords = bathy_data['x'].values
+        y_coords = bathy_data['y'].values
+        bathymetry = bathy_data['z'].values
 
-    # Transform coordinates
-    lon_coords_mesh, lat_coords_mesh = transformer.transform(*np.meshgrid(x_coords, y_coords))
-    lon_coords_mesh += 45  # Adjust longitude values
+        # Transform source coordinates to lat/lon
+        lon_coords_mesh, lat_coords_mesh = transformer.transform(
+            *np.meshgrid(x_coords, y_coords)
+        )
+        
+        # TODO: Verify if this +45 adjustment is needed for your region
+        lon_coords_mesh += 45
 
-    # Define the target grid points for interpolation
-    bin_x_mesh, bin_y_mesh = np.meshgrid(bin_x, bin_y)
-    lat_mesh_grid, lon_mesh_grid = utm.to_latlon(bin_x_mesh, bin_y_mesh, zone_number=33, zone_letter='W')
-    points = np.column_stack((lon_coords_mesh.ravel(), lat_coords_mesh.ravel()))
-    values = bathymetry.ravel()
-    target_points = np.column_stack((lon_mesh_grid.ravel(), lat_mesh_grid.ravel()))
+        # Create target grid in UTM coordinates
+        bin_x_mesh, bin_y_mesh = np.meshgrid(bin_x, bin_y)
+        
+        # Convert target UTM grid to lat/lon
+        lat_grid, lon_grid = utm.to_latlon(
+            bin_x_mesh, 
+            bin_y_mesh, 
+            zone_number=33,  # Verify UTM zone for your region
+            zone_letter='W'
+        )
 
-    # Perform the interpolation
-    interpolated_bathymetry = griddata(points, values, target_points, method='nearest')
-    interpolated_bathymetry = interpolated_bathymetry.reshape(lat_mesh_grid.shape)
-    interpolated_bathymetry[interpolated_bathymetry > 0] = 0
+        # Prepare coordinates for interpolation
+        points = np.column_stack((lon_coords_mesh.ravel(), lat_coords_mesh.ravel()))
+        values = bathymetry.ravel()
+        target_points = np.column_stack((lon_grid.ravel(), lat_grid.ravel()))
 
-    # Save the interpolated data to pickle file
-    with open(output_path, 'wb') as f:
-        pickle.dump(interpolated_bathymetry, f)
+        # Interpolate bathymetry data
+        interpolated_bathymetry = griddata(
+            points, 
+            values, 
+            target_points, 
+            method='nearest'
+        )
+        interpolated_bathymetry = interpolated_bathymetry.reshape(lat_grid.shape)
+        
+        # Set positive depths to zero (assuming depths are negative)
+        interpolated_bathymetry[interpolated_bathymetry > 0] = 0
 
-    return interpolated_bathymetry
+        # Save the processed data
+        with open(output_path, 'wb') as f:
+            pickle.dump({
+                'bathymetry': interpolated_bathymetry,
+                'latitude': lat_grid,
+                'longitude': lon_grid
+            }, f)
+
+        return interpolated_bathymetry, lat_grid, lon_grid
+    
+    except Exception as e:
+        raise RuntimeError(f"Error processing bathymetry data: {str(e)}")
+
+@jit(nopython=True)
+def _process_window_statistics(data_subset, subset_counts, pad_size, window_size, 
+                             stats_threshold, silverman_coeff, silverman_exponent, dxy_grid):
+    """Compute statistics for a single window"""
+    if np.sum(subset_counts) < stats_threshold:
+        std = window_size/2
+        n_eff = np.sum(data_subset)/window_size
+        integral_length_scale = window_size
+    else:
+        # Assuming histogram_std is available to Numba
+        std = histogram_std(data_subset, None, 1)
+        # Assuming calculate_autocorrelation is available to Numba
+        autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
+        autocorr = (autocorr_rows + autocorr_cols) / 2
+        if autocorr.any():
+            non_zero_idx = np.where(autocorr != 0)[0][0]
+            integral_length_scale = np.sum(autocorr) / autocorr[non_zero_idx]
+        else:
+            integral_length_scale = 0.000001
+        n_eff = np.sum(data_subset) / integral_length_scale
+    
+    h = np.sqrt((silverman_coeff * n_eff**(-silverman_exponent)) * std) * dxy_grid
+    return std, n_eff, integral_length_scale, h
+
+@jit(nopython=True, parallel=True)
+def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_padded,
+                              window_size, pad_size, stats_threshold,
+                              silverman_coeff, silverman_exponent, dxy_grid):
+    """Compute adaptive bandwidths for all windows"""
+    shape = preGRID_active_padded.shape
+    std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size))
+    N_eff = np.zeros_like(std_estimate)
+    h_matrix_adaptive = np.zeros_like(std_estimate)
+    integral_length_scale_matrix = np.zeros_like(std_estimate)
+    
+    for row in prange(pad_size, shape[0]-pad_size):
+        for col in range(pad_size, shape[1]-pad_size):
+            if preGRID_active_counts_padded[row, col] > 0:
+                data_subset = preGRID_active_padded[row-pad_size:row+pad_size+1,
+                                                  col-pad_size:col+pad_size+1]
+                subset_counts = preGRID_active_counts_padded[row-pad_size:row+pad_size+1,
+                                                           col-pad_size:col+pad_size+1]
+                
+                if data_subset[pad_size,pad_size] == 0:
+                    continue
+                
+                data_subset = (data_subset/np.sum(data_subset))*subset_counts
+                
+                row_idx = row - pad_size
+                col_idx = col - pad_size
+                
+                std, n_eff, ils, h = _process_window_statistics(
+                    data_subset, subset_counts, pad_size, window_size,
+                    stats_threshold, silverman_coeff, silverman_exponent, dxy_grid
+                )
+                
+                std_estimate[row_idx, col_idx] = std
+                N_eff[row_idx, col_idx] = n_eff
+                integral_length_scale_matrix[row_idx, col_idx] = ils
+                h_matrix_adaptive[row_idx, col_idx] = h
+    
+    return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
+
 
 #################################
 ########## INITIATION ###########
@@ -1586,12 +1751,12 @@ std_list = list()
 polar_stereo_proj = Proj(proj="stere", lat_ts=75, lat_0=90, lon_0=-45, datum="WGS84")
 wgs84 = Proj(proj="latlong", datum="WGS84")
 transformer = Transformer.from_proj(polar_stereo_proj, wgs84)
-# Get the bathymetry data
 
+# Get the bathymetry data
 if get_new_bathymetry == True:
     bathymetry_path = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\bathymetry\IBCAO_v4_400m.nc'
     output_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle'
-    interpolated_bathymetry = process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path)
+    interpolated_bathymetry, lat_mesh_map, lon_mesh_map = process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path)
 else:
     # Load the interpolated bathymetry data from pickle file
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle', 'rb') as f:
@@ -1625,6 +1790,13 @@ if plotting == True:
     plt.colorbar(contourf_plot, label='Depth (m)', extend='max')
     plt.show()
 
+#################################################################################
+########### CREATE MAP FOR PLOTTING OF COASTLINE WHERE BATHYMETRY > 0 ###########
+#################################################################################
+
+# Create a map for plotting the coastline where bathymetry > 0
+coastline_map = np.zeros_like(interpolated_bathymetry)
+coastline_map[interpolated_bathymetry >= 0] = 1
 
 #############################################################################################
 ################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
@@ -1743,25 +1915,11 @@ if run_all == True:
         end_time = time.time()
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
-        #--------------------------------------#
-        #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
-        #--------------------------------------#
 
-        #do some binning
-        #bin_z_number = np.digitize(np.abs(particles['z'][:,j]).compressed(),bin_z)
-        #np.digitize(np.abs(particles['z'][:,j]),bin_z)
-
-        #Unmask particles that were masked in the previous timestep
-        #particles['z'][:,j].mask = particles['z'][:,j-1].mask
-        # Get the indices where particles['age'][:,j] is not masked
-        #do some binning on those
-        bin_z_number = np.digitize(
-        np.abs(particles['z'][:,1][np.where(
-            particles['z'][:,1].mask == False)]),bin_z)
-        # Get the indices where particles['age'][:,j] is not masked and equal to 0
-        activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
-        already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
-        #Deactivate particles that are outside the grid
+        #------------------------------------------#
+        # DEACTIVATE PARTICLES OUTSIDE OF THE GRID #
+        #------------------------------------------#
+        #Boundaries.
         max_x = np.max(bin_x)
         min_x = np.min(bin_x)
         max_y = np.max(bin_y)
@@ -1776,7 +1934,23 @@ if run_all == True:
         particles['UTM_y'][outside_grid,1].mask = True
         particles['lon'][outside_grid,1].mask = True
         particles['lat'][outside_grid,1].mask = True
-    
+
+        #--------------------------------------#
+        #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
+        #--------------------------------------#
+
+        #Unmask particles that were masked in the previous timestep
+        #particles['z'][:,j].mask = particles['z'][:,j-1].mask
+        # Get the indices where particles['age'][:,j] is not masked
+        #do some binning on those
+        bin_z_number = np.digitize(
+        np.abs(particles['z'][:,1][np.where(
+            particles['z'][:,1].mask == False)]),bin_z)
+
+        # Get the indices where particles['age'][:,j] is not masked and equal to 0
+        activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
+        already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
+
         #activated_indices = unmasked_indices[0][
         #    particles['age'][:,1][unmasked_indices] == 0]
         #already active indices
@@ -1984,93 +2158,40 @@ if run_all == True:
                 ### Using local Silverman ###
                 #############################
                 
-                #Profile this to see 
-
-
                 if h_adaptive == 'Local_Silverman' and preGRID_active.any():
-                    #time it
                     start_time = time.time()
-                    #Estimate the correct averaging window size via the Integral Length scale
+                    
+                    # Compute integral length scale
                     autocorr_rows, autocorr_cols = calculate_autocorrelation(preGRID_active_counts)
                     autocorr = (autocorr_rows + autocorr_cols) / 2
-                    if autocorr.any() > 0: #np.isfinite(integral_length_scale_full[kkk, i]) and integral_length_scale_full[kkk, i] > 0:
+                    
+                    if autocorr.any() > 0:
                         integral_length_scale_full[kkk, i] = (np.sum(autocorr) / autocorr[np.argwhere(autocorr != 0)[0]])
                         window_size = int(integral_length_scale_full[kkk, i])
                     else:
                         integral_length_scale_full[kkk,i] = 0
                         window_size = 7
-                    #set max window_size to 31 (/2 for grid size 1600)
-                    window_size = min(window_size,15)
-                    #and minimum of 5
-                    window_size = max(window_size,7)
-                    # Ensure window_size is an odd number
+                    
+                    window_size = np.clip(window_size, 7, 15)
                     if window_size % 2 == 0:
                         window_size += 1
+                    
                     pad_size = window_size//2
-                    #Pad the preestimate to fix edge effects
-                    preGRID_active_counts_padded = np.pad(preGRID_active_counts,pad_size,mode='reflect')
-                    preGRID_active_padded = np.pad(preGRID_active,pad_size,mode='reflect')
                     
-                    ###
-                    #ESTIMATE STANDARD DEVIATION, SUMMED WEIGHT, INTEGRAL LENGTH SCALE AND BANDWIDTHS OF EACH WINDOW ASSOCIATED WITH EACH NON-ZERO CELL
-                    ###
+                    # Pad arrays
+                    preGRID_active_padded = np.pad(preGRID_active, pad_size, mode='reflect')
+                    preGRID_active_counts_padded = np.pad(preGRID_active_counts, pad_size, mode='reflect')
                     
-                    std_estimate = np.zeros(np.shape(preGRID_active_counts))
-                    N_eff = np.zeros(np.shape(preGRID_active_counts))
-                    h_matrix_adaptive = np.zeros(np.shape(preGRID_active_counts))
-                    weight_estimate = np.zeros(np.shape(preGRID_active_counts))
-                    integral_length_scale_matrix = np.zeros(np.shape(preGRID_active_counts))
-                    #get non_zero indices
-                    non_zero_indices = np.argwhere(preGRID_active_counts_padded > 0)
-                    # Remove all indices outside of the original grid
-                    non_zero_indices = non_zero_indices[np.where((non_zero_indices[:,0] >= pad_size) &
-                    (non_zero_indices[:,0] < len(bin_x)) &   (non_zero_indices[:,1] >= pad_size) & (non_zero_indices[:,1] < len(bin_y)))]
+                    # Compute statistics and bandwidths
+                    std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive = compute_adaptive_bandwidths(
+                        preGRID_active_padded, preGRID_active_counts_padded,
+                        window_size, pad_size, (window_size**2)/2,
+                        silverman_coeff, silverman_exponent, dxy_grid
+                    )
                     
-                    stats_threshold = (window_size**2)/2
-
-                    #calculate standard deviations for each data subset window
-                    for idx in non_zero_indices:
-                        row, col = idx
-                        row_unpadded, col_unpadded = row-pad_size, col-pad_size #unpadded indices
-                        data_subset = preGRID_active_padded[row-pad_size:row+pad_size+1,col-pad_size:col+pad_size+1]
-                        # WEIGHT
-                        weight_estimate[row_unpadded, col_unpadded] = np.sum(data_subset)
-                        #Number of particles
-                        subset_counts = preGRID_active_counts_padded[row-pad_size:row+pad_size+1,col-pad_size:col+pad_size+1]
-                        #Normalize data subset such that sum(data_subset) = subset_counts
-                        data_subset = (data_subset/np.sum(data_subset))*subset_counts
-                        #double check that there's particles at the center of the data subset window
-                        if data_subset[pad_size,pad_size] == 0:
-                            print('No particles at the center of the data subset window')
-                            #stop the script
-                            break
-                        if np.sum(subset_counts) < stats_threshold:
-                            #The number of particles is too low to calculate the standard deviation
-                            #using the simple Neff and std estimators
-                            std_estimate[row_unpadded, col_unpadded] = window_size/2
-                            N_eff[row_unpadded, col_unpadded] = np.sum(data_subset)/window_size
-                        else:
-                            # STANDARD DEVIATION
-                            std_estimate[row_unpadded, col_unpadded] = histogram_std(data_subset,effective_samples = None,bin_size=1)
-                            # INTEGRAL LENGTH SCALE
-                            autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
-                            autocorr = (autocorr_rows + autocorr_cols) / 2
-                            if autocorr.any():
-                                integral_length_scale = np.sum(autocorr) / autocorr[np.argwhere(autocorr != 0)[0]]
-                                integral_length_scale_matrix[row, col] = integral_length_scale
-                            else:
-                                integral_length_scale_matrix[row, col] = 0.000001  # to avoid division by zero
-                            # N_eff - effective number of samples
-                            N_eff[row_unpadded, col_unpadded] = np.sum(data_subset) / integral_length_scale_matrix[row_unpadded, col_unpadded]
-                            #print(f"Integral_length_scale = {integral_length_scale} meter @ {row},{col}")
-                            #print(f"Number of particles = {N_eff[row, col]} @ {row},{col}")
-                            #print(f"Standard deviation = {std_estimate[row, col]} @ {row},{col}")
-
-                        #loop over N_eff and non-zero indices and check for zeros. 
-                        h_matrix_adaptive[row_unpadded,col_unpadded] = np.sqrt(((silverman_coeff*N_eff[row_unpadded,col_unpadded]**(-silverman_exponent))*std_estimate[row_unpadded,col_unpadded]))*dxy_grid #multiply with dxy_grid to get the bandwidth in meters
-                        h_values_full[kkk,i]=np.mean(h_matrix_adaptive[h_matrix_adaptive>0].flatten())
-                        h_values_std_full[kkk,i] = np.std(h_matrix_adaptive[h_matrix_adaptive>0].flatten())
-
+                    # Compute summary statistics
+                    h_values_full[kkk,i] = np.mean(h_matrix_adaptive[h_matrix_adaptive>0])
+                    h_values_std_full[kkk,i] = np.std(h_matrix_adaptive[h_matrix_adaptive>0])
                     #plt.hist(h_matrix_adaptive[h_matrix_adaptive>0].flatten(),bins=50)
                     #plt.show()
                     #plt.close()
@@ -2209,19 +2330,15 @@ if run_all == True:
             ax1.set_xlabel('Iteration')
             ax1.set_ylabel('Elapsed time [s]', color=color_1)
             ax1.tick_params(axis='y', labelcolor=color_1)
-            ax1.set_xlim([0, len(elapsed_time_timestep)])
-            ax1.set_ylim([0,np.max(elapsed_time_timestep)])
-
             # Create a second y-axis to plot the number of particles
             ax2 = ax1.twinx()
             ax2.plot(total_parts[:kkk], linewidth=2, color=color_2)
             ax2.set_ylabel('Number of particles', color=color_2)
             ax2.tick_params(axis='y', labelcolor=color_2)
+            ax1.set_xlim([0, len(elapsed_time_timestep)])
+            ax1.set_ylim([np.min(elapsed_time_timestep[10:kkk]),np.max(elapsed_time_timestep[10:])])
 
             plt.show()
-
-
-
 
         
 end_time_whole_script = time.time()
@@ -2413,13 +2530,12 @@ for i in range(twentiethofMay,time_steps,2):
 #create gif
 imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
 
-
 ###########################################################################
 ############ PLOTTING 2D FIELD OF ACCUMULATED ATMOSPHERIC FLUX ############
 ###########################################################################
 
 twentiethofMay = 1 #for testing purposes
-time_steps = 700
+time_steps = 900
 GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofMay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
 total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
 percent_of_release = np.round((total_sum/total_seabed_release)*100,4) #why multiply with 100??? Because it's percantage dumb-ass

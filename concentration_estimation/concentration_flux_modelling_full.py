@@ -34,6 +34,7 @@ import seaborn as sns
 import time
 import numba
 from pyproj import Proj, Transformer
+import  xarray as xr
 
 ############################
 ###DEFINE SOM COOL COLORS###
@@ -113,7 +114,7 @@ get_new_bathymetry = False
 #ODdata: netcdf file containing the opendrift data
 #particles: dictionary containing information about the drift particles
 #GRID: list of lists containing the horizontal fields at each depth and time step as sparse matrices
-
+2+2
  #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
 
@@ -1233,9 +1234,6 @@ if run_test == True:
     maxlat = 72
     maxdepth = 15*20
 
-import dask.array as da #Old stuff. I tried... 
-import xarray as xr
-
 if run_full == True:
     datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
     #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
@@ -1576,8 +1574,6 @@ GRID_top = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_hs = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_stds = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_neff = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
-
-
 
 if run_all == True:
     # Open the dataset

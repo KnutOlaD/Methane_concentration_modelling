@@ -20,19 +20,20 @@ import utm
 from scipy.sparse import coo_matrix as coo_matrix
 from scipy.sparse import csr_matrix as csr_matrix
 import pickle
-from numba import jit, prange
 from scipy.interpolate import griddata
 import pandas as pd
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import numba
 from numpy.ma import masked_invalid
 import imageio
 import matplotlib.gridspec as gridspec
 from scipy.ndimage import gaussian_filter
 import seaborn as sns
 import time
-import numba
+from numba import jit, prange
+import numpy.ma as ma
 from pyproj import Proj, Transformer
 import  xarray as xr
 
@@ -109,7 +110,7 @@ h_adaptive = 'Local_Silverman'
 #Get new bathymetry or not?
 get_new_bathymetry = False
 #How should data be loaded/created
-load_from_nc_file = True
+load_from_nc_file = False
 load_from_hdf5 = False #Fix this later if needed
 create_new_datafile = False
 
@@ -573,8 +574,87 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 
     return gaussian_kernels, bandwidths_h#, kernel_origin
 
+##############################
+### ONGOING OPTIMIZASATION ###
+##############################
+
+@jit(nopython=True, parallel=True)
+def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwidths, 
+                    gaussian_kernels, illegal_cells, gridsize_x, gridsize_y):
+    """Numba-optimized kernel processing"""
+    n_u = np.zeros((gridsize_x, gridsize_y))
+    
+    for idx in prange(len(non_zero_indices)):
+        i, j = non_zero_indices[idx]
+        
+        # Get kernel index and kernel
+        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j]))
+        kernel = gaussian_kernels[kernel_index].copy()  # Need copy for numba
+        kernel_size = len(kernel) // 2
+        
+        # Window boundaries
+        i_min = max(i - kernel_size, 0)
+        i_max = min(i + kernel_size + 1, gridsize_x)
+        j_min = max(j - kernel_size, 0)
+        j_max = min(j + kernel_size + 1, gridsize_y)
+        
+        # Handle illegal cells
+        illegal_window = illegal_cells[i_min:i_max, j_min:j_max]
+        if np.any(illegal_window):
+            illegal_sum = 0.0
+            for ii in range(i_max - i_min):
+                for jj in range(j_max - j_min):
+                    if illegal_window[ii, jj]:
+                        illegal_sum += kernel[ii, jj]
+                        kernel[ii, jj] = 0
+            weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum)
+        else:
+            weighted_kernel = kernel * kde_pilot[i, j]
+            
+        # Add contribution
+        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
+            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
+            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
+        ]
+    
+    return n_u
+
+def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, 
+                  kernel_bandwidths, cell_bandwidths, illegal_cells=None):
+    """Optimized version of grid_proj_kde"""
+    
+    # Initialize illegal cells if None
+    if illegal_cells is None:
+        illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=np.bool_)
+    
+    # Get grid sizes
+    gridsize_x, gridsize_y = len(grid_x), len(grid_y)
+    
+    # Convert gaussian_kernels to homogeneous float64 arrays
+    gaussian_kernels = [np.ascontiguousarray(kernel, dtype=np.float64) for kernel in gaussian_kernels]
+    
+    # Pre-compute non-zero indices
+    non_zero_indices = np.array(np.where(kde_pilot > 0)).T
+    
+    # Convert inputs to contiguous arrays with consistent dtypes
+    kde_pilot = np.ascontiguousarray(kde_pilot, dtype=np.float64)
+    cell_bandwidths = np.ascontiguousarray(cell_bandwidths, dtype=np.float64)
+    kernel_bandwidths = np.ascontiguousarray(kernel_bandwidths, dtype=np.float64)
+    illegal_cells = np.ascontiguousarray(illegal_cells, dtype=np.bool_)
+    
+    # Process kernels using numba-optimized function
+    n_u = _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths,
+                          kernel_bandwidths, gaussian_kernels, illegal_cells,
+                          gridsize_x, gridsize_y)
+    
+    return n_u
+
+##############################
+### ONGOING OPTIMIZASATION ###
+##############################
+
 #Function to calculate the grid projected kernel density estimator
-def grid_proj_kde(grid_x, 
+def grid_proj_kde_deprec(grid_x, 
                   grid_y, 
                   kde_pilot, 
                   gaussian_kernels, 
@@ -626,7 +706,7 @@ def grid_proj_kde(grid_x,
         i, j = idx
         # Get the appropriate kernel for the current particle bandwidth
         # find the right kernel index
-        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j]))
+        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j])) #Can be vectorized
         # kernel_index = kernel_indices[i * grid_size + j]
         kernel = gaussian_kernels[kernel_index]
         kernel_size = len(kernel) // 2  # Because it's symmetric around the center.
@@ -1563,6 +1643,7 @@ time_steps_full = len(ODdata.variables['time'])
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
 kde_time_vector = np.zeros(time_steps_full-1)
+h_estimate_vector = np.zeros(time_steps_full-1)
 elapsed_time_timestep = np.zeros(time_steps_full-1)
 
 run_all = True
@@ -1606,8 +1687,7 @@ if run_all == True:
                 particles_all_data = add_utm(particles_all_data)
             
             else:
-                print('No data loaded. What should I do now?')
-                break
+                print('No data loaded. I guess data is already in!?')
             
         #Create a h5py file of the datafile for faster loading in the future
         if create_new_datafile == True:
@@ -1659,14 +1739,10 @@ if run_all == True:
         if kkk == 1:
             particles['weight'][:,1][np.where(particles['weight'][:,1].mask == False)] = weights_full_sim
             particles['weight'][:,0] = particles['weight'][:,1]
-
-        # Add UTM
-        
-        #add aging
         
         end_time = time.time()
         elapsed_time = end_time - start_time
-        print(f"Data loading: {elapsed_time:.6f} seconds")
+        #print(f"Data loading: {elapsed_time:.6f} seconds")
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
@@ -1685,6 +1761,22 @@ if run_all == True:
         # Get the indices where particles['age'][:,j] is not masked and equal to 0
         activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
         already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
+        #Deactivate particles that are outside the grid
+        max_x = np.max(bin_x)
+        min_x = np.min(bin_x)
+        max_y = np.max(bin_y)
+        min_y = np.min(bin_y)
+        #create a vector for the indices that are outside the grid
+        outside_grid = np.where((particles['UTM_x'][:,1] < min_x) | (particles['UTM_x'][:,1] > max_x) | (particles['UTM_y'][:,1] < min_y) | (particles['UTM_y'][:,1] > max_y))[0]
+        #Mask all particles that are outside the grid
+        particles['z'][outside_grid,1].mask = True
+        particles['weight'][outside_grid,1].mask = True
+        particles['bw'][outside_grid,1].mask = True
+        particles['UTM_x'][outside_grid,1].mask = True
+        particles['UTM_y'][outside_grid,1].mask = True
+        particles['lon'][outside_grid,1].mask = True
+        particles['lat'][outside_grid,1].mask = True
+    
         #activated_indices = unmasked_indices[0][
         #    particles['age'][:,1][unmasked_indices] == 0]
         #already active indices
@@ -1712,15 +1804,13 @@ if run_all == True:
 
         ### MODIFY ALREADY ACTIVE ###
         #add the weight of the particle to the current timestep 
-        ### MODIFY ALREADY ACTIVE ###
-        #add the weight of the particle to the current timestep 
         if already_active.any():
             ##### MOX LOSS #####
             particles['weight'][already_active,1] = particles[
                 'weight'][already_active,0]-(particles['weight'][
                     already_active,0]*R_ox*3600) #mol/hr
             particles_mox_loss[kkk] = np.nansum(particles['weight'][already_active,0]*R_ox*3600)
-            
+
             ##### ATM LOSS #####
             #This calculates the loss to the atmosphere for the methane released in the previous timestep... (mostly uses j-1 idx)
             #Find all particles located in the surface layer and create an index vector (to avoid double indexing numpy problem)
@@ -1822,7 +1912,7 @@ if run_all == True:
             #Set any particle that has left the model domain to have zero weight and location
             #at the model boundary
 
-            #Remove particles that are outside the model domain (they are allowed to return later if the current will bring them back)
+            #Remove particles that are outside the model domain (they are not allowed to return later if the current will bring them back)
             # Assuming parts_active_z is a list of arrays with 'x' and 'y' coordinates
 
             # Create masks for x and y coordinates
@@ -1882,7 +1972,8 @@ if run_all == True:
                                                 preGRID_active,
                                                 gaussian_kernels,
                                                 gaussian_bandwidths_h,
-                                                preGRID_active_bw)
+                                                preGRID_active_bw,
+                                                illegal_cells=illegal_cells[:,:,i],)
                     end_time = time.time()
                     elapsed_time = end_time - start_time
                     print(f"KDE took {elapsed_time:.6f} seconds")
@@ -1892,6 +1983,9 @@ if run_all == True:
                 #############################
                 ### Using local Silverman ###
                 #############################
+                
+                #Profile this to see 
+
 
                 if h_adaptive == 'Local_Silverman' and preGRID_active.any():
                     #time it
@@ -1983,6 +2077,10 @@ if run_all == True:
                     #square it to get h (silverman in 2 dimensions give the square root)
                     #h_matrix_adaptive = h_matrix_adaptive**2
 
+                    end_time = time.time()
+                    time_to_estimate_h = end_time-start_time
+                    h_estimate_vector[kkk] = time_to_estimate_h
+
                     #Do the KDE using the grid_proj_kde function
                     GRID_active = grid_proj_kde(bin_x,
                                                 bin_y,
@@ -1991,6 +2089,10 @@ if run_all == True:
                                                 gaussian_bandwidths_h,
                                                 h_matrix_adaptive,
                                                 illegal_cells = illegal_cells[:,:,i])
+
+                    end_time = time.time()
+                    elapsed_time = end_time - start_time
+                    kde_time_vector[kkk] = elapsed_time
                     
                     #make a plot if kkk is modulus 20
                     if kkk % 50 == 0:
@@ -2006,11 +2108,10 @@ if run_all == True:
                         print(f"Depth layer {i}, time step {kkk}")
                         print(f"KDE {elapsed_time:.6f} seconds")
 
-                    end_time = time.time()
-                    elapsed_time = end_time - start_time
-                    kde_time_vector[kkk] = elapsed_time
-                    #print 
-                        
+                        #Estimate time left
+                        #calculate avareage time step of the previous 10 timesteps
+                        print(f"Estimated time left is at least {((np.mean(kde_time_vector[kkk-10:kkk])*time_steps_full)/3600):.2f} hours")
+
 
                 if run_test == True:
                     GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3
@@ -2109,6 +2210,7 @@ if run_all == True:
             ax1.set_ylabel('Elapsed time [s]', color=color_1)
             ax1.tick_params(axis='y', labelcolor=color_1)
             ax1.set_xlim([0, len(elapsed_time_timestep)])
+            ax1.set_ylim([0,np.max(elapsed_time_timestep)])
 
             # Create a second y-axis to plot the number of particles
             ax2 = ax1.twinx()
@@ -2317,7 +2419,7 @@ imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_h
 ###########################################################################
 
 twentiethofMay = 1 #for testing purposes
-time_steps = 300
+time_steps = 700
 GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofMay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
 total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
 percent_of_release = np.round((total_sum/total_seabed_release)*100,4) #why multiply with 100??? Because it's percantage dumb-ass
@@ -2327,9 +2429,9 @@ levels = levels[:]
 #flip the lon_vector right/left
 
 
-plot_2d_data_map_loop(data=GRID_atm_flux_sum,
-                    lon=lon_mesh,
-                    lat=lat_mesh,
+plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
+                    lon=lon_vec,
+                    lat=lat_vec,
                     projection=projection,
                     levels=levels,
                     timepassed=[1, time_steps],

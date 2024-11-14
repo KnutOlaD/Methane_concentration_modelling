@@ -14,67 +14,6 @@ TO DO
 '''
 #Working on plotting function for everything that's correctly projected
 
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import numpy as np
-from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter  # Add this import
-
-
-def plot_coastline_with_coordinates(coastline_map, lon_grid, lat_grid):
-    """
-    Plot coastline using proper coordinate grids
-    """
-    # Create figure with Lambert Conformal projection
-    fig = plt.figure(figsize=(12, 8))
-    proj = ccrs.LambertConformal(
-        central_longitude=0.0,
-        central_latitude=70.0,
-        standard_parallels=(70.0, 70.0)
-    )
-    
-    # Setup map
-    ax = plt.axes(projection=proj)
-    
-    # Plot coastline data
-    plt.pcolormesh(
-        lon_grid, 
-        lat_grid, 
-        coastline_map,
-        transform=ccrs.PlateCarree(),
-        cmap='binary'
-    )
-    
-    gl = ax.gridlines(
-        crs=ccrs.PlateCarree(),
-        draw_labels=True,
-        linewidth=1,
-        color='gray',
-        alpha=0.5,
-        linestyle='--'
-    )
-    
-    # Use the correct formatter classes
-    gl.xformatter = LongitudeFormatter()
-    gl.yformatter = LatitudeFormatter()
-    
-    # Customize gridlines
-    gl.top_labels = False
-    gl.right_labels = False
-    
-    # Set extent based on your grids
-    ax.set_extent([
-        lon_grid.min(), 
-        lon_grid.max(), 
-        lat_grid.min(), 
-        lat_grid.max()
-    ], crs=ccrs.PlateCarree())
-    
-    plt.title('Coastline Map')
-    plt.show()
-###
-
-
 import numpy as np
 import matplotlib.pyplot as plt
 import datetime as dt
@@ -131,9 +70,11 @@ use_all_depth_layers = False
 max_ker_bw = 10000
 #atmospheric background concentration
 #atmospheric_conc = ((44.64*2)/1000000) #mol/m3 #1911.8 ± 0.6 ppb #44.64 #From Helge
-atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
+#atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
+atmospheric_conc = 0 #We assume equilibrium with the atmosphere
 #oceanic background concentration
-background_ocean_conc = (3.3e-09)*1000 #mol/m3
+#background_ocean_conc = (3.3e-09)*1000 #mol/m3
+background_ocean_conc = 0 #We assume equilibrium with the atmosphere
 #Oswald solubility coeffocient
 oswald_solu_coeff = 0.28 #(for methane)
 #Set projection
@@ -151,13 +92,20 @@ initial_bandwidth = 50 #m
 #colromap = 'magma'
 colormap = sns.color_palette("rocket", as_cmap=True)
 #K value for the microbial oxidation (MOx) (see under mox section for more values)
-R_ox = 10**-7 #s^-1
-#total seabed release
-total_seabed_release = 500*0.16236*(1495-720) #Old value: 20833 #Whats the unit here?
+R_ox = 3.6*10**-7 #s^-1
+#total seabed release that enters the water column as dissoved gas
+sum_sb_release = 0.02695169330621381 #mol/s
+sum_sb_release_hr = sum_sb_release*3600 #mol/hr
+#number of seed particles
+num_seed = 500
+#weights full simulation
+weights_full_sim = sum_sb_release_hr/num_seed #mol/hr
+total_seabed_release = num_seed*weights_full_sim*(30*24) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
 kde_all = False
-#Weight full sim
-weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
+#Weight full sim - think this is wrong
+#weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
+#should be a lot less. I think this might be mmol? 81.18
 #Set manual border for grid
 manual_border = True
 #what am I doing now?
@@ -169,11 +117,11 @@ kde_dim = 2
 silverman_coeff = (4/(kde_dim+2))**(1/(kde_dim+4))
 silverman_exponent = 1/(kde_dim+4)
 #Set bandwidth estimator preference
-h_adaptive = 'Local_Silverman'
+h_adaptive = 'Local_Silverman' #alternatives here are 'Local_Silverman', 'Time_dep' and 'No_KDE'
 #Get new bathymetry or not?
 get_new_bathymetry = False
 #How should data be loaded/created
-load_from_nc_file = False
+load_from_nc_file = True
 load_from_hdf5 = False #Fix this later if needed
 create_new_datafile = False
 
@@ -531,13 +479,13 @@ def histogram_estimator_numba(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weight
         y = int(y_pos[i])
         if x >= grid_size_x or y >= grid_size_y or x < 0 or y < 0: #check if the particle is outside the grid
             continue
-        total_weight[y, x] += weights[i]
+        total_weight[y, x] += weights[i] #This is just the mass in each cell
         particle_count[y, x] += 1
         sum_bandwidth[y, x] += bandwidths[i]*weights[i] #weighted sum of bandwidths
     
     #print(np.shape(particle_count))
 
-    return particle_count, total_weight, sum_bandwidth
+    return particle_count, total_weight, sum_bandwidth 
 
 def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
     '''
@@ -591,7 +539,7 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
     bandwidths = bandwidths[valid_mask]
     
     # Accumulate weights and counts
-    np.add.at(total_weight, (x_indices, y_indices), weights)
+    np.add.at(total_weight, (x_indices, y_indices), weights) #This is just the mass in each cell
     np.add.at(particle_count, (x_indices, y_indices), 1)
     np.add.at(cell_bandwidth, (x_indices, y_indices), bandwidths * weights)
 
@@ -1590,6 +1538,10 @@ total_mox = np.zeros(len(bin_time))
 particles_atm_loss = np.zeros((len(bin_time)))
 #particle mox loss history
 particles_mox_loss = np.zeros((len(bin_time)))
+#Mass that leaves the model domain
+particles_mass_out = np.zeros((len(bin_time)))
+#Mass lost to killing of particles
+particles_mass_died = np.zeros((len(bin_time)))
 #local integral length scale
 integral_length_scale_windows = GRID
 #local std
@@ -1704,7 +1656,6 @@ particles['bw'][:,0] = initial_bandwidth
 #Add mask
 particles['bw'].mask = particles['lon'].mask
 
-
 #-----------------------------------------#
 #CREATE A MATRIX FOR REMOVING THE DIAGONAL#
 #-----------------------------------------#
@@ -1746,7 +1697,7 @@ std_list = list()
 ######################################################################
 ###### FIND ILLEGAL CELLS IN THE GRID USING THE BATHYMETRY DATA ######
 ######################################################################
-
+print('Getting bathymetry and illegal cells')
 # Define projections and transformer
 polar_stereo_proj = Proj(proj="stere", lat_ts=75, lat_0=90, lon_0=-45, datum="WGS84")
 wgs84 = Proj(proj="latlong", datum="WGS84")
@@ -1756,11 +1707,19 @@ transformer = Transformer.from_proj(polar_stereo_proj, wgs84)
 if get_new_bathymetry == True:
     bathymetry_path = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\bathymetry\IBCAO_v4_400m.nc'
     output_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle'
-    interpolated_bathymetry, lat_mesh_map, lon_mesh_map = process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path)
+    bathymetry_data = process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path)
+    interpolated_bathymetry = bathymetry_data[0]
+    lat_mesh_map = bathymetry_data[1]
+    lon_mesh_map = bathymetry_data[2]
 else:
     # Load the interpolated bathymetry data from pickle file
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle', 'rb') as f:
-        interpolated_bathymetry = pickle.load(f)
+        bathymetry_data = pickle.load(f)
+    interpolated_bathymetry = bathymetry_data['bathymetry']
+    lat_mesh_map = bathymetry_data['latitude']
+    lon_mesh_map = bathymetry_data['longitude']
+
+del bathymetry_data
 
 # Create matrices for illegal cells using the bathymetry data and delta z
 illegal_cells = np.zeros([len(bin_x), len(bin_y), len(bin_z)])
@@ -1789,6 +1748,8 @@ if plotting == True:
     plt.contour(lon_mesh_grid, lat_mesh_grid, np.abs(interpolated_bathymetry), levels=[0], colors='white', linewidths=1)
     plt.colorbar(contourf_plot, label='Depth (m)', extend='max')
     plt.show()
+
+print('done.')
 
 #################################################################################
 ########### CREATE MAP FOR PLOTTING OF COASTLINE WHERE BATHYMETRY > 0 ###########
@@ -1825,6 +1786,9 @@ GRID_top = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_hs = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_stds = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_neff = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
+
+#Particles that left the domain vector
+particles_that_left = np.array([])
 
 if run_all == True:
 
@@ -1916,6 +1880,20 @@ if run_all == True:
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
 
+        #--------------------------------------------------------#
+        # Count mass that left due to particles dying of old age #
+        #--------------------------------------------------------#
+
+        # Get deactivated indices safely
+        deactivated_indices = np.where((particles['z'][:,1].mask == True) & 
+                                    (particles['z'][:,0].mask == False))[0]
+
+        # Only process if we have deactivated particles
+        if deactivated_indices.size > 0:
+            particles_mass_died[kkk] = np.sum(particles['weight'][deactivated_indices,0])  # Use previous timestep weights
+        else:
+            particles_mass_died[kkk] = 0
+
         #------------------------------------------#
         # DEACTIVATE PARTICLES OUTSIDE OF THE GRID #
         #------------------------------------------#
@@ -1925,9 +1903,14 @@ if run_all == True:
         max_y = np.max(bin_y)
         min_y = np.min(bin_y)
         #create a vector for the indices that are outside the grid
-        outside_grid = np.where((particles['UTM_x'][:,1] < min_x) | (particles['UTM_x'][:,1] > max_x) | (particles['UTM_y'][:,1] < min_y) | (particles['UTM_y'][:,1] > max_y))[0]
+        outside_grid = np.where((particles['UTM_x'][:,1] < min_x) | 
+                            (particles['UTM_x'][:,1] > max_x) | 
+                            (particles['UTM_y'][:,1] < min_y) | 
+                            (particles['UTM_y'][:,1] > max_y))[0]
+
         #Mask all particles that are outside the grid
         particles['z'][outside_grid,1].mask = True
+        particles_mass_out[kkk] = np.sum(particles['z'][outside_grid,1])
         particles['weight'][outside_grid,1].mask = True
         particles['bw'][outside_grid,1].mask = True
         particles['UTM_x'][outside_grid,1].mask = True
@@ -1935,6 +1918,19 @@ if run_all == True:
         particles['lon'][outside_grid,1].mask = True
         particles['lat'][outside_grid,1].mask = True
 
+        # Set up vector if it doesnt exist. 
+        if 'particles_that_left' not in locals():
+            particles_that_left = np.array([], dtype=int)
+
+        # Then mask the particles
+        if particles_that_left.size > 0:
+            for field in ['z', 'weight', 'bw', 'UTM_x', 'UTM_y', 'lon', 'lat']:
+                particles[field][particles_that_left, 1].mask = True
+
+        # Add new outside_grid particles to particles_that_left
+        if outside_grid.size > 0:
+            particles_that_left = np.unique(np.concatenate((particles_that_left, outside_grid)))
+        
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
@@ -1998,7 +1994,7 @@ if run_all == True:
             #Distribute the atmospheric loss on these particles depending on their weight
             #replace any nans in GRID_gt_cel[j-1][gt_idys,gt_idxs] with the nearest non nan value in the grid
             #GRID_gt_vel[j-1][gt_idys,gt_idxs] = np.nan_to_num(GRID_gt_vel[j-1][gt_idys,gt_idxs])
-            #Each particle have contributed with a certain amount gt_vel*weight in the PREVIOUS timestep
+            #Each particle have contributed with a certain amount gt_vel*weight in the PREVIOUS timestep. This is loss to atmosphere.
             particleweighing = (particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])/np.nansum(
                 particles['weight'][already_active_surface,0]*GRID_gt_vel[kkk-1][gt_idys,gt_idxs])
             #particles['weight'][already_active,j][surface_layer_idx] = particles['weight'][already_active,j][surface_layer_idx] - (gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx]*total_atm_flux[j-1])/np.nansum((gt_vel_loss*particles['weight'][already_active,j-1][surface_layer_idx])) #mol/hr
@@ -2132,8 +2128,17 @@ if run_all == True:
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
-                                                    parts_active_z[4],
-                                                    parts_active_z[5])
+                                                    parts_active_z[5],
+                                                    parts_active_z[4])
+                
+                ###########################
+                ### Using no KDE at all ###
+                ###########################
+
+                if h_adaptive == 'No_KDE':
+                    GRID_active = preGRID_active
+                    end_time = time.time()
+                    elapsed_time = end_time - start_time
                 
                 
                 #######################################
@@ -2235,9 +2240,9 @@ if run_all == True:
 
 
                 if run_test == True:
-                    GRID_active = diag_rm_mat*(GRID_active/(V_grid)) #Dividing by V_grid to get concentration in mol/m^3
+                    GRID_active = diag_rm_mat*(GRID_active/V_grid) #Dividing by V_grid to get concentration in mol/m^3
                 elif run_full == True:
-                    GRID_active = GRID_active/(V_grid)
+                    GRID_active = GRID_active/V_grid
 
                 #----------------------------#
                 #PLOT THE CONCENTRATION FIELD#
@@ -2278,12 +2283,18 @@ if run_all == True:
                 #-------------------------------#
                 #CALCULATE ATMOSPHERIC FLUX/LOSS#
                 #-------------------------------#
-                
+                #*dxy_grid**2
                 if i == 0:
-                    GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,
-                        (((GRID_active+background_ocean_conc)-atmospheric_conc))
-                        )*0.01*dxy_grid**2 #This is in mol/hr for each gridcell. The gt_vel is cm/hr, multiply with 0.01 to get m/hr
-                    GRID_active = (GRID_active*V_grid - GRID_atm_flux[kkk,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
+                    #GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,
+                    #    (((GRID_active+background_ocean_conc)-atmospheric_conc))
+                    #    )*dxy_grid*0.01 
+                    # If we assume equilibrium concentration this simplifies to
+                    GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,GRID_active)*dxy_grid*dxy_grid*0.01
+                    #    )
+                    # 
+                    # #This is in mol/hr for each gridcell. The gt_vel is cm/hr, multiply with 0.01 to get m/hr
+                    #and GRID_active is in concentration
+                    #GRID_active = (GRID_active*V_grid - GRID_atm_flux[kkk,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
                     total_atm_flux[kkk] = np.nansum(GRID_atm_flux[kkk,:,:])#....but not in the atmospheric flux.. 
 
                     #fill the test layers
@@ -2312,7 +2323,7 @@ if run_all == True:
 
                 GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop
                 #need this to adjust the weights for next loop
-                GRID_active = GRID_active - GRID_mox[kkk,:,:] #I adjust the weights instead. 
+                #GRID_active = GRID_active - GRID_mox[kkk,:,:] #I adjust the weights instead. 
                 total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
                 #update the weights of the particles due to microbial oxidation is done globally at each timestep since
                 #the loss is not dependent on the depth layer (this is more efficient)
@@ -2441,24 +2452,22 @@ time_steps = len(bin_time)
 levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
 #levels_atm = levels_atm[1:-1]
 levels_atm = levels_atm[:-50]*0.25
-lon_vec = lon_mesh[0,:]
-lat_vec = lat_mesh[:,0]
 
 #datetimevector for the progress bar
 times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
-twentiethofMay = 720
+twentiethofmay = 720
 time_steps = 1495
 
-do = True
+do = False
 if do == True:
-    for i in range(twentiethofMay,time_steps,1):
+    for i in range(twentiethofmay,time_steps,1):
         fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
                                     lon=lon_mesh,
                                      lat=lat_mesh,
                                     projection=projection,
                                     levels=levels_atm,
-                                    timepassed=[i-twentiethofMay, time_steps-twentiethofMay],
+                                    timepassed=[i-twentiethofmay, time_steps-twentiethofmay],
                                     colormap=colormap,
                                     title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i])[5:-3],
                                     unit='mol m$^{-2}$ hr$^{-1}$',
@@ -2493,50 +2502,47 @@ if do == True:
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'rb') as f:
 #    GRID_gt_vel = pickle.load(f)
 
-GRID_generic = GRID_gt_vel
-images_atm_rel = []
-#datetimevector for the progress bar
-times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-#start and end time. 
-twentiethofMay = 1
-time_steps = 700
+plot_atm=False
+if plot_atm == True:
+    GRID_generic = GRID_gt_vel
+    images_atm_rel = []
+    #datetimevector for the progress bar
+    times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
-images_gt_vel = []
-time_steps = len(bin_time)
-levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
+    images_gt_vel = []
+    time_steps = len(bin_time)
+    levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
 
-for i in range(twentiethofMay,time_steps,2):
-    fig = plot_2d_data_map_loop(data=GRID_gt_vel[i, :, :],
-                                lon=lon_vec,
-                                lat=lat_vec,
-                                projection=projection,
-                                levels=levels_gt,
-                                timepassed=[i-twentiethofMay, time_steps-twentiethofMay],
-                                colormap=colormap,
-                                title='Gas transfer velocity [cm hr$^{-1}$]' + str(times[i]),
-                                unit='cm hr$^{-1}$',
-                                savefile_path=r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\atmosphere\gt_vel_gif\gt_vel' + str(i) + '.png',
-                                adj_lon = [1,-1],
-                                adj_lat = [0,-0.7],
-                                show=False,
-                                dpi=90,
-                                figuresize = [12,10],
-                                log_scale = False,
-                                starttimestring = '20 May 2018',
-                                endtimestring = '20 June 2018')
-    images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
-    plt.close(fig)  # Close the figure to avoid displaying it
+    for i in range(twentiethofmay,time_steps,2):
+        fig = plot_2d_data_map_loop(data=GRID_gt_vel[i, :, :],
+                                    lon=lon_vec,
+                                    lat=lat_vec,
+                                    projection=projection,
+                                    levels=levels_gt,
+                                    timepassed=[i-twentiethofmay, time_steps-twentiethofmay],
+                                    colormap=colormap,
+                                    title='Gas transfer velocity [cm hr$^{-1}$]' + str(times[i]),
+                                    unit='cm hr$^{-1}$',
+                                    savefile_path=r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\atmosphere\gt_vel_gif\gt_vel' + str(i) + '.png',
+                                    adj_lon = [1,-1],
+                                    adj_lat = [0,-0.7],
+                                    show=False,
+                                    dpi=90,
+                                    figuresize = [12,10],
+                                    log_scale = False,
+                                    starttimestring = '20 May 2018',
+                                    endtimestring = '20 June 2018')
+        images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
+        plt.close(fig)  # Close the figure to avoid displaying it
 
-#create gif
-imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
+    #create gif
+    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
 
 ###########################################################################
 ############ PLOTTING 2D FIELD OF ACCUMULATED ATMOSPHERIC FLUX ############
 ###########################################################################
 
-twentiethofMay = 1 #for testing purposes
-time_steps = 900
-GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofMay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
+GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofmay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
 total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
 percent_of_release = np.round((total_sum/total_seabed_release)*100,4) #why multiply with 100??? Because it's percantage dumb-ass
 GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol. THIS IS ALREADY IN MOLAR. But divide to get per square meter
@@ -2546,8 +2552,8 @@ levels = levels[:]
 
 
 plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
-                    lon=lon_vec,
-                    lat=lat_vec,
+                    lon=lon_mesh,
+                    lat=lat_mesh,
                     projection=projection,
                     levels=levels,
                     timepassed=[1, time_steps],
@@ -2570,12 +2576,36 @@ plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
 ############ PLOTTING TIMESERIES OF TOTAL ATMOSPHERIC FLUX ############
 #######################################################################
 
-#plot total_atm_flux in a nice figure with nice labels etc
-#Crop the data to 750:1470
-total_atm_flux = total_atm_flux[750:1470]
 #get corresponding time vector
 times_totatm =  pd.to_datetime(bin_time,unit='s')
-times_totatm = times_totatm[750:1470]
+
+
+# Create figure with 2x2 subplots
+fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+
+# Plot 1: Total atmospheric flux
+ax1.plot(times_totatm[twentiethofmay:time_steps], total_atm_flux[twentiethofmay:time_steps], color='red')
+ax1.set_title('Atmospheric Flux')
+ax1.set_xlabel('Timestep')
+ax1.set_ylabel('mol hr{^-1}')
+ax1.grid(True, alpha=0.3)
+
+# Plot 2: Total MOx
+ax2.plot(times_totatm[twentiethofmay:time_steps], total_mox[twentiethofmay:time_steps], color='blue')
+ax2.set_title('Microbial Oxidation')
+ax2.set_xlabel('Timestep')
+ax2.set_ylabel('mol hr{^-1}')
+ax2.grid(True, alpha=0.3)
+
+# Plot 3: Total particles
+ax3.plot(times_totatm[twentiethofmay:time_steps], total_parts[twentiethofmay:time_steps], color='green')
+ax3.set_title('Total Number of Particles')
+ax3.set_xlabel('Timestep')
+ax3.set_ylabel('Number of Particles')
+ax3.grid(True, alpha=0.3)
+
+# Remove the fourth subplot
+ax4.remove()
 
 fig = plt.figure(figsize=(16, 10))
 ax = fig.add_subplot(1, 1, 1)
@@ -2586,7 +2616,7 @@ ax.set_title('Total atmospheric flux',fontdict={'fontsize':16})
 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
 #add yy axis showing the number of active particles
 ax2 = ax.twinx()
-ax2.plot(times_totatm,total_mox_new[170:-170],color='0.4',label='Number of active particles')
+ax2.plot(times_totatm,total_mox,color='0.4',label='Number of active particles')
 ax2.set_ylabel('Number of active particles',fontdict={'fontsize':16})
 ax2.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
 #save figure
@@ -2623,38 +2653,39 @@ plt.plot(f_tidal,Pxx_tidal,'ro')
 
 time_steps = len(bin_time)
 
+plot_all = False
+if plot_all == True:
 
-
-images_field_test = []
-for n in range(0, len(GRID), 10):
-    print(n)
-    #GRID_top_sum = np.sum((GRID[n][:].toarray()))
-    GRID_top_sum = GRID_mox[n,:,:]
-    levels = np.linspace(0, np.max(maxmed)+20**-5, 20)
-    levels = levels[:-10]
-    #plot an imshow in the figure
-    #plt.imshow(GRID[n][0].toarray())
-    #skip timestep if GRID_top_sum only has zeros.. 
-    #if np.sum(GRID_top_sum) == 0:
-    #    continue
-    fig = plot_2d_data_map_loop(data = GRID_top_sum,
-                            lon = lon_mesh[0,:],
-                            lat = lat_mesh[:,0],
-                            projection = projection,
-                            levels = levels,
-                            timepassed = [n,time_steps],
-                            colormap = colormap,
-                            title = 'concentration [mol]'+str(times[n]),
-                            unit = 'mol',
-                            savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png',
-                            show = False,
-                            adj_lon = [0,0],
-                            adj_lat = [0,-2.5],
-                            bar_position = [0.315,0.12,0.49558,0.03],
-                            dpi = 90,
-                            log_scale = False)
-    images_field_test.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png'))
-    plt.close(fig)
+    images_field_test = []
+    for n in range(0, len(GRID), 10):
+        print(n)
+        #GRID_top_sum = np.sum((GRID[n][:].toarray()))
+        GRID_top_sum = GRID_mox[n,:,:]
+        levels = np.linspace(0, np.max(maxmed)+20**-5, 20)
+        levels = levels[:-10]
+        #plot an imshow in the figure
+        #plt.imshow(GRID[n][0].toarray())
+        #skip timestep if GRID_top_sum only has zeros.. 
+        #if np.sum(GRID_top_sum) == 0:
+        #    continue
+        fig = plot_2d_data_map_loop(data = GRID_top_sum,
+                                lon = lon_mesh[0,:],
+                                lat = lat_mesh[:,0],
+                                projection = projection,
+                                levels = levels,
+                                timepassed = [n,time_steps],
+                                colormap = colormap,
+                                title = 'concentration [mol]'+str(times[n]),
+                                unit = 'mol',
+                                savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png',
+                                show = False,
+                                adj_lon = [0,0],
+                                adj_lat = [0,-2.5],
+                                bar_position = [0.315,0.12,0.49558,0.03],
+                                dpi = 90,
+                                log_scale = False)
+        images_field_test.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png'))
+        plt.close(fig)
     
 #Create a field with all the layers summed up
 GRID_sum = np.zeros(GRID[0][0].toarray().shape)
@@ -2971,3 +3002,118 @@ if plot_gt_vel == True:
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\gt_vel.gif', images_gt_vel, duration=0.5)
 
 
+
+#MAP PLOTTING.
+
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import numpy as np
+from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter  # Add this import
+
+
+def plot_coastline_with_coordinates(coastline_map, lon_grid, lat_grid):
+    """
+    Plot coastline using proper coordinate grids
+    """
+    # Create figure with Lambert Conformal projection
+    fig = plt.figure(figsize=(12, 8))
+    proj = ccrs.LambertConformal(
+        central_longitude=0.0,
+        central_latitude=70.0,
+        standard_parallels=(70.0, 70.0)
+    )
+    
+    # Setup map
+    ax = plt.axes(projection=proj)
+    
+    # Plot coastline data
+    plt.pcolormesh(
+        lon_grid, 
+        lat_grid, 
+        coastline_map,
+        transform=ccrs.PlateCarree(),
+        cmap='binary'
+    )
+    
+    gl = ax.gridlines(
+        crs=ccrs.PlateCarree(),
+        draw_labels=True,
+        linewidth=1,
+        color='gray',
+        alpha=0.5,
+        linestyle='--'
+    )
+    
+    # Use the correct formatter classes
+    gl.xformatter = LongitudeFormatter()
+    gl.yformatter = LatitudeFormatter()
+    
+    # Customize gridlines
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    # Set extent based on your grids
+    ax.set_extent([
+        lon_grid.min(), 
+        lon_grid.max(), 
+        lat_grid.min(), 
+        lat_grid.max()
+    ], crs=ccrs.PlateCarree())
+    
+    plt.title('Coastline Map')
+    plt.show()
+
+def plot_utm_with_latlon_grid(coastline_map, bin_x, bin_y, utm_zone=33):
+    """Plot coastline in UTM coordinates with lat/lon grid overlay"""
+    
+    # Create transformers
+    utm_to_latlon = Transformer.from_crs(
+        f"EPSG:326{utm_zone}", "EPSG:4326", always_xy=True
+    )
+    latlon_to_utm = Transformer.from_crs(
+        "EPSG:4326", f"EPSG:326{utm_zone}", always_xy=True
+    )
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Plot coastline in UTM
+    plt.pcolormesh(bin_x, bin_y, coastline_map, cmap='binary')
+    
+    # Generate lat/lon grid lines
+    lat_lines = np.arange(68.5, 72.5, 0.5)
+    lon_lines = np.arange(12.5, 21.5, 0.5)
+    
+    # Plot longitude lines
+    for lon in lon_lines:
+        lats = np.linspace(lat_lines.min(), lat_lines.max(), 100)
+        x, y = latlon_to_utm.transform(
+            np.full_like(lats, lon), lats
+        )
+        plt.plot(x, y, '--', color='gray', alpha=0.5, linewidth=0.5)
+        # Add labels
+        if y[0] > bin_y.min() and y[0] < bin_y.max():
+            plt.text(x[0], y[0], f'{lon}°E', fontsize=8)
+    
+    # Plot latitude lines
+    for lat in lat_lines:
+        lons = np.linspace(lon_lines.min(), lon_lines.max(), 100)
+        x, y = latlon_to_utm.transform(lons, np.full_like(lons, lat))
+        plt.plot(x, y, '--', color='gray', alpha=0.5, linewidth=0.5)
+        # Add labels
+        if x[0] > bin_x.min() and x[0] < bin_x.max():
+            plt.text(x[0], y[0], f'{lat}°N', fontsize=8)
+    
+    plt.xlabel('UTM Easting (m)')
+    plt.ylabel('UTM Northing (m)')
+    plt.title('Coastline Map (UTM) with Lat/Lon Grid')
+    
+    # Set limits to match bin_x and bin_y
+    plt.xlim(bin_x.min(), bin_x.max())
+    plt.ylim(bin_y.min(), bin_y.max())
+    
+    plt.show()
+
+plot_coastline_with_coordinates(coastline_map, lon_grid, lat_grid)
+###

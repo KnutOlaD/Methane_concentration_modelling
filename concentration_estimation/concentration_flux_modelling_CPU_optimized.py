@@ -54,9 +54,9 @@ plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
-fit_wind_data = False
+fit_wind_data = True
 #fit gas transfer velocity
-fit_gt_vel = False
+fit_gt_vel = True
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -67,7 +67,7 @@ plot_gt_vel = False
 use_all_depth_layers = False
 ### CONSTANTS ###
 #max kernel bandwidth
-max_ker_bw = 10000
+max_ker_bw = 7000 #Used to be 8000
 #atmospheric background concentration
 #atmospheric_conc = ((44.64*2)/1000000) #mol/m3 #1911.8 ± 0.6 ppb #44.64 #From Helge
 #atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
@@ -80,8 +80,8 @@ oswald_solu_coeff = 0.28 #(for methane)
 #Set projection
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
-dxy_grid = 1600. #m
-dz_grid = 50. #m
+dxy_grid = 800. #m
+dz_grid = 40. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -94,7 +94,7 @@ colormap = sns.color_palette("rocket", as_cmap=True)
 #K value for the microbial oxidation (MOx) (see under mox section for more values)
 R_ox = 3.6*10**-7 #s^-1
 #total seabed release that enters the water column as dissoved gas
-sum_sb_release = 0.02695169330621381 #mol/s
+sum_sb_release = 0.02695169330621381 #mol/s 
 sum_sb_release_hr = sum_sb_release*3600 #mol/hr
 #number of seed particles
 num_seed = 500
@@ -102,10 +102,10 @@ num_seed = 500
 weights_full_sim = sum_sb_release_hr/num_seed #mol/hr
 total_seabed_release = num_seed*weights_full_sim*(30*24) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
-kde_all = False
+kde_all = True
 #Weight full sim - think this is wrong
 #weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
-#should be a lot less. I think this might be mmol? 81.18
+#I think this might be mmol? 81.18
 #Set manual border for grid
 manual_border = True
 #what am I doing now?
@@ -592,7 +592,9 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 @jit(nopython=True, parallel=True)
 def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwidths, 
                     gaussian_kernels, illegal_cells, gridsize_x, gridsize_y):
+    
     """Numba-optimized kernel processing"""
+    
     n_u = np.zeros((gridsize_x, gridsize_y))
     
     for idx in prange(len(non_zero_indices)):
@@ -869,107 +871,78 @@ def plot_2d_data_map_loop(data,
     fig: figure object
     '''
 
-    # Check if coordinate input is mesh or vector
+    
+    # Cache transformed coordinates
     if np.shape(lon) != np.shape(data):
         lon, lat = np.meshgrid(lon, lat)
     
-    # Get map extent
-    min_lon = np.min(lon) + adj_lon[0]
-    max_lon = np.max(lon) + adj_lon[1]
-    min_lat = np.min(lat) + adj_lat[0]
-    max_lat = np.max(lat) + adj_lat[1]
-    
-    #Define figure and axis
-    fig = plt.figure(figsize=(figuresize[0], figuresize[1]))
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
+    # Create figure only once
+    fig = plt.figure(figsize=kwargs.get('figuresize', [14, 10]))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
     ax = fig.add_subplot(gs[0], projection=projection)
-
-    # Adjust levels for logarithmic scale if needed
-    if log_scale:
-        min_level = np.min(levels[levels > 0])  # Smallest positive value in data
-        max_level = np.max(levels)
-        num_levels = len(levels)
-        levels = np.logspace(np.log10(min_level), np.log10(max_level), num_levels)
+    
+    # Pre-transform coordinates
+    transformed_coords = ccrs.PlateCarree().transform_points(
+        projection, lon, lat
+    )
+    
+    # Optimize contour plotting
+    if kwargs.get('log_scale', False):
         norm = LogNorm(vmin=np.min(levels), vmax=np.max(levels))
-        contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, norm=norm, transform=ccrs.PlateCarree(), zorder=0, extend='both')
+        contourf = ax.contourf(lon, lat, data, 
+                             levels=levels,
+                             cmap=colormap,
+                             norm=norm,
+                             transform=ccrs.PlateCarree(),
+                             zorder=0,
+                             extend='both')
     else:
-        contourf = ax.contourf(lon, lat, data, levels=levels, cmap=colormap, transform=ccrs.PlateCarree(), zorder=0, extend='max')
-
-    # Add a colorbar to the plot
+        contourf = ax.contourf(lon, lat, data,
+                             levels=levels,
+                             cmap=colormap,
+                             transform=ccrs.PlateCarree(),
+                             zorder=0,
+                             extend='max')
+    
+    # Reduce gridline density
+    gl = ax.gridlines(crs=ccrs.PlateCarree(),
+                     draw_labels=False,
+                     linewidth=0.5,
+                     color='white',
+                     alpha=0.5,
+                     linestyle='--',
+                     xlocs=np.linspace(lon.min(), lon.max(), 5),
+                     ylocs=np.linspace(lat.min(), lat.max(), 5))
+    
+    # Add essential features only
+    ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
+    ax.add_feature(cfeature.COASTLINE, zorder=3, color='0.5', linewidth=0.5)
+    
+    # Optimize colorbar
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(unit, fontsize=16)
-
-    # Set the ticks and labels for the colorbar based on the scale
-    if log_scale:
-        # Use log-scale ticks for the colorbar
-        cbar.set_ticks(levels)
-        cbar.ax.set_yticklabels([f'$10^{int(np.log10(level))}$' if level >= 10 else f'{level:.1g}' for level in levels])
-        # Set the maximum number of ticks on the colorbar using LogLocator
-        cbar.locator = LogLocator(base=10.0, subs='auto', numticks=maxnumticks)
-    else:
-        # Set the maximum number of ticks on the colorbar using MaxNLocator
-        cbar.locator = MaxNLocator(nbins=maxnumticks)
-
-    # Update the ticks on the colorbar to apply the locator settings
-    cbar.locator = MaxNLocator(nbins=maxnumticks)
-    cbar.update_ticks()
-    # Customize the tick parameters for the colorbar
-    cbar.ax.tick_params(labelsize=14, rotation=0)
-
-    # Use scientific notation for the colorbar labels
-    formatter = ScalarFormatter(useMathText=True)
-    formatter.set_powerlimits((-2, 2))
-    cbar.ax.yaxis.set_major_formatter(formatter)
-
-    # Set the title for the plot
-    ax.set_title(title, fontsize=16)
-
-    # Plot the contour lines on top of the filled contours
-    contour = ax.contour(lon, lat, data, levels=levels[::contoursettings[0]], colors=contoursettings[1], linewidths=contoursettings[2], transform=ccrs.PlateCarree(), zorder=1)
-    # Add the land feature with a higher zorder
-    ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
-    # Add the coastline with a higher zorder
-    ax.add_feature(cfeature.COASTLINE, zorder=3, color='0.5', linewidth=0.5)
-    # Set the geographical extent of the plot
-    ax.set_extent([min_lon, max_lon, min_lat, max_lat])
-    # Add custom markers or labels (Tromsø, methane seeps, etc.)
-    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=ccrs.PlateCarree())
-    ax.text(19.0553, 69.58006, 'Tromsø', transform=ccrs.PlateCarree(), color='white', fontsize=12)
-    #ax.plot(14.29, 68.9179949, marker='o', color='white', markersize=4, transform=ccrs.PlateCarree())
-    #ax.text(14.39, 68.8479949, 'Methane seeps', transform=ccrs.PlateCarree(), color='white', fontsize=12)
-
-    # Add gridlines
-    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=0.5, color='white', alpha=0.5, linestyle='--')
-    gl.top_labels = True
-    gl.left_labels = True
-    gl.xlabel_style = {'size': 14}
-    gl.ylabel_style = {'size': 14}
-
-    # Get the position of ax
-    pos = ax.get_position()
-
-    if plot_progress_bar == True:
-        ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-        fig.subplots_adjust(hspace=0.2)
-        # Set the position of ax2 to match the width of ax
+    
+    if kwargs.get('plot_progress_bar', True):
+        ax2 = plt.subplot(gs[1])
+        pos = ax.get_position()
+        bar_position = kwargs.get('bar_position', [0.195,0.12,0.54558,0.03])
         ax2.set_position([pos.x0, bar_position[1], pos.width, bar_position[3]])
-        ax2.set_xlim(0, timepassed[1])  # Set the limits to match the number of time steps
         ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
-        ax2.set_yticks([])  # Hide the y-axis ticks
-        ax2.set_xticks([0, timepassed[1]])  # Set the x-axis ticks at the start and end
-        ax2.set_xticklabels([starttimestring, endtimestring], fontsize=16)  # Set the x-axis tick labels to the start and end time
-
-    #Include model domain rectangle if plot_model_domain is True
-    if plot_model_domain != False:
-        # Create a rectangle to show the model domain using the plot_model_domain input [min_lon,max_lon,min_lat,max_lat,linewidth,color]
-        rect = patches.Rectangle((plot_model_domain[0], plot_model_domain[2]), plot_model_domain[1]-plot_model_domain[0], plot_model_domain[3]-plot_model_domain[2], linewidth=plot_model_domain[4], edgecolor=plot_model_domain[5], facecolor='none', transform=ccrs.PlateCarree())
-        ax.add_patch(rect)
-
-    if savefile_path:
-        plt.savefig(savefile_path, dpi=dpi, transparent=False, bbox_inches='tight')
-    if show:
+        ax2.set_yticks([])
+        ax2.set_xticks([0, timepassed[1]])
+        ax2.set_xticklabels([
+            kwargs.get('starttimestring', 'May 20, 2021'),
+            kwargs.get('endtimestring', 'May 20, 2021')
+        ], fontsize=16)
+    
+    # Save/show plot
+    if 'savefile_path' in kwargs:
+        plt.savefig(kwargs['savefile_path'],
+                   dpi=kwargs.get('dpi', 150),
+                   bbox_inches='tight')
+    if kwargs.get('show', False):
         plt.show()
-
+    
     return fig
 
 def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
@@ -1367,6 +1340,104 @@ def _process_window_statistics(data_subset, subset_counts, pad_size, window_size
 def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_padded,
                               window_size, pad_size, stats_threshold,
                               silverman_coeff, silverman_exponent, dxy_grid):
+    """
+    Compute adaptive bandwidths for all windows with integrated statistics processing
+    
+    Parameters:
+    -----------
+    preGRID_active_padded : np.ndarray
+        Padded grid of active particles
+    preGRID_active_counts_padded : np.ndarray
+        Padded grid of particle counts
+    window_size : int
+        Size of the processing window
+    pad_size : int
+        Size of padding around the grid
+    stats_threshold : float
+        Threshold for statistical calculations
+    silverman_coeff : float
+        Coefficient for Silverman's rule
+    silverman_exponent : float
+        Exponent for Silverman's rule
+    dxy_grid : float
+        Grid spacing
+    """
+    # Convert to float64 and ensure contiguous
+    preGRID_active_padded = np.ascontiguousarray(preGRID_active_padded.astype(np.float64))
+    preGRID_active_counts_padded = np.ascontiguousarray(preGRID_active_counts_padded.astype(np.float64))
+    
+    shape = preGRID_active_padded.shape
+    std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size), dtype=np.float64)
+    N_eff = np.zeros_like(std_estimate)
+    h_matrix_adaptive = np.zeros_like(std_estimate)
+    integral_length_scale_matrix = np.zeros_like(std_estimate)
+    
+    # Main processing loop with parallel support
+    for row in prange(pad_size, shape[0]-pad_size):
+        for col in range(pad_size, shape[1]-pad_size):
+            if preGRID_active_counts_padded[row, col] > 0:
+                # Extract data subset
+                data_subset = preGRID_active_padded[
+                    row-pad_size:row+pad_size+1,
+                    col-pad_size:col+pad_size+1
+                ]
+                subset_counts = preGRID_active_counts_padded[
+                    row-pad_size:row+pad_size+1,
+                    col-pad_size:col+pad_size+1
+                ]
+                
+                # Skip if center cell is empty
+                if data_subset[pad_size,pad_size] == 0:
+                    continue
+                
+                # Normalize data
+                total_sum = np.sum(data_subset)
+                if total_sum > 0:
+                    data_subset = (data_subset/total_sum)*subset_counts
+                
+                row_idx = row - pad_size
+                col_idx = col - pad_size
+                
+                # Process statistics
+                total_counts = np.sum(subset_counts)
+                if total_counts < stats_threshold:
+                    # Simple estimators for low particle counts
+                    std = window_size/2
+                    n_eff = np.sum(data_subset)/window_size
+                    integral_length_scale = window_size
+                else:
+                    # Full statistical analysis
+                    # Calculate standard deviation
+                    std = histogram_std(data_subset, None, 1)
+                    
+                    # Calculate autocorrelation
+                    autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
+                    autocorr = (autocorr_rows + autocorr_cols) / 2
+                    
+                    # Calculate integral length scale
+                    if autocorr.any():
+                        non_zero_idx = np.where(autocorr != 0)[0][0]
+                        integral_length_scale = np.sum(autocorr) / autocorr[non_zero_idx]
+                    else:
+                        integral_length_scale = 0.000001
+                    
+                    n_eff = np.sum(data_subset) / integral_length_scale
+                
+                # Calculate bandwidth using Silverman's rule
+                h = np.sqrt((silverman_coeff * n_eff**(-silverman_exponent)) * std) * dxy_grid
+                
+                # Store results
+                std_estimate[row_idx, col_idx] = std
+                N_eff[row_idx, col_idx] = n_eff
+                integral_length_scale_matrix[row_idx, col_idx] = integral_length_scale
+                h_matrix_adaptive[row_idx, col_idx] = h
+    
+    return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
+
+@jit(nopython=True, parallel=True)
+def compute_adaptive_bandwidths_old(preGRID_active_padded, preGRID_active_counts_padded,
+                              window_size, pad_size, stats_threshold,
+                              silverman_coeff, silverman_exponent, dxy_grid):
     """Compute adaptive bandwidths for all windows"""
     shape = preGRID_active_padded.shape
     std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size))
@@ -1401,6 +1472,31 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
                 h_matrix_adaptive[row_idx, col_idx] = h
     
     return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
+
+
+def load_variable(args):
+    """Helper function to load a single variable"""
+    var_name, variable = args
+    return var_name, variable[:]
+
+def load_netcdf_optimized(datapath):
+    """Optimized loading of NetCDF data"""
+    # Open dataset with memory mapping
+    ODdata = nc.Dataset(datapath, 'r', mmap=True)
+    print('Loading all data into memory from nc file...')
+    
+    # Initialize dictionary
+    particles_all_data = {}
+    
+    # Load variables with progress bar
+    for var_name in tqdm(ODdata.variables, desc="Loading variables"):
+        particles_all_data[var_name] = ODdata.variables[var_name][:].copy()
+    
+    # Add UTM coordinates
+    particles_all_data = add_utm(particles_all_data)
+    print('Data loaded from nc file.')
+    
+    return particles_all_data
 
 
 #################################
@@ -1805,6 +1901,9 @@ if run_all == True:
         if kkk==1:         
             ### Load all data into memory ###
             if load_from_nc_file == True:
+                #import multiprocessing as mp
+                #from tqdm import tqdm
+                #particles_all_data = load_netcdf_optimized(datapath)
                 ODdata = nc.Dataset(datapath, 'r', mmap=True)
                 print('Loading all data into memory from nc file...')
                 particles_all_data = {}
@@ -1888,6 +1987,9 @@ if run_all == True:
         deactivated_indices = np.where((particles['z'][:,1].mask == True) & 
                                     (particles['z'][:,0].mask == False))[0]
 
+        #make sure deactivated_indices is int
+        deactivated_indices = deactivated_indices.astype(np.int64)
+
         # Only process if we have deactivated particles
         if deactivated_indices.size > 0:
             particles_mass_died[kkk] = np.sum(particles['weight'][deactivated_indices,0])  # Use previous timestep weights
@@ -1910,7 +2012,7 @@ if run_all == True:
 
         #Mask all particles that are outside the grid
         particles['z'][outside_grid,1].mask = True
-        particles_mass_out[kkk] = np.sum(particles['z'][outside_grid,1])
+        particles_mass_out[kkk] = np.sum(particles['weight'][outside_grid,1])
         particles['weight'][outside_grid,1].mask = True
         particles['bw'][outside_grid,1].mask = True
         particles['UTM_x'][outside_grid,1].mask = True
@@ -1929,8 +2031,10 @@ if run_all == True:
 
         # Add new outside_grid particles to particles_that_left
         if outside_grid.size > 0:
-            particles_that_left = np.unique(np.concatenate((particles_that_left, outside_grid)))
-        
+            # Ensure outside_grid is integer type
+            outside_grid = outside_grid.astype(np.int64)
+            # Concatenate and maintain integer type
+            particles_that_left = np.unique(np.concatenate((particles_that_left, outside_grid))).astype(np.int64)
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
@@ -2063,8 +2167,8 @@ if run_all == True:
             #DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER#
             #-----------------------------------------------------------#
 
-            #Define GRID_active by decompressing GRID[j][i][:,:] 
-            GRID_active = GRID[kkk][i][:,:].toarray()
+            #Define GRID_active by creating a zero matrix of same size as the grid
+            GRID_active = np.zeros((len(bin_x),len(bin_y)))
 
             #Define active particle matrix in depth layer i
             parts_active_z = [parts_active[0][change_indices[i]:change_indices[i+1]+1],
@@ -2104,6 +2208,7 @@ if run_all == True:
             #-------------------------------------#
 
             if kde_all == True or i==0: #dont bother with the kde if there are no particles in the depth layer
+                #print('Doing kde for depth layer',i)
                 ### THIS IS THE OLD WAY OF DOING IT ###            
                 #ols_GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
                                             #parts_active_z[1],
@@ -2159,9 +2264,9 @@ if run_all == True:
                     #store the time it took to calculate the kde 
                     kde_time_vector[kkk] = elapsed_time
    
-                #############################
-                ### Using local Silverman ###
-                #############################
+                ##############################################
+                ### Using local Silverman AKA Adaptive KDE ###
+                ##############################################
                 
                 if h_adaptive == 'Local_Silverman' and preGRID_active.any():
                     start_time = time.time()
@@ -2182,6 +2287,7 @@ if run_all == True:
                         window_size += 1
                     
                     pad_size = window_size//2
+
                     
                     # Pad arrays
                     preGRID_active_padded = np.pad(preGRID_active, pad_size, mode='reflect')
@@ -2193,10 +2299,11 @@ if run_all == True:
                         window_size, pad_size, (window_size**2)/2,
                         silverman_coeff, silverman_exponent, dxy_grid
                     )
-                    
-                    # Compute summary statistics
-                    h_values_full[kkk,i] = np.mean(h_matrix_adaptive[h_matrix_adaptive>0])
-                    h_values_std_full[kkk,i] = np.std(h_matrix_adaptive[h_matrix_adaptive>0])
+
+                    # Get summary statistics if the matrix is not empty
+                    if h_matrix_adaptive.any():
+                        h_values_full[kkk,i] = np.mean(h_matrix_adaptive[h_matrix_adaptive>0])
+                        h_values_std_full[kkk,i] = np.std(h_matrix_adaptive[h_matrix_adaptive>0])
                     #plt.hist(h_matrix_adaptive[h_matrix_adaptive>0].flatten(),bins=50)
                     #plt.show()
                     #plt.close()
@@ -2213,14 +2320,14 @@ if run_all == True:
                                                 preGRID_active,
                                                 gaussian_kernels,
                                                 gaussian_bandwidths_h,
-                                                h_matrix_adaptive,
+                                                h_matrix_adaptive*0.5, #because it's symmetric
                                                 illegal_cells = illegal_cells[:,:,i])
 
                     end_time = time.time()
                     elapsed_time = end_time - start_time
                     kde_time_vector[kkk] = elapsed_time
                     
-                    #make a plot if kkk is modulus 20
+                    #make a plot if kkk is modulus 50
                     if kkk % 50 == 0:
                         plt.figure()
                         plt.subplot(1,2,1)
@@ -2244,41 +2351,35 @@ if run_all == True:
                 elif run_full == True:
                     GRID_active = GRID_active/V_grid
 
-                #----------------------------#
-                #PLOT THE CONCENTRATION FIELD#
-                #----------------------------#
+                print("\nMemory state:")
+                print(f"Is GRID[{kkk}][{i}] None? {GRID[kkk][i] is None}")
+                print(f"GRID[{kkk}][{i}] reference count: {sys.getrefcount(GRID[kkk][i]) if GRID[kkk][i] is not None else 'N/A'}")
+                
+                # Force garbage collection
+                import gc
+                gc.collect()
+                
+                print("\nDetailed reference tracking:")
+                
+                # Create sparse matrix
+                sparse_matrix = csr_matrix(GRID_active)
+                print(f"1. New sparse matrix id: {id(sparse_matrix)}")
+                print(f"   Reference count: {sys.getrefcount(sparse_matrix)}")
+                
+                # Assign to GRID
+                GRID[kkk][i] = sparse_matrix
+                print(f"\n2. GRID[{kkk}][{i}] id: {id(GRID[kkk][i])}")
+                print(f"   Reference count: {sys.getrefcount(GRID[kkk][i])}")
+                
+                # Delete original reference
+                del sparse_matrix
+                print(f"\n3. Final reference count: {sys.getrefcount(GRID[kkk][i])}")
 
-                bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
-                #and for GRID_active
-                images_conc = []
-                levels_atm = np.linspace(0, 5*10**-9, 8)
-                time_steps = len(bin_time)
-        
-                ### PLOTTING ###
-                if plotting == True:
-                    images_conc = []
-                    for n in range(1,148):
-                        GRID_active = np.zeros(GRID_active.shape)
-                        tmp = GRID[n]
-                        for i in range(0,11):
-                            GRID_active = GRID_active + tmp[n][:,:].toarray()
-                        
-                            plot_2d_data_map_loop(data = GRID_active.T*10**12,#converting to nmol/kg
-                                            lon = lon_mesh,
-                                            lat = lat_mesh,
-                                            projection = ccrs.PlateCarree(),
-                                            levels = levels_atm,
-                                            timepassed = [1,time_steps],
-                                            colormap = colormap,
-                                            title = 'Concentration in surface layer [nmol/kg]',
-                                            unit = 'nmol/kg',
-                                            savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\concentration\\create_gif\\concentration'+str(kkk)+'.png',
-                                            show = False,
-                                            dpi = 90)
-                            
-                            #add the figure to the list of images
-                            images_conc.append(imageio.imread(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration'+str(j)+'.png'))
-                            plt.close(fig)
+                GRID_top[kkk,:,:] = GRID_active
+                integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
+                standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
+                GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop. MOx in each layer
+                total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
 
                 #-------------------------------#
                 #CALCULATE ATMOSPHERIC FLUX/LOSS#
@@ -2303,30 +2404,6 @@ if run_all == True:
                     GRID_stds[kkk,:,:] = std_estimate
                     GRID_neff[kkk,:,:] = N_eff
 
-                #-----------------------------------------#
-                #CALCULATE LOSS DUE TO MICROBIAL OXIDATION#
-                #-----------------------------------------#
-
-                #Half life rates with sources per day:
-                # 0.0014 Steinle et all., 2016 in North sea, 10 degrees
-                # 0.05 Mau et al., 2017 West of Svalbard
-                # <0.085 Gr~undker et al., 2021
-                
-                #0.02/(3600*24)
-                #use just e-7 per second, that's kind of in the middle of the pack
-                #R_ox = (10**-7) #half life per second
-                #R_ox = (10**-7)*3600 #half life per hour
-                #Store the active grid into the GRID sparse matrix
-                GRID[kkk][i]=csr_matrix(GRID_active)
-                integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
-                standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
-
-                GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop
-                #need this to adjust the weights for next loop
-                #GRID_active = GRID_active - GRID_mox[kkk,:,:] #I adjust the weights instead. 
-                total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
-                #update the weights of the particles due to microbial oxidation is done globally at each timestep since
-                #the loss is not dependent on the depth layer (this is more efficient)
         end_time_full = time.time()
         elapsed_time_full = end_time_full - start_time_full
         elapsed_time_timestep[kkk] = elapsed_time_full
@@ -2462,7 +2539,7 @@ time_steps = 1495
 do = False
 if do == True:
     for i in range(twentiethofmay,time_steps,1):
-        fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
+        fig = plot_2d_data_map_loop(data=GRID_generic[800, :, :].T,
                                     lon=lon_mesh,
                                      lat=lat_mesh,
                                     projection=projection,
@@ -2598,14 +2675,18 @@ ax2.set_ylabel('mol hr{^-1}')
 ax2.grid(True, alpha=0.3)
 
 # Plot 3: Total particles
-ax3.plot(times_totatm[twentiethofmay:time_steps], total_parts[twentiethofmay:time_steps], color='green')
-ax3.set_title('Total Number of Particles')
+ax3.plot(times_totatm[twentiethofmay:time_steps], particles_mass_out[twentiethofmay:time_steps], color='green')
+ax3.set_title('mol hr{^-1}')
 ax3.set_xlabel('Timestep')
 ax3.set_ylabel('Number of Particles')
 ax3.grid(True, alpha=0.3)
 
 # Remove the fourth subplot
-ax4.remove()
+ax4.plot(times_totatm[twentiethofmay:time_steps], particles_mass_died[twentiethofmay:time_steps], color='green')
+ax4.set_title('mol hr{^-1}')
+ax4.set_xlabel('Timestep')
+ax4.set_ylabel('Number of Particles')
+ax4.grid(True, alpha=0.3)
 
 fig = plt.figure(figsize=(16, 10))
 ax = fig.add_subplot(1, 1, 1)

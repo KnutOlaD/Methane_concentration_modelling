@@ -38,6 +38,7 @@ from numba import jit, prange
 import numpy.ma as ma
 from pyproj import Proj, Transformer
 import  xarray as xr
+import gc
 
 ############################
 ###DEFINE SOM COOL COLORS###
@@ -234,34 +235,7 @@ def create_grid(time,
                              np.max(time)+grid_temporal_resolution,
                              grid_temporal_resolution)
     
-    #Loop over all time steps and depth levels and create a sparse matrix for each
-    GRID = []
-    #GRID.append([])
-    for i in range(0,bin_time.shape[0]):
-        #Create a sparse matrix for each depth level and timestep
-        print(i)
-        GRID.append([])
-        #Bin all the particles at time j into different depth levels
-        for j in range(0,bin_z.shape[0]):
-            #Create a sparse matrix for each time step
-            GRID[i].append([])
-            #Create a sparse matrix for each depth level
-            GRID[i][j] = csr_matrix(H_0)
-            #if fill_data == True:
-                #Bin the particles in the first time step and depth level to the grid
-                #Binned x coordinates:
-                #x = UTM_x[z_indices == i,j]
-                #Binned y coordinates:
-                #y = UTM_y[z_indices == i,j]
-                #Find the index locations of the x and y coordinates
-                #x_indices = np.digitize(x,bin_x)
-                #y_indices = np.digitize(y,bin_y)
-                #Create a horizontal field with the same size as the grid and fill with the 
-                #horizontal coordinates, adding up duplicates in the x_indices/y_indices list
-                #Find duplicates in the x_indices/y_indices list
-                #x_indices_unique = np.unique(x_indices)
-            #else:
-    
+   
     if savefile_path == True:
         #save the grid object as a pickle file for later use
         #filename
@@ -269,7 +243,7 @@ def create_grid(time,
         with open('grid_object.pickle', 'wb') as f:
             pickle.dump(GRID, f)
     
-    return GRID,bin_x,bin_y,bin_z,bin_time
+    return bin_x,bin_y,bin_z,bin_time
 
 ###########################################################################################
 
@@ -815,130 +789,225 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
 
     return GRID_active
 
-
 from matplotlib.colors import LogNorm
 from matplotlib.ticker import MaxNLocator, ScalarFormatter, LogLocator
 import matplotlib.patches as patches
 
-def plot_2d_data_map_loop(data,
-                          lon,
-                          lat,
-                          projection,
-                          levels,
-                          timepassed,
-                          colormap,
-                          title,
-                          unit,
-                          savefile_path=False,
-                          show=False,
-                          adj_lon = [0,0],
-                          adj_lat = [0,0],
-                          bar_position = [0.195,0.12,0.54558,0.03],
-                          dpi=150,
-                          log_scale=False,
-                          figuresize=[14,10],
-                          starttimestring='May 20, 2021',
-                          endtimestring='May 20, 2021',
-                          maxnumticks = 10,
-                          plot_progress_bar = True,
-                          plot_model_domain = False,
-                          contoursettings = [2,'0.8',0.1]):
-    '''
-    Plots 2d data on a map with time progression bar.
+# Cache features for reuse
+_CACHED_FEATURES = {}
 
-    Input:
-    data: 2d data
-    lon: longitude
-    lat: latitude
-    timepassed: i and length of time vector
-    projection: projection
-    levels: levels for the contour plot
-    colormap: colormap
-    title: title of the plot
-    unit: unit of the data
-    savefile_path: path to where the plot should be saved
-    show: boolean. If True, the plot will be shown
-    adj_lon: adjustment of the longitude extent
-    adj_lat: adjustment of the latitude extent
-    bar_position: position of the time progression bar
-    dpi: dpi of the plot
-    log_scale: boolean. If True, the colorbar will be logarithmic, uses min/max of levels input
-    figuresize: size of the figure
-    plot_model_domain: [min_lon,max_lon,min_lat,max_lat,linewidth,color] for the model domain
-    contoursettings = [contourfrac,contourcolor,contourlinewidth] for the contour lines
+def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
+                         colormap, title, unit, **kwargs):
 
-    Output:
-    fig: figure object
-    '''
+    """
+    Creates a map visualization with contours, colorbar, and time progression.
 
+    Parameters
+    ----------
+    data : np.ndarray
+        2D array containing the data to plot
+    lon : np.ndarray
+        1D or 2D array of longitude coordinates
+    lat : np.ndarray
+        1D or 2D array of latitude coordinates
+    projection : cartopy.crs
+        Map projection to use
+    levels : np.ndarray
+        Contour levels for the plot
+    timepassed : list
+        [current_time, total_time] for progress bar
+    colormap : str or matplotlib.colors.Colormap
+        Colormap for the contour plot
+    title : str
+        Plot title
+    unit : str
+        Units for colorbar label
+    **kwargs : dict
+        Optional parameters:
+            savefile_path : str
+                Path to save the figure
+            show : bool
+                Whether to display the plot
+            adj_lon : list [float, float]
+                [min, max] longitude adjustments
+            adj_lat : list [float, float]
+                [min, max] latitude adjustments
+            bar_position : list [float, float, float, float]
+                [x, y, width, height] for progress bar
+            dpi : int
+                DPI for saved figure
+            log_scale : bool
+                Use logarithmic color scale
+            figuresize : list [float, float]
+                Figure dimensions in inches
+            plot_model_domain : list
+                [min_lon, max_lon, min_lat, max_lat, linewidth, color]
+            contoursettings : list
+                [stride, color, linewidth] for contour lines
+            maxnumticks : int
+                Maximum number of colorbar ticks
+            starttimestring : str
+                Start time label
+            endtimestring : str
+                End time label
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure object
+    """
+
+    # Input validation
+    if not isinstance(data, np.ndarray) or data.ndim != 2:
+        raise ValueError("Data must be 2D numpy array")
     
-    # Cache transformed coordinates
+    # Clear previous plots and collect garbage
+    plt.close('all')
+    gc.collect()
+
+    # Cache common values and pre-compute bounds
     if np.shape(lon) != np.shape(data):
         lon, lat = np.meshgrid(lon, lat)
     
-    # Create figure only once
-    fig = plt.figure(figsize=kwargs.get('figuresize', [14, 10]))
+    lon_bounds = np.min(lon), np.max(lon)
+    lat_bounds = np.min(lat), np.max(lat)
+    
+    # Pre-calculate map extent with adjustments
+    adj_lon = kwargs.get('adj_lon', [0, 0])
+    adj_lat = kwargs.get('adj_lat', [0, 0])
+    extent = [
+        lon_bounds[0] + adj_lon[0],
+        lon_bounds[1] + adj_lon[1],
+        lat_bounds[0] + adj_lat[0],
+        lat_bounds[1] + adj_lat[1]
+    ]
+    
+    # Setup figure
+    figsize = kwargs.get('figuresize', [14, 10])
+    fig = plt.figure(figsize=figsize)
     gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
     ax = fig.add_subplot(gs[0], projection=projection)
     
-    # Pre-transform coordinates
-    transformed_coords = ccrs.PlateCarree().transform_points(
-        projection, lon, lat
-    )
+    # Process data for log scale
+    log_scale = kwargs.get('log_scale', False)
+    if log_scale:
+        data = np.ma.masked_invalid(data)
+        positive_levels = levels[levels > 0]
+        if len(positive_levels) > 0:
+            min_level = np.min(positive_levels)
+            max_level = np.max(levels)
+            num_levels = len(levels)
+            levels = np.logspace(np.log10(min_level), np.log10(max_level), num_levels)
+            norm = LogNorm(vmin=min_level, vmax=max_level)
+            masked_data = np.ma.masked_less_equal(data, 0)
+        else:
+            log_scale = False
+            
+    # Cache transform
+    transform = ccrs.PlateCarree()
     
     # Optimize contour plotting
-    if kwargs.get('log_scale', False):
-        norm = LogNorm(vmin=np.min(levels), vmax=np.max(levels))
-        contourf = ax.contourf(lon, lat, data, 
-                             levels=levels,
-                             cmap=colormap,
-                             norm=norm,
-                             transform=ccrs.PlateCarree(),
-                             zorder=0,
-                             extend='both')
-    else:
-        contourf = ax.contourf(lon, lat, data,
-                             levels=levels,
-                             cmap=colormap,
-                             transform=ccrs.PlateCarree(),
-                             zorder=0,
-                             extend='max')
+    contourf_kwargs = {
+        'transform': transform,
+        'zorder': 0,
+        'levels': levels,
+        'cmap': colormap
+    }
     
-    # Reduce gridline density
-    gl = ax.gridlines(crs=ccrs.PlateCarree(),
-                     draw_labels=False,
-                     linewidth=0.5,
-                     color='white',
-                     alpha=0.5,
-                     linestyle='--',
-                     xlocs=np.linspace(lon.min(), lon.max(), 5),
-                     ylocs=np.linspace(lat.min(), lat.max(), 5))
-    
-    # Add essential features only
-    ax.add_feature(cfeature.LAND, facecolor='0.2', zorder=2)
-    ax.add_feature(cfeature.COASTLINE, zorder=3, color='0.5', linewidth=0.5)
-    
+    try:
+        if log_scale:
+            contourf_kwargs.update({'norm': norm, 'extend': 'both'})
+            contourf = ax.contourf(lon, lat, masked_data, **contourf_kwargs)
+        else:
+            contourf_kwargs['extend'] = 'max'
+            contourf = ax.contourf(lon, lat, data, **contourf_kwargs)
+    except ValueError as e:
+        raise ValueError(f"Contour plotting failed: {str(e)}")
+
     # Optimize colorbar
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(unit, fontsize=16)
     
+    maxnumticks = kwargs.get('maxnumticks', 10)
+    if log_scale:
+        cbar.set_ticks(levels)
+        cbar.locator = LogLocator(base=10.0, subs='auto', numticks=maxnumticks)
+    else:
+        cbar.locator = MaxNLocator(nbins=maxnumticks)
+    
+    # Batch colorbar updates
+    with plt.style.context({'text.usetex': False}):
+        cbar.formatter = ScalarFormatter(useMathText=True)
+        cbar.formatter.set_powerlimits((-2, 2))
+        cbar.update_ticks()
+        cbar.ax.tick_params(labelsize=14, rotation=0)
+    
+    # Add features with caching
+    def get_cached_feature(name):
+        if name not in _CACHED_FEATURES:
+            _CACHED_FEATURES[name] = getattr(cfeature, name)
+        return _CACHED_FEATURES[name]
+    
+    ax.set_title(title, fontsize=16)
+    ax.add_feature(get_cached_feature('LAND'), facecolor='0.2', zorder=2)
+    ax.add_feature(get_cached_feature('COASTLINE'), zorder=3, color='0.5', linewidth=0.5)
+    
+    ax.set_extent(extent)
+    
+    # Custom markers (cached transform)
+    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=transform)
+    ax.text(19.0553, 69.58006, 'Tromsø', transform=transform, color='white', fontsize=12)
+    
+    # Efficient gridlines
+    gl = ax.gridlines(crs=transform, draw_labels=False, linewidth=0.5, 
+                     color='white', alpha=0.5, linestyle='--')
+    gl.top_labels = True
+    gl.left_labels = True
+    gl.xlabel_style = {'size': 14}
+    gl.ylabel_style = {'size': 14}
+    
+    # Progress bar
     if kwargs.get('plot_progress_bar', True):
-        ax2 = plt.subplot(gs[1])
         pos = ax.get_position()
-        bar_position = kwargs.get('bar_position', [0.195,0.12,0.54558,0.03])
-        ax2.set_position([pos.x0, bar_position[1], pos.width, bar_position[3]])
-        ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], color='grey')
+        # Adjust bar position to align with plot edges
+        bar_position = kwargs.get('bar_position', [pos.x0, 0.12, pos.width, 0.03])
+        
+        ax2 = plt.subplot(gs[1])
+        ax2.set_position([bar_position[0], bar_position[1], 
+                        bar_position[2], bar_position[3]])
+        
+        # Ensure progress bar starts at left edge
+        ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], 
+                        color='grey')
         ax2.set_yticks([])
+        
+        # Align tick marks with bar edges
         ax2.set_xticks([0, timepassed[1]])
+        ax2.set_xlim(0, timepassed[1])  # Force alignment
+        
         ax2.set_xticklabels([
             kwargs.get('starttimestring', 'May 20, 2021'),
             kwargs.get('endtimestring', 'May 20, 2021')
         ], fontsize=16)
+    # Model domain
+    plot_model_domain = kwargs.get('plot_model_domain', False)
+    if plot_model_domain:
+        rect = patches.Rectangle(
+            (plot_model_domain[0], plot_model_domain[2]),
+            plot_model_domain[1] - plot_model_domain[0],
+            plot_model_domain[3] - plot_model_domain[2],
+            linewidth=plot_model_domain[4],
+            edgecolor=plot_model_domain[5],
+            facecolor='none',
+            transform=transform
+        )
+        ax.add_patch(rect)
     
-    # Save/show plot
-    if 'savefile_path' in kwargs:
-        plt.savefig(kwargs['savefile_path'],
+    # Save/show
+    if savefile_path := kwargs.get('savefile_path', False):
+        plt.savefig(savefile_path, 
                    dpi=kwargs.get('dpi', 150),
+                   transparent=False,
                    bbox_inches='tight')
     if kwargs.get('show', False):
         plt.show()
@@ -1362,17 +1431,15 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
     dxy_grid : float
         Grid spacing
     """
-    # Convert to float64 and ensure contiguous
-    preGRID_active_padded = np.ascontiguousarray(preGRID_active_padded.astype(np.float64))
-    preGRID_active_counts_padded = np.ascontiguousarray(preGRID_active_counts_padded.astype(np.float64))
-    
+        
+    # Type and shape checking
     shape = preGRID_active_padded.shape
     std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size), dtype=np.float64)
     N_eff = np.zeros_like(std_estimate)
     h_matrix_adaptive = np.zeros_like(std_estimate)
     integral_length_scale_matrix = np.zeros_like(std_estimate)
     
-    # Main processing loop with parallel support
+    # Main processing loop
     for row in prange(pad_size, shape[0]-pad_size):
         for col in range(pad_size, shape[1]-pad_size):
             if preGRID_active_counts_padded[row, col] > 0:
@@ -1390,41 +1457,38 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
                 if data_subset[pad_size,pad_size] == 0:
                     continue
                 
-                # Normalize data
+                # Protect against zero division in normalization
                 total_sum = np.sum(data_subset)
                 if total_sum > 0:
                     data_subset = (data_subset/total_sum)*subset_counts
+                else:
+                    continue
                 
                 row_idx = row - pad_size
                 col_idx = col - pad_size
                 
-                # Process statistics
+                # Process statistics with zero protection
                 total_counts = np.sum(subset_counts)
                 if total_counts < stats_threshold:
-                    # Simple estimators for low particle counts
                     std = window_size/2
-                    n_eff = np.sum(data_subset)/window_size
+                    n_eff = np.sum(data_subset)/max(window_size, 1e-10)
                     integral_length_scale = window_size
                 else:
-                    # Full statistical analysis
-                    # Calculate standard deviation
-                    std = histogram_std(data_subset, None, 1)
+                    std = max(histogram_std(data_subset, None, 1), 1e-10)
                     
-                    # Calculate autocorrelation
                     autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
                     autocorr = (autocorr_rows + autocorr_cols) / 2
                     
-                    # Calculate integral length scale
                     if autocorr.any():
-                        non_zero_idx = np.where(autocorr != 0)[0][0]
-                        integral_length_scale = np.sum(autocorr) / autocorr[non_zero_idx]
+                        first_nonzero = autocorr[np.nonzero(autocorr)[0][0]]
+                        integral_length_scale = np.sum(autocorr) / max(first_nonzero, 1e-10)
                     else:
-                        integral_length_scale = 0.000001
+                        integral_length_scale = 1e-10
                     
-                    n_eff = np.sum(data_subset) / integral_length_scale
+                    n_eff = np.sum(data_subset) / max(integral_length_scale, 1e-10)
                 
-                # Calculate bandwidth using Silverman's rule
-                h = np.sqrt((silverman_coeff * n_eff**(-silverman_exponent)) * std) * dxy_grid
+                # Calculate bandwidth with protection
+                h = np.sqrt((silverman_coeff * max(n_eff, 1e-10)**(-silverman_exponent)) * std) * dxy_grid
                 
                 # Store results
                 std_estimate[row_idx, col_idx] = std
@@ -1614,7 +1678,7 @@ if run_test == True:
                                                 savefile_path=False,
                                                 resolution=np.array([dxy_grid,dz_grid]))
 elif run_full == True:
-    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['timefull']),np.nan),
+    bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['timefull']),np.nan),
                                                 [np.max([100000-dxy_grid-1,minUTMxminUTMy[0]]),np.min([1000000-dxy_grid-1,maxUTMxmaxUTMy[0]])],
                                                 [np.max([dxy_grid+1,minUTMxminUTMy[1]]),np.min([10000000-dxy_grid-1,maxUTMxmaxUTMy[1]])],
                                                 maxdepth+25,
@@ -1638,10 +1702,6 @@ particles_mox_loss = np.zeros((len(bin_time)))
 particles_mass_out = np.zeros((len(bin_time)))
 #Mass lost to killing of particles
 particles_mass_died = np.zeros((len(bin_time)))
-#local integral length scale
-integral_length_scale_windows = GRID
-#local std
-standard_deviations_windows = GRID
 
 #Create coordinates for plotting
 bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
@@ -1885,6 +1945,19 @@ GRID_neff = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 
 #Particles that left the domain vector
 particles_that_left = np.array([])
+
+num_timesteps = time_steps_full
+num_layers = len(bin_z)
+
+# Initialize GRID as nested list with proper dimensions
+GRID = [[None for _ in range(num_layers)] for _ in range(num_timesteps)]
+
+#local integral length scale
+integral_length_scale_windows = GRID
+#local std
+standard_deviations_windows = GRID
+#local neff
+neff_windows = GRID
 
 if run_all == True:
 
@@ -2320,7 +2393,7 @@ if run_all == True:
                                                 preGRID_active,
                                                 gaussian_kernels,
                                                 gaussian_bandwidths_h,
-                                                h_matrix_adaptive*0.5, #because it's symmetric
+                                                h_matrix_adaptive, #because it's symmetric
                                                 illegal_cells = illegal_cells[:,:,i])
 
                     end_time = time.time()
@@ -2350,30 +2423,12 @@ if run_all == True:
                     GRID_active = diag_rm_mat*(GRID_active/V_grid) #Dividing by V_grid to get concentration in mol/m^3
                 elif run_full == True:
                     GRID_active = GRID_active/V_grid
-
-                print("\nMemory state:")
-                print(f"Is GRID[{kkk}][{i}] None? {GRID[kkk][i] is None}")
-                print(f"GRID[{kkk}][{i}] reference count: {sys.getrefcount(GRID[kkk][i]) if GRID[kkk][i] is not None else 'N/A'}")
-                
-                # Force garbage collection
-                import gc
-                gc.collect()
-                
-                print("\nDetailed reference tracking:")
                 
                 # Create sparse matrix
                 sparse_matrix = csr_matrix(GRID_active)
-                print(f"1. New sparse matrix id: {id(sparse_matrix)}")
-                print(f"   Reference count: {sys.getrefcount(sparse_matrix)}")
-                
                 # Assign to GRID
                 GRID[kkk][i] = sparse_matrix
-                print(f"\n2. GRID[{kkk}][{i}] id: {id(GRID[kkk][i])}")
-                print(f"   Reference count: {sys.getrefcount(GRID[kkk][i])}")
-                
-                # Delete original reference
                 del sparse_matrix
-                print(f"\n3. Final reference count: {sys.getrefcount(GRID[kkk][i])}")
 
                 GRID_top[kkk,:,:] = GRID_active
                 integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
@@ -2435,9 +2490,9 @@ total_computation_time = end_time_whole_script-start_time_whole_script
 
 print(f"Full calculation time was: {total_computation_time}")
 
-if plotting == True:
+#if plotting == True:
     #create a gif from the images
-    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration.gif', images_conc, duration=0.5)
+#    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration.gif', images_conc, duration=0.5)
 
 #----------------------#
 #PICKLE FILES FOR LATER#
@@ -2469,6 +2524,31 @@ if fit_wind_data == True:
         pickle.dump(sst_interp, f)
     with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'wb') as f:
         pickle.dump(GRID_gt_vel, f)
+#and vectors for total values
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_mox.pickle', 'wb') as f:
+    pickle.dump(total_mox, f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_atm_flux.pickle', 'wb') as f:
+    pickle.dump(total_atm_flux, f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_died.pickle', 'wb') as f:
+    pickle.dump(particles_mass_died, f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_out.pickle', 'wb') as f:
+    pickle.dump(particles_mass_out, f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mox_loss.pickle', 'wb') as f:
+    pickle.dump(particles_mox_loss, f)
+#and number of particles
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_parts.pickle', 'wb') as f:
+    pickle.dump(total_parts, f)
+#and the bandwidths
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_full.pickle', 'wb') as f:
+    pickle.dump(h_values_full, f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_std_full.pickle', 'wb') as f:
+    pickle.dump(h_values_std_full, f)
+#and the integral length scales
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\integral_length_scale_full.pickle', 'wb') as f:
+    pickle.dump(integral_length_scale_full, f)
+#and the time it took to estimate the bandwidths
+
+
 #save a short textfile with the settings
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
     f.write('Settings for the test run\n')
@@ -2536,10 +2616,10 @@ times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_da
 twentiethofmay = 720
 time_steps = 1495
 
-do = False
+do = True
 if do == True:
     for i in range(twentiethofmay,time_steps,1):
-        fig = plot_2d_data_map_loop(data=GRID_generic[800, :, :].T,
+        fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
                                     lon=lon_mesh,
                                      lat=lat_mesh,
                                     projection=projection,

@@ -1574,3 +1574,236 @@ if not_now == 0:
             plt.title(f'Line from ({x0}, {y0}) to ({i}, {j})')
             plt.show()
     
+############################################################
+########### PLOT ILLUSTRATION OF GRID PROJECTION ###########
+############################################################
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+color_1 = '#7e1e9c'
+color_2 = '#014d4e'
+
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.titlesize': 14,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 14,
+    'ytick.labelsize': 14,
+    'legend.fontsize': 14
+})
+
+# Step 1: Generate random particles
+np.random.seed(42)
+num_particles = 50
+add_particles = 20
+x_positions = np.random.rand(num_particles) * 5
+y_positions = np.random.rand(num_particles) * 5
+#add some particles in the upper half of the plot
+x_positions = np.concatenate((x_positions, np.random.rand(add_particles) * 5))
+y_positions = np.concatenate((y_positions, np.random.rand(add_particles) * 5 + 2.5))
+#some more in the upper third
+x_positions = np.concatenate((x_positions, np.random.rand(add_particles) * 5))
+y_positions = np.concatenate((y_positions, np.random.rand(add_particles) * 5 + 3.3))
+
+num_particles = len(x_positions)
+
+weights = np.random.rand(num_particles) * 50  # Particle weights determine dot size
+
+# Step 2: Define the grid
+grid_size = (5, 5)  # NxM grid
+x_bins = np.linspace(0, 5, grid_size[0] + 1)
+y_bins = np.linspace(0, 5, grid_size[1] + 1)
+
+# Accumulate weights in the grid
+grid_weights = np.zeros(grid_size)
+particle_assignments = []  # Store grid cell assignments for each particle
+
+for x, y, w in zip(x_positions, y_positions, weights):
+    x_idx = np.digitize(x, x_bins) - 1
+    y_idx = np.digitize(y, y_bins) - 1
+    if 0 <= x_idx < grid_size[0] and 0 <= y_idx < grid_size[1]:
+        grid_weights[y_idx, x_idx] += w
+        particle_assignments.append((x_idx, y_idx))
+    else:
+        particle_assignments.append(None)
+
+# Step 3: Visualize the process
+fig, axs = plt.subplots(2, 2, figsize=(14, 12))
+
+# Plot (a): Original particles [unchanged]
+axs[0, 0].scatter(x_positions, y_positions, s=np.sqrt(weights) *10, color=color_1, alpha=0.7)
+axs[0, 0].set_xlim(0, 5)
+axs[0, 0].set_ylim(0, 5)
+axs[0, 0].set_title('a: Original Particles')
+axs[0, 0].set_aspect('equal')
+
+# Plot (b): Particles with grid [unchanged]
+for x in x_bins:
+    axs[0, 1].axvline(x, color='black', linestyle='--', linewidth=0.5)
+for y in y_bins:
+    axs[0, 1].axhline(y, color='black', linestyle='--', linewidth=0.5)
+highlighted_cells = set(particle_assignments) - {None}
+for x_idx, y_idx in highlighted_cells:
+    x_start = x_bins[x_idx]
+    y_start = y_bins[y_idx]
+    axs[0, 1].add_patch(plt.Rectangle((x_start, y_start), 5 / grid_size[0], 5 / grid_size[1], 
+                                     color='yellow', alpha=0.2))
+axs[0, 1].scatter(x_positions, y_positions, s=np.sqrt(weights) * 10, color=color_1, alpha=0.7)
+axs[0, 1].set_xlim(0, 5)
+axs[0, 1].set_ylim(0, 5)
+axs[0, 1].set_title('b: Particles with Grid')
+axs[0, 1].set_aspect('equal')
+
+# Plot (c): Zoomed-in grid cell (simplified)
+zoom_cell = (0, 0)  # Top-left cell
+x_start = x_bins[zoom_cell[0]]
+x_end = x_bins[zoom_cell[0] + 1]
+y_start = y_bins[zoom_cell[1]]
+y_end = y_bins[zoom_cell[1] + 1]
+
+# Filter particles in the zoomed cell
+zoomed_particles = [(x, y, w) for x, y, w, assign in zip(x_positions, y_positions, weights, particle_assignments) 
+                    if assign == zoom_cell]
+
+axs[1, 0].add_patch(plt.Rectangle((x_start, y_start), x_end - x_start, y_end - y_start, 
+                                 color='yellow', alpha=0.3))
+for x, y, w in zoomed_particles:
+    axs[1, 0].scatter(x, y, s=np.sqrt(w) * 50, color=color_1, alpha=0.7)
+
+axs[1, 0].set_xlim(x_start - 0.25, x_end + 0.25)
+axs[1, 0].set_ylim(y_start - 0.25, y_end + 0.25)
+axs[1, 0].set_title('c: Zoomed-in on lower left grid cell')
+axs[1, 0].set_aspect('equal')
+
+# Plot (d): Simple 2D histogram
+hist2d = np.histogram2d(x_positions, y_positions, bins=[x_bins, y_bins], weights=weights)[0]
+axs[1, 1].imshow(hist2d.T, origin='lower', extent=[0, 5, 0, 5], aspect='equal', cmap='viridis')
+axs[1, 1].set_title('d: 2D Histogram')
+axs[1, 1].set_aspect('equal')
+
+plt.tight_layout()
+plt.show()
+
+
+
+#################################
+######## ILLUSTRATE KDE #########
+#################################
+from scipy.stats import gaussian_kde
+
+#set black plotting style
+plt.style.use('default')
+plt.style.use("dark_background")
+
+
+# Define colors using seaborn's color palettes
+# These work well in both light and dark modes
+colors = sns.color_palette("husl", 4)  # or try "rocket", "mako", "flare"
+
+
+# Generate random 2D data
+np.random.seed(42)
+num_points = 500
+x_positions = np.random.rand(num_points) * 10
+y_positions = np.random.rand(num_points) * 10
+weights = np.random.rand(num_points) * 5  # Particle weights
+
+# Define the grid for Grid Projection / Histogram
+grid_size = (20, 20)  # Higher resolution for better visualization
+x_bins = np.linspace(2, 8, grid_size[0] + 1)
+y_bins = np.linspace(2, 8, grid_size[1] + 1)
+
+# Filter data to focus on range [2, 8]
+mask = (x_positions >= 2) & (x_positions <= 8) & (y_positions >= 2) & (y_positions <= 8)
+x_positions = x_positions[mask]
+y_positions = y_positions[mask]
+weights = weights[mask]
+
+# Compute 2D histogram
+histogram, x_edges, y_edges = np.histogram2d(
+    x_positions, y_positions, bins=[x_bins, y_bins], weights=weights
+)
+
+# Define a kernel density estimator (KDE)
+kde = gaussian_kde([x_positions, y_positions])
+X, Y = np.meshgrid(
+    np.linspace(2, 8, 100), np.linspace(2, 8, 100)
+)
+kde_positions = np.vstack([X.ravel(), Y.ravel()])
+kde_values = kde(kde_positions).reshape(X.shape)
+
+# Compute KDE density within discrete grid cells
+kde_grid = np.zeros(grid_size)
+for i in range(grid_size[0]):
+    for j in range(grid_size[1]):
+        x_start = x_bins[i]
+        x_end = x_bins[i + 1]
+        y_start = y_bins[j]
+        y_end = y_bins[j + 1]
+        cell_mask = (X >= x_start) & (X < x_end) & (Y >= y_start) & (Y < y_end)
+        kde_grid[j, i] = kde_values[cell_mask].sum()
+# Unified Visualization
+fig, axs = plt.subplots(1, 2, figsize=(16, 8))
+
+# (1) Grid Projection / Histogram Estimate
+axs[0].imshow(
+    histogram.T, origin="lower", extent=(2, 8, 2, 8),
+    cmap="mako",  # Changed from "Blues" to "mako"
+    aspect="auto"
+)
+axs[0].scatter(x_positions, y_positions, c="lime", s=10, alpha=0.6, label="Data Points")
+axs[0].set_title("Histogram Estimate (Grid Projection)")
+# PLOT THE GRID
+for x in x_bins:
+    axs[0].axvline(x, color='white', linestyle='--', linewidth=0.5, alpha=0.3)
+for y in y_bins:
+    axs[0].axhline(y, color='white', linestyle='--', linewidth=0.5, alpha=0.3)
+axs[0].set_xlabel("X")
+axs[0].set_ylabel("Y")
+axs[0].legend()
+
+# Get the mako colormap
+mako_cmap = plt.get_cmap('mako')
+
+# (2) KDE with Discrete Grid Cells and Contours
+kde_normalized = kde_grid / kde_grid.max()
+for i in range(grid_size[0]):
+    for j in range(grid_size[1]):
+        x_start = x_bins[i]
+        x_end = x_bins[i + 1]
+        y_start = y_bins[j]
+        y_end = y_bins[j + 1]
+        axs[1].add_patch(plt.Rectangle(
+            (x_start, y_start), 
+            x_end - x_start, 
+            y_end - y_start, 
+            color=mako_cmap(kde_normalized[j, i]),  # Use colormap to get RGBA color
+            alpha=0.7
+        ))
+# Add contour lines for KDE
+axs[1].contour(X, Y, kde_values, levels=10, colors='white', linewidths=0.8, alpha=0.6)
+
+axs[1].scatter(x_positions, y_positions, c="lime", s=10, alpha=0.6, label="Data Points")
+
+axs[1].set_xlim(2, 8)
+axs[1].set_ylim(2, 8)
+axs[1].set_title("KDE with Silverman bandwidth")
+axs[1].set_xlabel("X")
+axs[1].set_ylabel("Y")
+axs[1].legend()
+
+#increase fontsize of both plots
+for ax in axs:
+    #set titlefontsize
+    ax.title.set_fontsize(18)
+    #set label fontsize
+    ax.xaxis.label.set_fontsize(16)
+    ax.yaxis.label.set_fontsize(16)
+    #set tick fontsize
+    ax.xaxis.set_tick_params(labelsize=16)
+    ax.yaxis.set_tick_params(labelsize=16)
+
+
+plt.tight_layout()
+plt.show()

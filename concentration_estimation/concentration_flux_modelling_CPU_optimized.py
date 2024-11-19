@@ -39,6 +39,7 @@ import numpy.ma as ma
 from pyproj import Proj, Transformer
 import  xarray as xr
 import gc
+from scipy.spatial import cKDTree
 
 ############################
 ###DEFINE SOM COOL COLORS###
@@ -55,9 +56,9 @@ plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
 #fit wind data
-fit_wind_data = True
-#fit gas transfer velocity
-fit_gt_vel = True
+fit_wind_data = False
+#fit gas transfer velocityz
+fit_gt_vel = False
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
 #plot wind data
@@ -1958,6 +1959,8 @@ integral_length_scale_windows = GRID
 standard_deviations_windows = GRID
 #local neff
 neff_windows = GRID
+#outside grid vector
+outside_grid = []
 
 if run_all == True:
 
@@ -2052,9 +2055,12 @@ if run_all == True:
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
 
-        #--------------------------------------------------------#
-        # Count mass that left due to particles dying of old age #
-        #--------------------------------------------------------#
+        # Find active particles for later processing.. 
+        active_particles = np.where(particles['z'][:,1].mask == False)[0]
+
+        #--------------------------------------------------------------------------------#
+        # Count mass that left due to particles dying of old age and redistribute weight #
+        #--------------------------------------------------------------------------------#
 
         # Get deactivated indices safely
         deactivated_indices = np.where((particles['z'][:,1].mask == True) & 
@@ -2063,9 +2069,52 @@ if run_all == True:
         #make sure deactivated_indices is int
         deactivated_indices = deactivated_indices.astype(np.int64)
 
-        # Only process if we have deactivated particles
+        #remove all indices from the deactivated list to get the indices of particles that died (and not just left the grid)
+        particles_that_died = deactivated_indices[~np.isin(deactivated_indices, outside_grid)]
+
+        ### Redistribute weights of particles that died to nearby particles ###
+
+        #limit for redistribution
+        redistribution_limit = 5000 #meters
+
         if deactivated_indices.size > 0:
-            particles_mass_died[kkk] = np.sum(particles['weight'][deactivated_indices,0])  # Use previous timestep weights
+            particles_mass_died[kkk] = np.sum(particles['weight'][particles_that_died,0])
+            
+            
+            # Create KDTree for active particles
+            active_positions = np.column_stack((
+                particles['UTM_x'][active_particles,1],
+                particles['UTM_y'][active_particles,1]
+            ))
+            tree = cKDTree(active_positions)
+            
+            # Get dead particle positions
+            dead_positions = np.column_stack((
+                particles['UTM_x'][particles_that_died,0],
+                particles['UTM_y'][particles_that_died,0]
+            ))
+            dead_weights = particles['weight'][particles_that_died,0]
+            
+            # Query KDTree for all dead particles at once
+            distances, indices = tree.query(dead_positions, 
+                                        k=50,  # Get 50 nearest neighbors
+                                        distance_upper_bound=redistribution_limit)
+            
+            # Process each dead particle's redistribution
+            valid_mask = distances < redistribution_limit
+            weights = np.zeros_like(distances)
+            weights[valid_mask] = 1 / (distances[valid_mask] + 1e-10)
+            
+            # Normalize weights row-wise
+            row_sums = weights.sum(axis=1, keepdims=True)
+            weights = np.divide(weights, row_sums, where=row_sums > 0)
+            
+            # Update particle weights
+            for i, dead_weight in enumerate(dead_weights):
+                valid_neighbors = indices[i][valid_mask[i]]
+                neighbor_weights = weights[i][valid_mask[i]]
+                particles['weight'][active_particles[valid_neighbors], 1] += dead_weight * neighbor_weights
+
         else:
             particles_mass_died[kkk] = 0
 
@@ -2077,13 +2126,19 @@ if run_all == True:
         min_x = np.min(bin_x)
         max_y = np.max(bin_y)
         min_y = np.min(bin_y)
-        #create a vector for the indices that are outside the grid
-        outside_grid = np.where((particles['UTM_x'][:,1] < min_x) | 
-                            (particles['UTM_x'][:,1] > max_x) | 
-                            (particles['UTM_y'][:,1] < min_y) | 
-                            (particles['UTM_y'][:,1] > max_y))[0]
 
-        #Mask all particles that are outside the grid
+        # Then find which active particles are outside grid
+        outside_grid = np.where(
+            (particles['UTM_x'][active_particles,1] < min_x) | 
+            (particles['UTM_x'][active_particles,1] > max_x) | 
+            (particles['UTM_y'][active_particles,1] < min_y) | 
+            (particles['UTM_y'][active_particles,1] > max_y)
+        )[0]
+
+        # Convert indices back to original particle indices
+        outside_grid = active_particles[outside_grid]
+
+        # Mask those particles
         particles['z'][outside_grid,1].mask = True
         particles_mass_out[kkk] = np.sum(particles['weight'][outside_grid,1])
         particles['weight'][outside_grid,1].mask = True
@@ -2108,6 +2163,7 @@ if run_all == True:
             outside_grid = outside_grid.astype(np.int64)
             # Concatenate and maintain integer type
             particles_that_left = np.unique(np.concatenate((particles_that_left, outside_grid))).astype(np.int64)
+        
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
@@ -2733,53 +2789,98 @@ plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
 ############ PLOTTING TIMESERIES OF TOTAL ATMOSPHERIC FLUX ############
 #######################################################################
 
+color_3 = '#448ee4'
+color_4 = '#b66325'
+
+#set default matplotlib plotting style
+plt.style.use('default')
+#Set plotting style
+#plt.style.use('dark_background') 
 #get corresponding time vector
 times_totatm =  pd.to_datetime(bin_time,unit='s')
 
+gridalpha = 0.9
 
-# Create figure with 2x2 subplots
-fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+# For the 2x2 subplot figure:
+fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+
+# Convert timestamps to numerical values
+numerical_times = pd.to_numeric((times_totatm))
+
+# Calculate tick positions (4 evenly spaced ticks)
+tick_positions = times_totatm[tick_indices]
+
+# Create tick labels using datetime formatting
+tick_labels = pd.to_datetime(tick_positions).strftime('%d.%b')
+
+linewidth_set = 2
 
 # Plot 1: Total atmospheric flux
-ax1.plot(times_totatm[twentiethofmay:time_steps], total_atm_flux[twentiethofmay:time_steps], color='red')
+ax1.plot(times_totatm[twentiethofmay:time_steps], total_atm_flux[twentiethofmay:time_steps], color=color_1, linewidth=linewidth_set)
 ax1.set_title('Atmospheric Flux')
-ax1.set_xlabel('Timestep')
-ax1.set_ylabel('mol hr{^-1}')
-ax1.grid(True, alpha=0.3)
+#ax1.set_xlabel('Timestep')
+ax1.set_ylabel('mol hr$^{-1}$')
+ax1.grid(True, alpha=gridalpha)
+ax1.set_xticks(tick_positions)
 
 # Plot 2: Total MOx
-ax2.plot(times_totatm[twentiethofmay:time_steps], total_mox[twentiethofmay:time_steps], color='blue')
+ax2.plot(times_totatm[twentiethofmay:time_steps], total_mox[twentiethofmay:time_steps], color=color_2, linewidth=linewidth_set)
 ax2.set_title('Microbial Oxidation')
-ax2.set_xlabel('Timestep')
-ax2.set_ylabel('mol hr{^-1}')
-ax2.grid(True, alpha=0.3)
+#ax2.set_xlabel('Timestep')
+ax2.set_ylabel('mol hr$^{-1}$')
+ax2.grid(True, alpha=gridalpha)
+ax2.set_xticks(tick_positions)
 
-# Plot 3: Total particles
-ax3.plot(times_totatm[twentiethofmay:time_steps], particles_mass_out[twentiethofmay:time_steps], color='green')
-ax3.set_title('mol hr{^-1}')
-ax3.set_xlabel('Timestep')
-ax3.set_ylabel('Number of Particles')
-ax3.grid(True, alpha=0.3)
+# Plot 3: Particles leaving domain
+ax3.plot(times_totatm[twentiethofmay:time_steps], particles_mass_out[twentiethofmay:time_steps], color=color_3, linewidth=linewidth_set)    
+ax3.set_title('Particles leaving domain')
+#ax3.set_xlabel('Timestep')
+ax3.set_ylabel('mol hr$^{-1}$')
+ax3.grid(True, alpha=gridalpha)
+ax3.set_xticks(tick_positions)
 
-# Remove the fourth subplot
-ax4.plot(times_totatm[twentiethofmay:time_steps], particles_mass_died[twentiethofmay:time_steps], color='green')
-ax4.set_title('mol hr{^-1}')
-ax4.set_xlabel('Timestep')
-ax4.set_ylabel('Number of Particles')
-ax4.grid(True, alpha=0.3)
+# Plot 4: Particles dying
+ax4.plot(times_totatm[twentiethofmay:time_steps], particles_mass_died[twentiethofmay:time_steps], color=color_4, linewidth=linewidth_set)   
+ax4.set_title('Particles dying')
+#ax4.set_xlabel('Timestep')
+ax4.set_ylabel('mol hr$^{-1}$')
+ax4.grid(True, alpha=gridalpha)
+ax4.set_xticks(tick_positions)
 
+for ax in [ax1, ax2, ax3, ax4]:
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=0, ha='center')
+
+#change fontsizes
+for ax in [ax1, ax2, ax3, ax4]:
+    #set title fontsize
+    ax.title.set_fontsize(16)
+    #set label fontsize
+    ax.xaxis.label.set_fontsize(14)
+    ax.yaxis.label.set_fontsize(14)
+    #set tick fontsize
+    ax.xaxis.set_tick_params(labelsize=14)
+    ax.yaxis.set_tick_params(labelsize=14)
+
+plt.tight_layout()
+
+#save figure
+plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\total_atm_flux.png')
+
+# For the single figure:
 fig = plt.figure(figsize=(16, 10))
 ax = fig.add_subplot(1, 1, 1)
-ax.plot(times_totatm,total_atm_flux,label='Total atmospheric flux',color='blue')
-ax.set_ylabel('Total atmospheric flux [mol/hr]',fontdict={'fontsize':16})
-ax.set_title('Total atmospheric flux',fontdict={'fontsize':16})
-#set fontsize for the xticks
-ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
-#add yy axis showing the number of active particles
+ax.plot(times_totatm, total_atm_flux, label='Total atmospheric flux', color='blue')
+ax.set_ylabel('Total atmospheric flux [mol/hr]', fontsize=16)
+ax.set_title('Total atmospheric flux', fontsize=16)
+ax.set_xticks(tick_positions)
+
 ax2 = ax.twinx()
-ax2.plot(times_totatm,total_mox,color='0.4',label='Number of active particles')
-ax2.set_ylabel('Number of active particles',fontdict={'fontsize':16})
-ax2.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
+ax2.plot(times_totatm, total_mox, color='0.4', label='Number of active particles')
+ax2.set_ylabel('Number of active particles', fontsize=16)
+ax2.set_xticks(tick_positions)
+
+# Apply to plots
 #save figure
 plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux.png')
 
@@ -3162,119 +3263,143 @@ if plot_gt_vel == True:
     #create a gif
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\gt_vel.gif', images_gt_vel, duration=0.5)
 
+#################################################################
+############   PLOTTING TIMESERIES FROM CWC LOCATION ############
+#################################################################
+
+from scipy.spatial import KDTree
+
+def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_z):
+    """Find nearest grid cell for a given coordinate"""
+    
+    # Handle depth first using digitize
+    depth_idx = np.digitize(depth_cwc, bin_z) - 1
+    
+    # Reshape mesh coordinates into (n_points, 2) array
+    points = np.column_stack((lon_mesh.flatten(), lat_mesh.flatten()))
+    
+    # Build KDTree
+    tree = KDTree(points)
+    
+    # Find nearest neighbor
+    distance, index = tree.query([lon_cwc, lat_cwc])
+    
+    # Convert flat index back to 2D indices
+    lat_idx = index // lon_mesh.shape[1]
+    lon_idx = index % lon_mesh.shape[1]
+    
+    # Optional: Print distance to nearest cell
+    print(f"Distance to nearest cell: {distance:.2f} degrees")
+    
+    return lon_idx, lat_idx, depth_idx
 
 
-#MAP PLOTTING.
+#CWC location
+lon_cwc = 17
+lat_cwc = 69.5
+depth_cwc = 90
 
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import numpy as np
-from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter  # Add this import
+# Find the correct cell
+lon_cwc_idx, lat_cwc_idx, depth_cwc_idx = find_nearest_grid_cell(
+    lon_cwc=lon_cwc ,
+    lat_cwc=lat_cwc, 
+    depth_cwc=depth_cwc,
+    lon_mesh=lon_mesh,
+    lat_mesh=lat_mesh,
+    bin_z=bin_z
+)
+
+concentration_cwc = []
+
+#loop over from twentieth of may to time_steps_full
+for i in range(twentiethofmay,time_steps):
+    concentration_cwc.append(GRID[i][depth_cwc_idx][lat_cwc_idx,lon_cwc_idx])
+
+# Plot time series at CWC location
+plt.figure(figsize=(12, 6))  # Wider figure
+
+# Calculate tick positions (4 evenly spaced ticks)
+tick_indices = np.linspace(twentiethofmay, time_steps, 4, dtype=int)
+tick_positions = times_totatm[tick_indices]
+
+# Create tick labels
+tick_labels = pd.to_datetime(tick_positions).strftime('%d.%b')
+
+# Plot concentration
+plt.plot(times_totatm[twentiethofmay:time_steps], 
+         concentration_cwc,
+         color=color_1,  # Use same color scheme
+         linewidth=2)
+
+# Style the plot
+plt.title('Concentration time series at location', fontsize=16)
+plt.ylabel('Concentration [mol m$^{-3}$]', fontsize=14)
+plt.grid(True, alpha=0.3)
+
+# Set x-ticks
+plt.xticks(tick_positions, tick_labels, rotation=45)
+plt.tick_params(axis='both', labelsize=12)
+
+# Adjust layout to prevent label cutoff
+plt.tight_layout()
 
 
-def plot_coastline_with_coordinates(coastline_map, lon_grid, lat_grid):
-    """
-    Plot coastline using proper coordinate grids
-    """
-    # Create figure with Lambert Conformal projection
-    fig = plt.figure(figsize=(12, 8))
-    proj = ccrs.LambertConformal(
-        central_longitude=0.0,
-        central_latitude=70.0,
-        standard_parallels=(70.0, 70.0)
+#################################################################
+############ PLOT ALL DEPTH LAYERS FOR TIMESTEP 1000 ############
+#################################################################
+
+#Grab the depth layers from the 
+
+# Set up the figure
+fig, axs = plt.subplots(2, 3, figsize=(18, 12))
+axs = axs.flatten()  # Flatten for easier indexing
+
+# Define timestep
+timestep = 1000
+i = 4
+
+layer_0 = GRID[timestep][0].toarray()
+layer_1 = GRID[timestep][1].toarray()
+layer_2 = GRID[timestep][2].toarray()
+layer_3 = GRID[timestep][3].toarray()
+layer_4 = GRID[timestep][4].toarray()
+layer_5 = GRID[timestep][5].toarray()
+
+# get a good level parameter
+levels = np.linspace(np.nanmin(np.nanmin(layer_0)),np.nanmax(np.nanmax(layer_0)),100)
+
+
+# Loop through depth layers
+for i in range(7):
+    # Get data for this layer
+    layer_data = GRID[timestep][i].toarray()  # Convert sparse to dense
+    
+    # Plot in corresponding subplot
+    fig = plot_2d_data_map_loop(
+        data=layer_data.T,
+        lon=lon_mesh,
+        lat=lat_mesh,
+        projection=projection,
+        levels=levels,  # Adjust levels as needed
+        timepassed=[timestep-twentiethofmay, time_steps-twentiethofmay],
+        colormap=colormap,
+        title=f'Depth Layer {bin_z[i]:.0f}-{bin_z[i+1]:.0f}m on {times_totatm[timestep-twentiethofmay]:%d.%b %H:%M}',
+        unit='mol m$^{-3}$',
+        ax=axs[i],
+        show=False,
+        log_scale=True,
+        plot_progress_bar = False,
+        maxnumticks=5
     )
-    
-    # Setup map
-    ax = plt.axes(projection=proj)
-    
-    # Plot coastline data
-    plt.pcolormesh(
-        lon_grid, 
-        lat_grid, 
-        coastline_map,
-        transform=ccrs.PlateCarree(),
-        cmap='binary'
-    )
-    
-    gl = ax.gridlines(
-        crs=ccrs.PlateCarree(),
-        draw_labels=True,
-        linewidth=1,
-        color='gray',
-        alpha=0.5,
-        linestyle='--'
-    )
-    
-    # Use the correct formatter classes
-    gl.xformatter = LongitudeFormatter()
-    gl.yformatter = LatitudeFormatter()
-    
-    # Customize gridlines
-    gl.top_labels = False
-    gl.right_labels = False
-    
-    # Set extent based on your grids
-    ax.set_extent([
-        lon_grid.min(), 
-        lon_grid.max(), 
-        lat_grid.min(), 
-        lat_grid.max()
-    ], crs=ccrs.PlateCarree())
-    
-    plt.title('Coastline Map')
-    plt.show()
 
-def plot_utm_with_latlon_grid(coastline_map, bin_x, bin_y, utm_zone=33):
-    """Plot coastline in UTM coordinates with lat/lon grid overlay"""
-    
-    # Create transformers
-    utm_to_latlon = Transformer.from_crs(
-        f"EPSG:326{utm_zone}", "EPSG:4326", always_xy=True
-    )
-    latlon_to_utm = Transformer.from_crs(
-        "EPSG:4326", f"EPSG:326{utm_zone}", always_xy=True
-    )
+# Remove the last (empty) subplot
+axs[-1].remove()
 
-    # Create figure
-    fig, ax = plt.subplots(figsize=(12, 8))
-    
-    # Plot coastline in UTM
-    plt.pcolormesh(bin_x, bin_y, coastline_map, cmap='binary')
-    
-    # Generate lat/lon grid lines
-    lat_lines = np.arange(68.5, 72.5, 0.5)
-    lon_lines = np.arange(12.5, 21.5, 0.5)
-    
-    # Plot longitude lines
-    for lon in lon_lines:
-        lats = np.linspace(lat_lines.min(), lat_lines.max(), 100)
-        x, y = latlon_to_utm.transform(
-            np.full_like(lats, lon), lats
-        )
-        plt.plot(x, y, '--', color='gray', alpha=0.5, linewidth=0.5)
-        # Add labels
-        if y[0] > bin_y.min() and y[0] < bin_y.max():
-            plt.text(x[0], y[0], f'{lon}°E', fontsize=8)
-    
-    # Plot latitude lines
-    for lat in lat_lines:
-        lons = np.linspace(lon_lines.min(), lon_lines.max(), 100)
-        x, y = latlon_to_utm.transform(lons, np.full_like(lons, lat))
-        plt.plot(x, y, '--', color='gray', alpha=0.5, linewidth=0.5)
-        # Add labels
-        if x[0] > bin_x.min() and x[0] < bin_x.max():
-            plt.text(x[0], y[0], f'{lat}°N', fontsize=8)
-    
-    plt.xlabel('UTM Easting (m)')
-    plt.ylabel('UTM Northing (m)')
-    plt.title('Coastline Map (UTM) with Lat/Lon Grid')
-    
-    # Set limits to match bin_x and bin_y
-    plt.xlim(bin_x.min(), bin_x.max())
-    plt.ylim(bin_y.min(), bin_y.max())
-    
-    plt.show()
+# Adjust layout
+plt.tight_layout()
+plt.show()
 
-plot_coastline_with_coordinates(coastline_map, lon_grid, lat_grid)
-###
+# Optionally save
+plt.savefig('depth_layers_timestep_1000.png', dpi=150, bbox_inches='tight')
+
+

@@ -1162,13 +1162,25 @@ def calculate_autocorrelation(data, bin_size=1):
     '''Calculate autocorrelation for rows and columns'''
     num_rows, num_cols = data.shape
     max_lag = min(num_rows, num_cols) - 1
+
+    # Ensure we have enough data points
+    if num_rows < 2 or num_cols < 2:
+        return np.array([0.0]), np.array([0.0])
     
     autocorr_rows = np.zeros(max_lag)
     autocorr_cols = np.zeros(max_lag)
     
     # Precompute denominators
-    row_denominators = 1.0 / np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
-    col_denominators = 1.0 / np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
+    #row_denominators = 1.0 / np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
+    #col_denominators = 1.0 / np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
+
+    # Protect against zero division in denominators
+    row_range = np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
+    col_range = np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
+    
+    # Add small epsilon to prevent division by zero
+    row_denominators = 1.0 / np.maximum(row_range, 1e-10)
+    col_denominators = 1.0 / np.maximum(col_range, 1e-10)
     
     # Vectorized autocorrelation calculation
     for k in range(1, max_lag + 1):
@@ -1180,8 +1192,8 @@ def calculate_autocorrelation(data, bin_size=1):
         for j in range(num_cols):
             col_sum += np.sum(data[:num_rows-k, j] * data[k:, j])
             
-        autocorr_rows[k-1] = row_sum * row_denominators[k-1] / num_rows
-        autocorr_cols[k-1] = col_sum * col_denominators[k-1] / num_cols
+        autocorr_rows[k-1] = row_sum * row_denominators[k-1] / max(num_rows, 1e-10)
+        autocorr_cols[k-1] = col_sum * col_denominators[k-1] / max(num_cols, 1e-10)
     
     return autocorr_rows, autocorr_cols
 
@@ -1481,8 +1493,11 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
                     autocorr = (autocorr_rows + autocorr_cols) / 2
                     
                     if autocorr.any():
-                        first_nonzero = autocorr[np.nonzero(autocorr)[0][0]]
-                        integral_length_scale = np.sum(autocorr) / max(first_nonzero, 1e-10)
+                        non_zero_idx = np.where(autocorr != 0)[0]
+                        if len(non_zero_idx) > 0:
+                            integral_length_scale = np.sum(autocorr) / max(autocorr[non_zero_idx[0]]),
+                        else:
+                            integral_length_scale = 1e-10
                     else:
                         integral_length_scale = 1e-10
                     
@@ -1928,7 +1943,7 @@ coastline_map[interpolated_bathymetry >= 0] = 1
 #---------------------------------------------------#
 print('Starting to loop through all timesteps...')
 
-time_steps_full = len(ODdata.variables['time'])
+time_steps_full = len(ODdata.variables['time'])-50
 
 #age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
@@ -1961,6 +1976,8 @@ standard_deviations_windows = GRID
 neff_windows = GRID
 #outside grid vector
 outside_grid = []
+#Count the amount of redistributed methane
+particle_mass_redistributed = np.zeros(len(bin_time))
 
 if run_all == True:
 
@@ -2075,11 +2092,10 @@ if run_all == True:
         ### Redistribute weights of particles that died to nearby particles ###
 
         #limit for redistribution
-        redistribution_limit = 5000 #meters
+        redistribution_limit = 4000 #meters
 
         if deactivated_indices.size > 0:
             particles_mass_died[kkk] = np.sum(particles['weight'][particles_that_died,0])
-            
             
             # Create KDTree for active particles
             active_positions = np.column_stack((
@@ -2097,7 +2113,7 @@ if run_all == True:
             
             # Query KDTree for all dead particles at once
             distances, indices = tree.query(dead_positions, 
-                                        k=50,  # Get 50 nearest neighbors
+                                        k=10,  # Get 10 nearest neighbors
                                         distance_upper_bound=redistribution_limit)
             
             # Process each dead particle's redistribution
@@ -2114,6 +2130,9 @@ if run_all == True:
                 valid_neighbors = indices[i][valid_mask[i]]
                 neighbor_weights = weights[i][valid_mask[i]]
                 particles['weight'][active_particles[valid_neighbors], 1] += dead_weight * neighbor_weights
+                particle_mass_redistributed[kkk] = np.sum(dead_weight * neighbor_weights)
+
+            print(f"Redistributed {np.sum(dead_weights):.2f} moles of methane from {len(particles_that_died)} particles")
 
         else:
             particles_mass_died[kkk] = 0
@@ -2140,7 +2159,6 @@ if run_all == True:
 
         # Mask those particles
         particles['z'][outside_grid,1].mask = True
-        particles_mass_out[kkk] = np.sum(particles['weight'][outside_grid,1])
         particles['weight'][outside_grid,1].mask = True
         particles['bw'][outside_grid,1].mask = True
         particles['UTM_x'][outside_grid,1].mask = True
@@ -2156,6 +2174,8 @@ if run_all == True:
         if particles_that_left.size > 0:
             for field in ['z', 'weight', 'bw', 'UTM_x', 'UTM_y', 'lon', 'lat']:
                 particles[field][particles_that_left, 1].mask = True
+                #Count the mass
+                particles_mass_out[kkk] = np.sum(particles['weight'][particles_that_left,1])   
 
         # Add new outside_grid particles to particles_that_left
         if outside_grid.size > 0:
@@ -2456,8 +2476,8 @@ if run_all == True:
                     elapsed_time = end_time - start_time
                     kde_time_vector[kkk] = elapsed_time
                     
-                    #make a plot if kkk is modulus 50
-                    if kkk % 50 == 0:
+                    #make a plot if kkk is modulus 250
+                    if kkk % 250 == 0:
                         plt.figure()
                         plt.subplot(1,2,1)
                         plt.imshow(h_matrix_adaptive)
@@ -2672,7 +2692,7 @@ times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_da
 twentiethofmay = 720
 time_steps = 1495
 
-do = True
+do = False
 if do == True:
     for i in range(twentiethofmay,time_steps,1):
         fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
@@ -2806,6 +2826,9 @@ fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
 
 # Convert timestamps to numerical values
 numerical_times = pd.to_numeric((times_totatm))
+
+#find four evenly spaced ticks
+tick_indices = np.linspace(twentiethofmay, len(numerical_times) - 1, 4).astype(int)
 
 # Calculate tick positions (4 evenly spaced ticks)
 tick_positions = times_totatm[tick_indices]

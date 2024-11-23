@@ -126,6 +126,8 @@ get_new_bathymetry = False
 load_from_nc_file = True
 load_from_hdf5 = False #Fix this later if needed
 create_new_datafile = False
+#redistribute mass???
+redistribute_lost_mass = True
 
 #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
@@ -793,6 +795,7 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
 from matplotlib.colors import LogNorm
 from matplotlib.ticker import MaxNLocator, ScalarFormatter, LogLocator
 import matplotlib.patches as patches
+from matplotlib.ticker import FuncFormatter
 
 # Cache features for reuse
 _CACHED_FEATURES = {}
@@ -914,14 +917,31 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
         'levels': levels,
         'cmap': colormap
     }
-    
+        
     try:
         if log_scale:
             contourf_kwargs.update({'norm': norm, 'extend': 'both'})
             contourf = ax.contourf(lon, lat, masked_data, **contourf_kwargs)
+            
+            # Add contour lines
+            contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1])
+            contour = ax.contour(lon, lat, masked_data,
+                            levels=levels[::contoursettings[0]],
+                            colors=contoursettings[1],
+                            linewidths=contoursettings[2],
+                            transform=transform,
+                            norm=norm)
         else:
             contourf_kwargs['extend'] = 'max'
             contourf = ax.contourf(lon, lat, data, **contourf_kwargs)
+            
+            # Add contour lines
+            contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1])
+            contour = ax.contour(lon, lat, data,
+                            levels=levels[::contoursettings[0]],
+                            colors=contoursettings[1],
+                            linewidths=contoursettings[2],
+                            transform=transform)
     except ValueError as e:
         raise ValueError(f"Contour plotting failed: {str(e)}")
 
@@ -935,11 +955,13 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
         cbar.locator = LogLocator(base=10.0, subs='auto', numticks=maxnumticks)
     else:
         cbar.locator = MaxNLocator(nbins=maxnumticks)
-    
-    # Batch colorbar updates
+
+    # Modify colorbar precision section
     with plt.style.context({'text.usetex': False}):
         cbar.formatter = ScalarFormatter(useMathText=True)
         cbar.formatter.set_powerlimits((-2, 2))
+        cbar.formatter.set_scientific(True)
+        cbar.formatter.format = '%.2f'  # Direct property assignment
         cbar.update_ticks()
         cbar.ax.tick_params(labelsize=14, rotation=0)
     
@@ -960,7 +982,7 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
     ax.text(19.0553, 69.58006, 'Tromsø', transform=transform, color='white', fontsize=12)
     
     # Efficient gridlines
-    gl = ax.gridlines(crs=transform, draw_labels=False, linewidth=0.5, 
+    gl = ax.gridlines(crs=transform, draw_labels=True, linewidth=0.5, 
                      color='white', alpha=0.5, linestyle='--')
     gl.top_labels = True
     gl.left_labels = True
@@ -1495,13 +1517,19 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
                     if autocorr.any():
                         non_zero_idx = np.where(autocorr != 0)[0]
                         if len(non_zero_idx) > 0:
-                            integral_length_scale = np.sum(autocorr) / max(autocorr[non_zero_idx[0]]),
+                            denominator = autocorr[non_zero_idx[0]]
+                            if denominator < 1e-10:
+                                denominator = 1e-10
+                            integral_length_scale = np.sum(autocorr) / denominator
                         else:
                             integral_length_scale = 1e-10
                     else:
                         integral_length_scale = 1e-10
                     
-                    n_eff = np.sum(data_subset) / max(integral_length_scale, 1e-10)
+                    denominator = integral_length_scale
+                    if denominator < 1e-10:
+                        denominator = 1e-10
+                    n_eff = np.sum(data_subset) / denominator
                 
                 # Calculate bandwidth with protection
                 h = np.sqrt((silverman_coeff * max(n_eff, 1e-10)**(-silverman_exponent)) * std) * dxy_grid
@@ -1708,14 +1736,13 @@ GRID_atm_flux = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 GRID_mox = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 #Total atmoshperic flux vector (as function of time, in mol/hr)
 total_atm_flux = np.zeros(len(bin_time))
-#Total MoX consumption vector (as function of time, in mol/hr)
-total_mox = np.zeros(len(bin_time))
 #particle weightloss history
 particles_atm_loss = np.zeros((len(bin_time)))
 #particle mox loss history
 particles_mox_loss = np.zeros((len(bin_time)))
-#Mass that leaves the model domain
+#Mass that leaves or re-enters the model domain
 particles_mass_out = np.zeros((len(bin_time)))
+particles_mass_back = np.zeros((len(bin_time)))
 #Mass lost to killing of particles
 particles_mass_died = np.zeros((len(bin_time)))
 
@@ -1891,7 +1918,7 @@ else:
     lat_mesh_map = bathymetry_data['latitude']
     lon_mesh_map = bathymetry_data['longitude']
 
-del bathymetry_data
+#del bathymetry_data
 
 # Create matrices for illegal cells using the bathymetry data and delta z
 illegal_cells = np.zeros([len(bin_x), len(bin_y), len(bin_z)])
@@ -1961,6 +1988,7 @@ GRID_neff = np.zeros((len(bin_time),len(bin_x),len(bin_y)))
 
 #Particles that left the domain vector
 particles_that_left = np.array([])
+particles_that_comes_back = np.array([])
 
 num_timesteps = time_steps_full
 num_layers = len(bin_z)
@@ -2079,63 +2107,69 @@ if run_all == True:
         # Count mass that left due to particles dying of old age and redistribute weight #
         #--------------------------------------------------------------------------------#
 
-        # Get deactivated indices safely
-        deactivated_indices = np.where((particles['z'][:,1].mask == True) & 
-                                    (particles['z'][:,0].mask == False))[0]
+        # set a trigger for this because this is quite slow
+        if redistribute_lost_mass == True:
+                
+            # Get deactivated indices safely
+            deactivated_indices = np.where((particles['z'][:,1].mask == True) & 
+                                        (particles['z'][:,0].mask == False))[0]
 
-        #make sure deactivated_indices is int
-        deactivated_indices = deactivated_indices.astype(np.int64)
+            #make sure deactivated_indices is int
+            deactivated_indices = deactivated_indices.astype(np.int64)
 
-        #remove all indices from the deactivated list to get the indices of particles that died (and not just left the grid)
-        particles_that_died = deactivated_indices[~np.isin(deactivated_indices, outside_grid)]
+            #remove all indices from the deactivated list to get the indices of particles that died (and not just left the grid)
+            particles_that_died = deactivated_indices[~np.isin(deactivated_indices, outside_grid)]
 
-        ### Redistribute weights of particles that died to nearby particles ###
+            ### Redistribute weights of particles that died to nearby particles ###
 
-        #limit for redistribution
-        redistribution_limit = 4000 #meters
+            #limit for redistribution
+            redistribution_limit = 4000 #meters
 
-        if deactivated_indices.size > 0:
-            particles_mass_died[kkk] = np.sum(particles['weight'][particles_that_died,0])
-            
-            # Create KDTree for active particles
-            active_positions = np.column_stack((
-                particles['UTM_x'][active_particles,1],
-                particles['UTM_y'][active_particles,1]
-            ))
-            tree = cKDTree(active_positions)
-            
-            # Get dead particle positions
-            dead_positions = np.column_stack((
-                particles['UTM_x'][particles_that_died,0],
-                particles['UTM_y'][particles_that_died,0]
-            ))
-            dead_weights = particles['weight'][particles_that_died,0]
-            
-            # Query KDTree for all dead particles at once
-            distances, indices = tree.query(dead_positions, 
-                                        k=10,  # Get 10 nearest neighbors
-                                        distance_upper_bound=redistribution_limit)
-            
-            # Process each dead particle's redistribution
-            valid_mask = distances < redistribution_limit
-            weights = np.zeros_like(distances)
-            weights[valid_mask] = 1 / (distances[valid_mask] + 1e-10)
-            
-            # Normalize weights row-wise
-            row_sums = weights.sum(axis=1, keepdims=True)
-            weights = np.divide(weights, row_sums, where=row_sums > 0)
-            
-            # Update particle weights
-            for i, dead_weight in enumerate(dead_weights):
-                valid_neighbors = indices[i][valid_mask[i]]
-                neighbor_weights = weights[i][valid_mask[i]]
-                particles['weight'][active_particles[valid_neighbors], 1] += dead_weight * neighbor_weights
-                particle_mass_redistributed[kkk] = np.sum(dead_weight * neighbor_weights)
+            if deactivated_indices.size > 0:
+                particles_mass_died[kkk] = np.sum(particles['weight'][particles_that_died,0])
+                
+                # Create KDTree for active particles
+                active_positions = np.column_stack((
+                    particles['UTM_x'][active_particles,1],
+                    particles['UTM_y'][active_particles,1]
+                ))
+                tree = cKDTree(active_positions)
+                
+                # Get dead particle positions
+                dead_positions = np.column_stack((
+                    particles['UTM_x'][particles_that_died,0],
+                    particles['UTM_y'][particles_that_died,0]
+                ))
+                dead_weights = particles['weight'][particles_that_died,0]
+                
+                # Query KDTree for all dead particles at once
+                distances, indices = tree.query(dead_positions, 
+                                            k=10,  # Get 10 nearest neighbors
+                                            distance_upper_bound=redistribution_limit)
+                
+                # Process each dead particle's redistribution
+                valid_mask = distances < redistribution_limit
+                weights = np.zeros_like(distances)
+                weights[valid_mask] = 1 / (distances[valid_mask] + 1e-10)
+                
+                # Normalize weights row-wise
+                row_sums = weights.sum(axis=1, keepdims=True)
+                weights = np.divide(weights, row_sums, where=row_sums > 0)
+                
+                # Update particle weights
+                for i, dead_weight in enumerate(dead_weights):
+                    valid_neighbors = indices[i][valid_mask[i]]
+                    neighbor_weights = weights[i][valid_mask[i]]
+                    particles['weight'][active_particles[valid_neighbors], 1] += dead_weight * neighbor_weights
+                    particle_mass_redistributed[kkk] += np.sum(dead_weight * neighbor_weights)
 
-            print(f"Redistributed {np.sum(dead_weights):.2f} moles of methane from {len(particles_that_died)} particles")
+                print(f"Redistributed {np.sum(dead_weights):.2f} moles of methane from {len(particles_that_died)} particles")
 
+            else:
+                particles_mass_died[kkk] = 0
         else:
-            particles_mass_died[kkk] = 0
+            particle_mass_died[kkk] = 0
+            particle_mass_redistributed[kkk]=0
 
         #------------------------------------------#
         # DEACTIVATE PARTICLES OUTSIDE OF THE GRID #
@@ -2146,6 +2180,8 @@ if run_all == True:
         max_y = np.max(bin_y)
         min_y = np.min(bin_y)
 
+        outside_grid_prev_TS = outside_grid
+
         # Then find which active particles are outside grid
         outside_grid = np.where(
             (particles['UTM_x'][active_particles,1] < min_x) | 
@@ -2154,8 +2190,20 @@ if run_all == True:
             (particles['UTM_y'][active_particles,1] > max_y)
         )[0]
 
-        # Convert indices back to original particle indices
-        outside_grid = active_particles[outside_grid]
+        outside_grid_old = np.where(
+            (particles['UTM_x'][active_particles,0] < min_x) | 
+            (particles['UTM_x'][active_particles,0] > max_x) | 
+            (particles['UTM_y'][active_particles,0] < min_y) | 
+            (particles['UTM_y'][active_particles,0] > max_y)
+        )[0]
+
+        inside_grid = ~outside_grid
+
+        #Find all particles what were outside the grid in the previous timestep and is back in the grid
+        outside_coming_in = ~outside_grid
+        outside_coming_in = outside_coming_in[np.isin(outside_coming_in,outside_grid_old)]
+
+        #make sure outside_grid only have particles that left the domain in the current timestep
 
         # Mask those particles
         particles['z'][outside_grid,1].mask = True
@@ -2166,6 +2214,23 @@ if run_all == True:
         particles['lon'][outside_grid,1].mask = True
         particles['lat'][outside_grid,1].mask = True
 
+        ### FIX NOTATION HERE ###
+        outside_leaving = outside_grid[~np.isin(outside_grid,outside_grid_old)]
+
+        # Add new outside_grid particles to particles_that_left
+        if outside_leaving.size > 0:
+            # Ensure outside_leaving is integer type
+            outside_leaving = outside_leaving.astype(np.int64)
+            # Concatenate and maintain integer type
+            particles_that_left = np.unique(np.concatenate((particles_that_left, outside_leaving))).astype(np.int64)
+    
+        if outside_coming_in.size > 0:
+            # Ensure outside_coming_in is integer type
+            outside_coming_in = outside_coming_in.astype(np.int64)
+            # Concatenate and maintain integer type
+            particles_that_comes_back = np.unique(np.concatenate((particles_that_comes_back, outside_coming_in))).astype(np.int64)
+        
+
         # Set up vector if it doesnt exist. 
         if 'particles_that_left' not in locals():
             particles_that_left = np.array([], dtype=int)
@@ -2173,17 +2238,14 @@ if run_all == True:
         # Then mask the particles
         if particles_that_left.size > 0:
             for field in ['z', 'weight', 'bw', 'UTM_x', 'UTM_y', 'lon', 'lat']:
-                particles[field][particles_that_left, 1].mask = True
                 #Count the mass
-                particles_mass_out[kkk] = np.sum(particles['weight'][particles_that_left,1])   
-
-        # Add new outside_grid particles to particles_that_left
-        if outside_grid.size > 0:
-            # Ensure outside_grid is integer type
-            outside_grid = outside_grid.astype(np.int64)
-            # Concatenate and maintain integer type
-            particles_that_left = np.unique(np.concatenate((particles_that_left, outside_grid))).astype(np.int64)
+                particles_mass_out[kkk] = np.sum(particles['weight'][outside_leaving,1])   
+                particles_mass_back[kkk] = np.sum(particles['weight'][outside_coming_in,1])   
+                particles[field][particles_that_left, 1].mask = True
         
+        print(f"{particles_mass_out[kkk]} moles lost due to {len(outside_leaving)} particles leaving.")
+        print(f"{particles_mass_back[kkk]} moles gained due to {len(outside_coming_in)} particles re-entering.")
+
         #--------------------------------------#
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
@@ -2268,7 +2330,6 @@ if run_all == True:
         #finished with modifying weights, replace weights[0] with weights[1] for next step
         particles['weight'][:,0] = particles['weight'][:,1]
 
-
         #--------------------------------------------------#
         #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
         #--------------------------------------------------#
@@ -2282,9 +2343,6 @@ if run_all == True:
         bin_z_number = bin_z_number[sort_indices]
         #get indices where bin_z_number changes
         change_indices = np.where(np.diff(bin_z_number) != 0)[0]
-        #Trigger if you want to loop through all depth layers
-        #if use_all_depth_layers == True: #is this depracated?? I think so. 
-        #    change_indices = np.array([0,len(bin_z_number)])
         
         #Define the [location_x,location_y,location_z,weight,bw] for the particle. This is the active particle matrix
         parts_active = [particles['UTM_x'][:,1].compressed()[sort_indices],
@@ -2331,7 +2389,6 @@ if run_all == True:
             #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
             #-----------------------------------------------------#
 
-
             #Set any particle that has left the model domain to have zero weight and location
             #at the model boundary
 
@@ -2365,12 +2422,11 @@ if run_all == True:
                                             #bin_y,
                                             #parts_active_z[5],
                                             #parts_active_z[4])
-                ########################################
+
                 ###################
                 ### preGRIDding ###
                 ###################
             
-                
                 #Stop and go out of the if if there are no particles in the depth layer
                 if len(parts_active_z[0]) == 0:
                     continue
@@ -2436,8 +2492,7 @@ if run_all == True:
                         window_size += 1
                     
                     pad_size = window_size//2
-
-                    
+                   
                     # Pad arrays
                     preGRID_active_padded = np.pad(preGRID_active, pad_size, mode='reflect')
                     preGRID_active_counts_padded = np.pad(preGRID_active_counts, pad_size, mode='reflect')
@@ -2499,18 +2554,42 @@ if run_all == True:
                     GRID_active = diag_rm_mat*(GRID_active/V_grid) #Dividing by V_grid to get concentration in mol/m^3
                 elif run_full == True:
                     GRID_active = GRID_active/V_grid
+
+                    
+                # Before assigning new values, check if anything exists
+                if GRID[kkk][i] is not None:
+                    print(f"Previous GRID value exists: {np.max(GRID[kkk][i].data)}")
+                    GRID[kkk][i] = None  # Clear previous value
                 
+                #_active value: {np.max(GRID_active)}")
                 # Create sparse matrix
+
+                # Create and store sparse matrix
+                #print(f"Before sparse - Max GRID_active value: {np.max(GRID_active)}")
                 sparse_matrix = csr_matrix(GRID_active)
-                # Assign to GRID
                 GRID[kkk][i] = sparse_matrix
+                #print(f"After storing - Max GRID value: {np.max(GRID[kkk][i].data)}\n")
                 del sparse_matrix
 
                 GRID_top[kkk,:,:] = GRID_active
-                integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
-                standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
+                #integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
+                #standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
                 GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop. MOx in each layer
-                total_mox[kkk] = np.nansum(GRID_mox[kkk,:,:])
+                
+                #stop the script at kkk = 100
+                #if kkk == 100 and i == 1:
+                    # During runtime, save reference values
+                    #reference_value = np.max(GRID[kkk][i].data)
+                    #print(f"Reference value saved: {reference_value}")
+
+                    # Add matrix property checks
+                    #print(f"Matrix shape: {GRID[kkk][i].shape}")
+                    #print(f"Number of stored elements: {len(GRID[kkk][i].data)}")
+                    #print(f"Memory layout: {GRID[kkk][i].format}")
+
+                    # Optional - save snapshot for comparison
+                    #np.save(f'grid_snapshot_{kkk}_{i}.npy', GRID[kkk][i].toarray())
+
 
                 #-------------------------------#
                 #CALCULATE ATMOSPHERIC FLUX/LOSS#
@@ -2561,7 +2640,6 @@ if run_all == True:
 
         
 end_time_whole_script = time.time()
-
 total_computation_time = end_time_whole_script-start_time_whole_script
 
 print(f"Full calculation time was: {total_computation_time}")
@@ -2589,9 +2667,9 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
     GRID_atm = pickle.load(f)
 #GRID_mox_sparse = csr_matrix(GRID_mox)
-GRID_mox_sparse = GRID_mox
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
-    pickle.dump(GRID_mox_sparse, f)
+#GRID_mox_sparse = GRID_mox
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
+#    pickle.dump(GRID_mox_sparse, f)
 #and wind, sst, and gt_vel fields
 if fit_wind_data == True:
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\ws_interp.pickle', 'wb') as f:
@@ -2601,8 +2679,6 @@ if fit_wind_data == True:
     with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'wb') as f:
         pickle.dump(GRID_gt_vel, f)
 #and vectors for total values
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_mox.pickle', 'wb') as f:
-    pickle.dump(total_mox, f)
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_atm_flux.pickle', 'wb') as f:
     pickle.dump(total_atm_flux, f)
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_died.pickle', 'wb') as f:
@@ -2813,13 +2889,16 @@ color_3 = '#448ee4'
 color_4 = '#b66325'
 
 #set default matplotlib plotting style
-plt.style.use('default')
+#plt.style.use('default')
 #Set plotting style
-#plt.style.use('dark_background') 
+plt.style.use('dark_background') 
 #get corresponding time vector
 times_totatm =  pd.to_datetime(bin_time,unit='s')
 
-gridalpha = 0.9
+#calculate the average wind field at each timestep
+average_wind = np.nanmean(np.nanmean(ws_interp,axis=1),axis=1)
+
+gridalpha = 0.4
 
 # For the 2x2 subplot figure:
 fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
@@ -2828,7 +2907,7 @@ fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
 numerical_times = pd.to_numeric((times_totatm))
 
 #find four evenly spaced ticks
-tick_indices = np.linspace(twentiethofmay, len(numerical_times) - 1, 4).astype(int)
+tick_indices = np.linspace(twentiethofmay, time_steps - 1, 4).astype(int)
 
 # Calculate tick positions (4 evenly spaced ticks)
 tick_positions = times_totatm[tick_indices]
@@ -2836,39 +2915,82 @@ tick_positions = times_totatm[tick_indices]
 # Create tick labels using datetime formatting
 tick_labels = pd.to_datetime(tick_positions).strftime('%d.%b')
 
-linewidth_set = 2
+linewidth_set = 2.5
 
-# Plot 1: Total atmospheric flux
-ax1.plot(times_totatm[twentiethofmay:time_steps], total_atm_flux[twentiethofmay:time_steps], color=color_1, linewidth=linewidth_set)
-ax1.set_title('Atmospheric Flux')
-#ax1.set_xlabel('Timestep')
-ax1.set_ylabel('mol hr$^{-1}$')
+## Keep existing ax1 plot and add twin axis
+ax1.plot(times_totatm[twentiethofmay:time_steps], 
+         total_atm_flux[twentiethofmay:time_steps], 
+         color=color_1, 
+         linewidth=linewidth_set,
+         label='Atmospheric Flux')
+
+# Set labels
+ax1.set_ylabel('Atmospheric Flux [mol hr$^{-1}$]', color=color_1)
+
 ax1.grid(True, alpha=gridalpha)
-ax1.set_xticks(tick_positions)
+ax1.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
 
+# Style the twin axis
+ax1.tick_params(axis='y', labelcolor=color_1)
+
+# Create twin axis
+ax1_twin = ax1.twinx()
+
+# Plot wind data
+ax1_twin.plot(times_totatm[twentiethofmay:time_steps], 
+              average_wind[twentiethofmay:time_steps], 
+              color='grey', 
+              linewidth=linewidth_set,
+              linestyle='--',
+              label='Wind Speed')
+
+# Set labels
+ax1.set_ylabel('Atmospheric Flux [mol hr$^{-1}$]', color=color_1)
+ax1_twin.set_ylabel('Wind Speed [m s$^{-1}$]', color='grey')
+
+# Style the twin axis
+ax1_twin.tick_params(axis='y', labelcolor='black')
+ax1_twin.grid(False)  # Disable grid for twin axis
+
+# Add legends
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax1_twin.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, 
+          loc='upper center', fontsize=12)
+
+# Maintain existing formatting
+ax1_twin.set_xticks(tick_positions)
+ax1_twin.set_xticklabels(tick_labels, rotation=0, ha='center')
+
+#what is total mox????
 # Plot 2: Total MOx
-ax2.plot(times_totatm[twentiethofmay:time_steps], total_mox[twentiethofmay:time_steps], color=color_2, linewidth=linewidth_set)
-ax2.set_title('Microbial Oxidation')
+ax2.plot(times_totatm[twentiethofmay:time_steps], particles_mox_loss[twentiethofmay:time_steps], color=color_2, linewidth=linewidth_set)
+#ax2.set_title('Microbial Oxidation')
 #ax2.set_xlabel('Timestep')
 ax2.set_ylabel('mol hr$^{-1}$')
 ax2.grid(True, alpha=gridalpha)
 ax2.set_xticks(tick_positions)
+ax2.set_ylabel('Microbial oxidation [mol hr$^{-1}$]')
+ax2.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
 
 # Plot 3: Particles leaving domain
 ax3.plot(times_totatm[twentiethofmay:time_steps], particles_mass_out[twentiethofmay:time_steps], color=color_3, linewidth=linewidth_set)    
-ax3.set_title('Particles leaving domain')
+#ax3.set_title('Particles leaving domain')
 #ax3.set_xlabel('Timestep')
-ax3.set_ylabel('mol hr$^{-1}$')
+ax3.set_ylabel('Particles leaving domain [mol hr$^{-1}$]')
 ax3.grid(True, alpha=gridalpha)
 ax3.set_xticks(tick_positions)
+ax3.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
 
 # Plot 4: Particles dying
-ax4.plot(times_totatm[twentiethofmay:time_steps], particles_mass_died[twentiethofmay:time_steps], color=color_4, linewidth=linewidth_set)   
-ax4.set_title('Particles dying')
+ax4.plot(times_totatm[twentiethofmay:time_steps], particles_mass_died[twentiethofmay:time_steps]-particle_mass_redistributed[twentiethofmay:time_steps], color=color_4, linewidth=linewidth_set)   
+#ax4.plot(times_totatm[twentiethofmay:time_steps], particle_mass_redistributed[twentiethofmay:time_steps], color=color_4, linewidth=linewidth_set)
+#ax4.set_title('Particles dying [mol hr$^{-1}$]')
+ax4.set_ylabel('Particles dying [mol hr$^{-1}$]')
 #ax4.set_xlabel('Timestep')
-ax4.set_ylabel('mol hr$^{-1}$')
 ax4.grid(True, alpha=gridalpha)
 ax4.set_xticks(tick_positions)
+ax4.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
 
 for ax in [ax1, ax2, ax3, ax4]:
     ax.set_xticks(tick_positions)
@@ -2888,7 +3010,7 @@ for ax in [ax1, ax2, ax3, ax4]:
 plt.tight_layout()
 
 #save figure
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\total_atm_flux.png')
+plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss.png')
 
 # For the single figure:
 fig = plt.figure(figsize=(16, 10))
@@ -2987,7 +3109,7 @@ for n in range(0,744):
 
 plt.plot(GRID_top_sum)
 
-#fill in the gasp in total_mox and total_atm_flux (just remove all zeros)
+#fill in the gaps in total_mox and total_atm_flux (just remove all zeros)
 
 total_mox_new = total_mox[total_mox != 0]
 total_atm_flux_new = total_atm_flux[total_atm_flux != 0]
@@ -3386,14 +3508,14 @@ layer_1 = GRID[timestep][1].toarray()
 layer_2 = GRID[timestep][2].toarray()
 layer_3 = GRID[timestep][3].toarray()
 layer_4 = GRID[timestep][4].toarray()
-layer_5 = GRID[timestep][5].toarray()
+#layer_5 = GRID[timestep][5].toarray()
 
 # get a good level parameter
 levels = np.linspace(np.nanmin(np.nanmin(layer_0)),np.nanmax(np.nanmax(layer_0)),100)
 
 
 # Loop through depth layers
-for i in range(7):
+for i in range(5):
     # Get data for this layer
     layer_data = GRID[timestep][i].toarray()  # Convert sparse to dense
     
@@ -3426,3 +3548,211 @@ plt.show()
 plt.savefig('depth_layers_timestep_1000.png', dpi=150, bbox_inches='tight')
 
 
+###############################################
+########## MAKE A CROSS SECTION PLOT ##########
+###############################################
+
+# Define the cross section
+lon_start = 14.
+lat_start = 69
+lon_end = 16.
+lat_end = 69
+
+timestep = 1000
+
+#Find all cells that are within the cross section
+
+# Convert cross section coordinates to UTM
+x_start, y_start = utm.from_latlon(lat_start, lon_start,force_zone_number=33)[:2]
+x_end, y_end = utm.from_latlon(lat_end, lon_end,force_zone_number=33)[:2]
+
+#Normalize the modeling UTM grid such that the grid cell length is 1
+unity_bin_x = (bin_x-np.min(bin_x))/np.diff(bin_x)[0]
+unity_bin_y = (bin_y-np.min(bin_y))/np.diff(bin_y)[0]
+
+unity_x_start = int((x_start-np.min(bin_x))/(np.diff(bin_x)[0]))
+unity_y_start = int((y_start-np.min(bin_y))/(np.diff(bin_y)[0]))
+unity_x_end = int((x_end-np.min(bin_x))/(np.diff(bin_x)[0]))
+unity_y_end = int((y_end-np.min(bin_y))/(np.diff(bin_y)[0]))
+
+# Use Bresenham's line algorithm to find all cells along the cross section
+
+gridlist = bresenham(unity_x_start, unity_y_start, unity_x_end, unity_y_end)
+gridlist = np.array(gridlist)
+
+distances = np.sqrt(np.diff(gridlist[:,0])**2 + np.diff(gridlist[:,1])**2)
+
+#create a longitude list
+lon_list = bin_x[gridlist[:,0]]
+
+# Pick the gridcells defined by gridlist at every depth layer at timestep timestep
+concentration_cross_section = np.zeros((len(bin_z),len(gridlist)))*np.nan
+for i in range(len(bin_z)):
+    #check if there's data before trying to convert to array
+    if GRID[timestep][i] is not None:
+        depth_layer = GRID[timestep][i].toarray()
+        for j in range(len(gridlist)):
+            concentration_cross_section[i,j] = depth_layer[gridlist[j,1],gridlist[j,0]]
+
+#extract bathymetry for the same coordinates
+bathymetry_cross_section = []
+for i in range(len(gridlist)):
+    bathymetry_cross_section.append(interpolated_bathymetry[gridlist[i,0],gridlist[i,1]])
+
+
+# Create meshgrid for plotting
+lon_mesh, depth_mesh = np.meshgrid(lon_list, bin_z)
+
+# Create figure
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Plot concentration data
+pcm = ax.pcolormesh(lon_mesh, depth_mesh, concentration_cross_section, 
+                    shading='auto',
+                    cmap='viridis',
+                    norm='log')  # log scale since concentrations often span orders of magnitude
+
+# Plot bathymetry as black line
+ax.plot(lon_list, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
+
+# Fill below bathymetry line
+ax.fill_between(lon_list, -np.array(bathymetry_cross_section), 
+                -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
+                color='grey')
+
+# Customize plot
+ax.set_xlabel('Longitude [°E]')
+ax.set_ylabel('Depth [m]')
+ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
+
+# Add colorbar
+cbar = plt.colorbar(pcm)
+cbar.set_label('Concentration [mol/m³]')
+
+# Invert y-axis for depth
+ax.invert_yaxis()
+
+#limit the y-axis to 250 m depth
+ax.set_ylim([250,0])
+
+
+plt.tight_layout()
+plt.show()
+
+############ USING CONTOURF INSTEAD OF PCOLORMESH ############
+
+
+# Create figure
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Create contour levels for smoother plot
+levels = np.logspace(np.log10(np.nanmin(concentration_cross_section[concentration_cross_section > 0])), 
+                     np.log10(np.nanmax(concentration_cross_section)), 20)
+
+# Plot concentration data with contourf
+pcm = ax.contourf(lon_mesh, depth_mesh, concentration_cross_section, 
+                  levels=levels,
+                  cmap='viridis',
+                  norm='log')  
+
+# Plot bathymetry as black line
+ax.plot(lon_list, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
+
+# Fill below bathymetry line
+ax.fill_between(lon_list, -np.array(bathymetry_cross_section), 
+                -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
+                color='grey')
+
+# Customize plot
+ax.set_xlabel('Longitude [°E]')
+ax.set_ylabel('Depth [m]')
+ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
+
+# Add colorbar
+cbar = plt.colorbar(pcm)
+cbar.set_label('Concentration [mol/m³]')
+
+# Invert y-axis and set depth limit
+ax.invert_yaxis()
+ax.set_ylim([250,0])
+
+plt.tight_layout()
+plt.show()
+
+# Create figure
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Create contour levels for smoother plot
+levels = np.logspace(np.log10(np.nanmin(concentration_cross_section[concentration_cross_section > 0])), 
+                     np.log10(np.nanmax(concentration_cross_section)), 20)
+
+# Get longitude values
+lon_values = []
+for x in lon_list:
+    lat, lon = utm.to_latlon(x, y_start, 33, 'N')  # Using y_start as reference
+    lon_values.append(lon)
+
+# Plot concentration data with contourf using longitude values
+pcm = ax.contourf(lon_values, bin_z, concentration_cross_section, 
+                  levels=levels,
+                  cmap='viridis',
+                  norm='log')  
+
+# Plot bathymetry as black line
+ax.plot(lon_values, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
+
+# Fill below bathymetry line
+ax.fill_between(lon_values, -np.array(bathymetry_cross_section), 
+                -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
+                color='grey')
+
+# Customize plot
+ax.set_xlabel('Longitude [°E]')
+ax.set_ylabel('Depth [m]')
+ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
+
+# Add colorbar
+cbar = plt.colorbar(pcm)
+cbar.set_label('Concentration [mol/m³]')
+
+# Invert y-axis and set depth limit
+ax.invert_yaxis()
+ax.set_ylim([250,0])
+
+plt.tight_layout()
+plt.show()
+
+# Create sorted indices
+sort_idx = np.argsort(lon_values)
+
+# Sort all relevant arrays
+lon_values_sorted = np.array(lon_values)[sort_idx]
+bathymetry_sorted = np.array(bathymetry_cross_section)[sort_idx]
+concentration_sorted = concentration_cross_section[:, sort_idx]
+
+# Create figure and plot with sorted data
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Plot concentration with sorted coordinates
+pcm = ax.contourf(lon_values_sorted, bin_z, concentration_sorted, 
+                  levels=levels,
+                  cmap='viridis',
+                  norm='log')  
+
+# Plot sorted bathymetry
+ax.plot(lon_values_sorted, -bathymetry_sorted, 'k-', linewidth=2)
+ax.fill_between(lon_values_sorted, -bathymetry_sorted, 
+                -np.ones(len(bathymetry_sorted))*np.min(bathymetry_sorted),
+                color='grey')
+
+# Rest of the plot formatting remains the same
+ax.set_xlabel('Longitude [°E]')
+ax.set_ylabel('Depth [m]')
+ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
+cbar = plt.colorbar(pcm)
+cbar.set_label('Concentration [mol/m³]')
+ax.invert_yaxis()
+ax.set_ylim([250,0])
+
+plt.tight_layout()
+plt.show()

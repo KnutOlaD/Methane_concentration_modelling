@@ -83,7 +83,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 40. #m
+dz_grid = 50. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -128,6 +128,9 @@ load_from_hdf5 = False #Fix this later if needed
 create_new_datafile = False
 #redistribute mass???
 redistribute_lost_mass = True
+#Define time period of interest
+twentiethofmay = 720
+time_steps = 1495
 
 #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
@@ -854,12 +857,18 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
                 Start time label
             endtimestring : str
                 End time label
+            plot_sect_line : list of grid points (2d list)
 
     Returns
     -------
     matplotlib.figure.Figure
         The created figure object
     """
+
+    # Cache transform
+    #transform = ccrs.PlateCarree() #the correct transform for lambert conformal
+    # data transform
+    data_transform = ccrs.PlateCarree() #the correct transform for lambert conformal
 
     # Input validation
     if not isinstance(data, np.ndarray) or data.ndim != 2:
@@ -907,12 +916,9 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
         else:
             log_scale = False
             
-    # Cache transform
-    transform = ccrs.PlateCarree()
-    
     # Optimize contour plotting
     contourf_kwargs = {
-        'transform': transform,
+        'transform': data_transform,
         'zorder': 0,
         'levels': levels,
         'cmap': colormap
@@ -929,7 +935,7 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
                             levels=levels[::contoursettings[0]],
                             colors=contoursettings[1],
                             linewidths=contoursettings[2],
-                            transform=transform,
+                            transform=data_transform,
                             norm=norm)
         else:
             contourf_kwargs['extend'] = 'max'
@@ -941,7 +947,7 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
                             levels=levels[::contoursettings[0]],
                             colors=contoursettings[1],
                             linewidths=contoursettings[2],
-                            transform=transform)
+                            transform=data_transform)
     except ValueError as e:
         raise ValueError(f"Contour plotting failed: {str(e)}")
 
@@ -978,11 +984,11 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
     ax.set_extent(extent)
     
     # Custom markers (cached transform)
-    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=transform)
-    ax.text(19.0553, 69.58006, 'Tromsø', transform=transform, color='white', fontsize=12)
+    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=data_transform)
+    ax.text(19.0553, 69.58006, 'Tromsø', transform=data_transform, color='white', fontsize=12)
     
     # Efficient gridlines
-    gl = ax.gridlines(crs=transform, draw_labels=True, linewidth=0.5, 
+    gl = ax.gridlines(crs=data_transform, draw_labels=True, linewidth=0.5, 
                      color='white', alpha=0.5, linestyle='--')
     gl.top_labels = True
     gl.left_labels = True
@@ -1022,11 +1028,26 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
             linewidth=plot_model_domain[4],
             edgecolor=plot_model_domain[5],
             facecolor='none',
-            transform=transform
+            transform=data_transform
         )
         ax.add_patch(rect)
     
-    # Save/show
+    plot_sect_line = kwargs.get('plot_sect_line', None)
+
+    #Plot a line along the grid points in plot_sect_line
+    if plot_sect_line is not None and len(plot_sect_line) > 0:
+    # Plot points using PlateCarree (these are fixed locations)
+        for i in range(len(plot_sect_line)-1):
+            #print(f"Processing cross section with {len(plot_sect_line)} points")
+            x, y = plot_sect_line[i]
+            ax.plot(x, y, 
+                    marker='o', 
+                    color='grey',
+                    markersize=4, 
+                    transform=data_transform,
+                    zorder=10)
+
+        # Save/show
     if savefile_path := kwargs.get('savefile_path', False):
         plt.savefig(savefile_path, 
                    dpi=kwargs.get('dpi', 150),
@@ -1606,6 +1627,30 @@ def load_netcdf_optimized(datapath):
     
     return particles_all_data
 
+def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_z):
+    """Find nearest grid cell for a given coordinate"""
+    
+    # Handle depth first using digitize
+    depth_idx = np.digitize(depth_cwc, bin_z) - 1
+    
+    # Reshape mesh coordinates into (n_points, 2) array
+    points = np.column_stack((lon_mesh.flatten(), lat_mesh.flatten()))
+    
+    # Build KDTree
+    tree = cKDTree(points)
+    
+    # Find nearest neighbor
+    distance, index = tree.query([lon_cwc, lat_cwc])
+    
+    # Convert flat index back to 2D indices
+    lat_idx = index // lon_mesh.shape[1]
+    lon_idx = index % lon_mesh.shape[1]
+    
+    # Optional: Print distance to nearest cell
+    print(f"Distance to nearest cell: {distance:.2f} degrees")
+    
+    return lon_idx, lat_idx, depth_idx
+
 
 #################################
 ########## INITIATION ###########
@@ -2006,6 +2051,10 @@ neff_windows = GRID
 outside_grid = []
 #Count the amount of redistributed methane
 particle_mass_redistributed = np.zeros(len(bin_time))
+#Add a matrix for depth/time/moles/lost ti atni and lost to mox for each timestep in the lifespan
+#of a particle
+lifespan = 24*7*4 #4 weeks
+particle_lifespan_matrix = np.zeros((lifespan,4))
 
 if run_all == True:
 
@@ -2076,6 +2125,7 @@ if run_all == True:
         particles['time'][0] = particles['time'][1]
         particles['bw'][:,0] = particles['bw'][:,1]
 
+
         # Assign the data from preloaded data
         particles['lon'][:, 1] = particles_all_data['lon'][:, kkk].copy()
         particles['lat'][:, 1] = particles_all_data['lat'][:, kkk].copy()
@@ -2090,12 +2140,15 @@ if run_all == True:
         # Update masks
         particles['weight'][:, 1].mask = particles['z'][:, 1].mask
         particles['bw'][:, 1].mask = particles['z'][:, 1].mask
+        particles['age'][:,1].mask = particles['z'][:, 1].mask
 
-        # Add weights if it's the first timestep
+        # Add weights and reset the aging parameter if it's the first timestep
         if kkk == 1:
-            particles['weight'][:,1][np.where(particles['weight'][:,1].mask == False)] = weights_full_sim
             particles['weight'][:,0] = particles['weight'][:,1]
-        
+            particles['weight'][:,1][np.where(particles['weight'][:,1].mask == False)] = weights_full_sim
+            particles['age'][:,0] = particles['age'][:,1]
+            particles['age'][:,1][np.where(particles['age'][:,1].mask == False)] = 0
+            
         end_time = time.time()
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
@@ -2168,7 +2221,7 @@ if run_all == True:
             else:
                 particles_mass_died[kkk] = 0
         else:
-            particle_mass_died[kkk] = 0
+            particles_mass_died[kkk] = 0
             particle_mass_redistributed[kkk]=0
 
         #------------------------------------------#
@@ -2250,10 +2303,7 @@ if run_all == True:
         #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
         #--------------------------------------#
 
-        #Unmask particles that were masked in the previous timestep
-        #particles['z'][:,j].mask = particles['z'][:,j-1].mask
-        # Get the indices where particles['age'][:,j] is not masked
-        #do some binning on those
+        #Unmask particles that were masked in the previous timestep and do some binning
         bin_z_number = np.digitize(
         np.abs(particles['z'][:,1][np.where(
             particles['z'][:,1].mask == False)]),bin_z)
@@ -2261,12 +2311,6 @@ if run_all == True:
         # Get the indices where particles['age'][:,j] is not masked and equal to 0
         activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
         already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
-
-        #activated_indices = unmasked_indices[0][
-        #    particles['age'][:,1][unmasked_indices] == 0]
-        #already active indices
-        #already_active = unmasked_indices[0][
-        #    particles['age'][:,1][unmasked_indices] != 0]
         
         #print the number of true 
         ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
@@ -2757,7 +2801,6 @@ GRID_gt_vel = GRID_gt_vel #Here, just in cm/hr for convention.
 
 GRID_generic = GRID_atm_flux_m2
 images_atm_rel = []
-time_steps = len(bin_time)
 levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
 #levels_atm = levels_atm[1:-1]
 levels_atm = levels_atm[:-50]*0.25
@@ -2819,7 +2862,6 @@ if plot_atm == True:
     times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
 
     images_gt_vel = []
-    time_steps = len(bin_time)
     levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
 
     for i in range(twentiethofmay,time_steps,2):
@@ -3021,7 +3063,7 @@ ax.set_title('Total atmospheric flux', fontsize=16)
 ax.set_xticks(tick_positions)
 
 ax2 = ax.twinx()
-ax2.plot(times_totatm, total_mox, color='0.4', label='Number of active particles')
+ax2.plot(times_totatm, particles_mox_loss[twentiethofmay:time_steps], color='0.4', label='Number of active particles')
 ax2.set_ylabel('Number of active particles', fontsize=16)
 ax2.set_xticks(tick_positions)
 
@@ -3057,9 +3099,6 @@ plt.plot(f_tidal,Pxx_tidal,'ro')
 
 #Check what's going on in the top layer, i.e. we need to loop through 
 #GRID and sum all the top layers
-
-time_steps = len(bin_time)
-
 plot_all = False
 if plot_all == True:
 
@@ -3094,66 +3133,6 @@ if plot_all == True:
         images_field_test.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png'))
         plt.close(fig)
     
-#Create a field with all the layers summed up
-GRID_sum = np.zeros(GRID[0][0].toarray().shape)
-for n in range(0,744):
-    print(n)
-    GRID_sum = GRID_sum + np.sum(GRID[n][:].toarray(),axis=0)
-
-#first loop through to find max median
-maxmed = []
-maxmed = np.max(np.max(GRID_mox))
-for n in range(0,744):
-    print(n)
-    maxmed = np.append(maxmed,np.max(GRID_mox, axis=0))
-
-plt.plot(GRID_top_sum)
-
-#fill in the gaps in total_mox and total_atm_flux (just remove all zeros)
-
-total_mox_new = total_mox[total_mox != 0]
-total_atm_flux_new = total_atm_flux[total_atm_flux != 0]
-#make a time vector where the same zero indices are removed
-times_new = times[total_mox != 0]
-
-#set the ylimits
-ylims = [0,np.max([np.max(total_mox_new),np.max(total_atm_flux_new)])]
-
-#make a yy plot of both of them on the same figure
-fig, ax1 = plt.subplots()
-ax1.plot(times_new[170:-170],total_mox_new[170:-170],color='blue',label='Total microbial oxidation')
-ax1.set_ylabel('Total microbial oxidation [mol/hr]', color='blue')
-ax1.set_xlabel('Time')
-ax1.set_title('Total microbial oxidation and total atmospheric flux')
-#set ylims
-ax1.set_ylim(ylims)
-ax2 = ax1.twinx()
-ax2.plot(times_new[170:-170],total_atm_flux_new[170:-170],color='red',label='Total atmospheric flux')
-ax2.set_ylabel('Total atmospheric flux [mol/hr]', color='red')
-#set ylims
-ax2.set_ylim(ylims)
-#set xticks such that only 4 ticks are shown
-#ax1.set_xticks(np.linspace(0,len(times_new[170:-170]),5))
-fig.tight_layout()
-plt.show()
-
-fig = plt.figure(figsize=(16, 10))
-ax = fig.add_subplot(1, 1, 1)
-ax.plot(times_new[170:-170],total_atm_flux_new[170:-170],label='Total atmospheric flux',color='blue')
-ax.set_ylabel('Total atmospheric flux [mol/hr]',fontdict={'fontsize':16})
-ax.set_title('Total MOx and atmospheric flux, approx. 1 to 10 relationship',fontdict={'fontsize':16})
-ax.set_ylim([0,np.max(total_mox_new)])
-#set fontsize for the xticks
-ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
-#add yy axis showing the number of active particles
-ax2 = ax.twinx()
-ax2.plot(times_new[170:-170],total_mox_new[170:-170],color='0.4',label='Number of active particles')
-ax2.set_ylabel('Total MOx [mol/hr]',fontdict={'fontsize':16})
-ax2.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',fontsize=14)
-ax2.set_ylim([0,np.max(total_mox_new)])
-#save figure
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux_sameaxis.png')
-
 
 
 
@@ -3353,7 +3332,6 @@ if plot_wind_field == True:
 
     images_wind = []
     images_sst = []
-    time_steps = len(bin_time)
 
     for i in range(time_steps):
         fig = plot_2d_data_map_loop(ws_interp[i,:,:],lon_mesh,
@@ -3412,32 +3390,6 @@ if plot_gt_vel == True:
 ############   PLOTTING TIMESERIES FROM CWC LOCATION ############
 #################################################################
 
-from scipy.spatial import KDTree
-
-def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_z):
-    """Find nearest grid cell for a given coordinate"""
-    
-    # Handle depth first using digitize
-    depth_idx = np.digitize(depth_cwc, bin_z) - 1
-    
-    # Reshape mesh coordinates into (n_points, 2) array
-    points = np.column_stack((lon_mesh.flatten(), lat_mesh.flatten()))
-    
-    # Build KDTree
-    tree = KDTree(points)
-    
-    # Find nearest neighbor
-    distance, index = tree.query([lon_cwc, lat_cwc])
-    
-    # Convert flat index back to 2D indices
-    lat_idx = index // lon_mesh.shape[1]
-    lon_idx = index % lon_mesh.shape[1]
-    
-    # Optional: Print distance to nearest cell
-    print(f"Distance to nearest cell: {distance:.2f} degrees")
-    
-    return lon_idx, lat_idx, depth_idx
-
 
 #CWC location
 lon_cwc = 17
@@ -3458,7 +3410,9 @@ concentration_cwc = []
 
 #loop over from twentieth of may to time_steps_full
 for i in range(twentiethofmay,time_steps):
-    concentration_cwc.append(GRID[i][depth_cwc_idx][lat_cwc_idx,lon_cwc_idx])
+    #check if it's not empty
+    if GRID[i][depth_cwc_idx] is not None and len(GRID[i]) :
+        concentration_cwc.append(GRID[i][depth_cwc_idx][lat_cwc_idx,lon_cwc_idx])
 
 # Plot time series at CWC location
 plt.figure(figsize=(12, 6))  # Wider figure
@@ -3544,7 +3498,7 @@ axs[-1].remove()
 plt.tight_layout()
 plt.show()
 
-# Optionally save
+# Save
 plt.savefig('depth_layers_timestep_1000.png', dpi=150, bbox_inches='tight')
 
 
@@ -3553,32 +3507,45 @@ plt.savefig('depth_layers_timestep_1000.png', dpi=150, bbox_inches='tight')
 ###############################################
 
 # Define the cross section
-lon_start = 14.
-lat_start = 69
-lon_end = 16.
-lat_end = 69
+lon_start = 12.
+lat_start = 70.
+lon_end = 20.
+lat_end = 70.
 
 timestep = 1000
-
-#Find all cells that are within the cross section
 
 # Convert cross section coordinates to UTM
 x_start, y_start = utm.from_latlon(lat_start, lon_start,force_zone_number=33)[:2]
 x_end, y_end = utm.from_latlon(lat_end, lon_end,force_zone_number=33)[:2]
 
 #Normalize the modeling UTM grid such that the grid cell length is 1
-unity_bin_x = (bin_x-np.min(bin_x))/np.diff(bin_x)[0]
-unity_bin_y = (bin_y-np.min(bin_y))/np.diff(bin_y)[0]
 
-unity_x_start = int((x_start-np.min(bin_x))/(np.diff(bin_x)[0]))
-unity_y_start = int((y_start-np.min(bin_y))/(np.diff(bin_y)[0]))
-unity_x_end = int((x_end-np.min(bin_x))/(np.diff(bin_x)[0]))
-unity_y_end = int((y_end-np.min(bin_y))/(np.diff(bin_y)[0]))
+lon_start_idx, lat_start_idx, depth_start_idx = find_nearest_grid_cell(
+    lon_cwc=lon_start ,
+    lat_cwc=lat_start, 
+    depth_cwc=0,
+    lon_mesh=lon_mesh,
+    lat_mesh=lat_mesh,
+    bin_z=bin_z
+)
+
+lon_end_idx, lat_end_idx, depth_end_idx = find_nearest_grid_cell(
+    lon_cwc=lon_end ,
+    lat_cwc=lat_end, 
+    depth_cwc=0,
+    lon_mesh=lon_mesh,
+    lat_mesh=lat_mesh,
+    bin_z=bin_z
+)
 
 # Use Bresenham's line algorithm to find all cells along the cross section
-
-gridlist = bresenham(unity_x_start, unity_y_start, unity_x_end, unity_y_end)
+gridlist = bresenham(lon_start_idx, lat_start_idx, lon_end_idx, lat_end_idx)
 gridlist = np.array(gridlist)
+
+#get the lon/lat coordinates of the cross section using lon_mesh and lat_mesh
+lonlat_gridlist = np.zeros((len(gridlist),2))
+for i in range(len(gridlist)):
+    lonlat_gridlist[i,1],lonlat_gridlist[i,0] = lat_mesh[gridlist[i,1],gridlist[i,0]],lon_mesh[gridlist[i,1],gridlist[i,0]]
 
 distances = np.sqrt(np.diff(gridlist[:,0])**2 + np.diff(gridlist[:,1])**2)
 
@@ -3592,31 +3559,42 @@ for i in range(len(bin_z)):
     if GRID[timestep][i] is not None:
         depth_layer = GRID[timestep][i].toarray()
         for j in range(len(gridlist)):
-            concentration_cross_section[i,j] = depth_layer[gridlist[j,1],gridlist[j,0]]
+            concentration_cross_section[i,j] = depth_layer[gridlist[j,0],gridlist[j,1]]
 
 #extract bathymetry for the same coordinates
 bathymetry_cross_section = []
-for i in range(len(gridlist)):
-    bathymetry_cross_section.append(interpolated_bathymetry[gridlist[i,0],gridlist[i,1]])
-
+bathymetry_cross_section = interpolated_bathymetry[gridlist[:,1],gridlist[:,0]]
 
 # Create meshgrid for plotting
-lon_mesh, depth_mesh = np.meshgrid(lon_list, bin_z)
+lon_sect_mesh, depth_mesh = np.meshgrid(lon_list, bin_z)
+
+#add a zero at the beginning of the distance array
+distances = np.insert(distances,0,0)
+
+distance_mesh,depth_mesh = np.meshgrid(np.cumsum(distances),bin_z)
+
+#total distance
+total_distances = np.cumsum(distances)
+
+#get the lon/lat coordinates of the cross section
+#lonlat_gridlist = np.zeros((len(gridlist),2))
+for i in range(len(gridlist)):
+    lonlat_gridlist[i,1],lonlat_gridlist[i,0] = utm.to_latlon(bin_x[gridlist[i,0]],bin_y[gridlist[i,1]],zone_number=33,zone_letter='W')
 
 # Create figure
 fig, ax = plt.subplots(figsize=(12, 6))
 
 # Plot concentration data
-pcm = ax.pcolormesh(lon_mesh, depth_mesh, concentration_cross_section, 
+pcm = ax.contourf(distance_mesh,depth_mesh, concentration_cross_section, 
                     shading='auto',
-                    cmap='viridis',
+                    cmap='rocket',
                     norm='log')  # log scale since concentrations often span orders of magnitude
 
 # Plot bathymetry as black line
-ax.plot(lon_list, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
+ax.plot(total_distances, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
 
 # Fill below bathymetry line
-ax.fill_between(lon_list, -np.array(bathymetry_cross_section), 
+ax.fill_between(total_distances, -np.array(bathymetry_cross_section), 
                 -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
                 color='grey')
 
@@ -3639,120 +3617,43 @@ ax.set_ylim([250,0])
 plt.tight_layout()
 plt.show()
 
-############ USING CONTOURF INSTEAD OF PCOLORMESH ############
+# Make a map plot of the bathymetry and the line that was used for the cross section
+
+levels_bath = [0,25,50,75,100,125,150,175,200,225,250,275,300,350,400,450,500,600,700,800,900,1000]
+
+#levels for concentration data
+
+colormap  = 'rocket_r'
+
+fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
+                            lon=lon_mesh,
+                                lat=lat_mesh,
+                            projection=projection,
+                            levels=levels_bath,
+                            timepassed = [0,1],
+                            colormap=colormap,
+                            title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i])[5:-3],
+                            unit='mol m$^{-2}$ hr$^{-1}$',
+                            savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
+                            adj_lon = [1,-1],
+                            adj_lat = [0,-0.5],
+                            show=False,
+                            dpi=90,
+                            figuresize = [12,10],
+                            log_scale = False,
+                            starttimestring = '20 May 2018',
+                            endtimestring = '21 June 2018',
+                            maxnumticks = 10,
+                            plot_progress_bar = False,
+                            #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                            contoursettings = [2,'0.8',0.1],
+                            plot_sect_line = cross_section
+                            )
 
 
-# Create figure
-fig, ax = plt.subplots(figsize=(12, 6))
 
-# Create contour levels for smoother plot
-levels = np.logspace(np.log10(np.nanmin(concentration_cross_section[concentration_cross_section > 0])), 
-                     np.log10(np.nanmax(concentration_cross_section)), 20)
+#L
 
-# Plot concentration data with contourf
-pcm = ax.contourf(lon_mesh, depth_mesh, concentration_cross_section, 
-                  levels=levels,
-                  cmap='viridis',
-                  norm='log')  
+particles_all_data.keys()
 
-# Plot bathymetry as black line
-ax.plot(lon_list, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
-
-# Fill below bathymetry line
-ax.fill_between(lon_list, -np.array(bathymetry_cross_section), 
-                -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
-                color='grey')
-
-# Customize plot
-ax.set_xlabel('Longitude [°E]')
-ax.set_ylabel('Depth [m]')
-ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
-
-# Add colorbar
-cbar = plt.colorbar(pcm)
-cbar.set_label('Concentration [mol/m³]')
-
-# Invert y-axis and set depth limit
-ax.invert_yaxis()
-ax.set_ylim([250,0])
-
-plt.tight_layout()
-plt.show()
-
-# Create figure
-fig, ax = plt.subplots(figsize=(12, 6))
-
-# Create contour levels for smoother plot
-levels = np.logspace(np.log10(np.nanmin(concentration_cross_section[concentration_cross_section > 0])), 
-                     np.log10(np.nanmax(concentration_cross_section)), 20)
-
-# Get longitude values
-lon_values = []
-for x in lon_list:
-    lat, lon = utm.to_latlon(x, y_start, 33, 'N')  # Using y_start as reference
-    lon_values.append(lon)
-
-# Plot concentration data with contourf using longitude values
-pcm = ax.contourf(lon_values, bin_z, concentration_cross_section, 
-                  levels=levels,
-                  cmap='viridis',
-                  norm='log')  
-
-# Plot bathymetry as black line
-ax.plot(lon_values, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
-
-# Fill below bathymetry line
-ax.fill_between(lon_values, -np.array(bathymetry_cross_section), 
-                -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
-                color='grey')
-
-# Customize plot
-ax.set_xlabel('Longitude [°E]')
-ax.set_ylabel('Depth [m]')
-ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
-
-# Add colorbar
-cbar = plt.colorbar(pcm)
-cbar.set_label('Concentration [mol/m³]')
-
-# Invert y-axis and set depth limit
-ax.invert_yaxis()
-ax.set_ylim([250,0])
-
-plt.tight_layout()
-plt.show()
-
-# Create sorted indices
-sort_idx = np.argsort(lon_values)
-
-# Sort all relevant arrays
-lon_values_sorted = np.array(lon_values)[sort_idx]
-bathymetry_sorted = np.array(bathymetry_cross_section)[sort_idx]
-concentration_sorted = concentration_cross_section[:, sort_idx]
-
-# Create figure and plot with sorted data
-fig, ax = plt.subplots(figsize=(12, 6))
-
-# Plot concentration with sorted coordinates
-pcm = ax.contourf(lon_values_sorted, bin_z, concentration_sorted, 
-                  levels=levels,
-                  cmap='viridis',
-                  norm='log')  
-
-# Plot sorted bathymetry
-ax.plot(lon_values_sorted, -bathymetry_sorted, 'k-', linewidth=2)
-ax.fill_between(lon_values_sorted, -bathymetry_sorted, 
-                -np.ones(len(bathymetry_sorted))*np.min(bathymetry_sorted),
-                color='grey')
-
-# Rest of the plot formatting remains the same
-ax.set_xlabel('Longitude [°E]')
-ax.set_ylabel('Depth [m]')
-ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
-cbar = plt.colorbar(pcm)
-cbar.set_label('Concentration [mol/m³]')
-ax.invert_yaxis()
-ax.set_ylim([250,0])
-
-plt.tight_layout()
-plt.show()
+#loop over 

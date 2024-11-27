@@ -1879,9 +1879,9 @@ else:#load the GRID_gt_vel
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'rb') as f:
         GRID_gt_vel = pickle.load(f)
 
-################################################################
-### ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT AND BANDWIDTH ###
-################################################################
+##########################################################################################
+### ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT, BANDWIDTH, AGE, AND VERTICAL TRANSPORT ###
+##########################################################################################
 
 ### Weight ###
 particles['weight'] = np.ma.zeros(particles['z'].shape)
@@ -1893,12 +1893,16 @@ particles['weight'].mask = particles['lon'].mask
 initial_bandwidth = initial_bandwidth #meters
 #Define the bandwidth aging constant
 age_constant = age_constant #meters spread every hour
-#Define the bandwidth matrix
+#Define the bandwidth particle parameter
 particles['bw'] = np.ma.zeros(particles['lon'].shape)
 #Add the initial bandwidth to the particles at all timesteps
 particles['bw'][:,0] = initial_bandwidth
 #Add mask
 particles['bw'].mask = particles['lon'].mask
+#Dict entry for vertical transport
+particles['z_transport'] = np.ma.zeros(particles['z'].shape)
+#add mask
+particles['z_transport'].mask = particles['lon'].mask
 
 #-----------------------------------------#
 #CREATE A MATRIX FOR REMOVING THE DIAGONAL#
@@ -2040,6 +2044,8 @@ num_layers = len(bin_z)
 
 # Initialize GRID as nested list with proper dimensions
 GRID = [[None for _ in range(num_layers)] for _ in range(num_timesteps)]
+# Initialize GRID for storing vertical transort in each grid cell
+GRID_vtrans = [[None for _ in range(num_layers)] for _ in range(num_timesteps)]
 
 #local integral length scale
 integral_length_scale_windows = GRID
@@ -2059,6 +2065,7 @@ depth_bins_lifespan = np.arange(0,np.max(bin_z)+dz_grid/2,dz_grid/2)
 
 particle_lifespan_matrix = np.zeros((lifespan,len(depth_bins_lifespan),3))
 particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
+
 
 if run_all == True:
 
@@ -2129,7 +2136,6 @@ if run_all == True:
         particles['time'][0] = particles['time'][1]
         particles['bw'][:,0] = particles['bw'][:,1]
 
-
         # Assign the data from preloaded data
         particles['lon'][:, 1] = particles_all_data['lon'][:, kkk].copy()
         particles['lat'][:, 1] = particles_all_data['lat'][:, kkk].copy()
@@ -2140,11 +2146,12 @@ if run_all == True:
         particles['UTM_x'][:,0] = particles_all_data['UTM_x'][:,kkk-1].copy()
         particles['UTM_y'][:,0] = particles_all_data['UTM_y'][:,kkk-1].copy()
         particles = add_utm(particles)
-
+        
         # Update masks
         particles['weight'][:, 1].mask = particles['z'][:, 1].mask
         particles['bw'][:, 1].mask = particles['z'][:, 1].mask
         particles['age'][:,1].mask = particles['z'][:, 1].mask
+        particles['z_transport'][:,1].mask = particles['z'][:,1].mask
 
         # Add weights and reset the aging parameter if it's the first timestep
         if kkk == 1:
@@ -2264,6 +2271,7 @@ if run_all == True:
         #make sure outside_grid only have particles that left the domain in the current timestep
 
         # Mask those particles
+        particles['z_transport'].mask = True
         particles['z'][outside_grid,1].mask = True
         particles['weight'][outside_grid,1].mask = True
         particles['bw'][outside_grid,1].mask = True
@@ -2354,19 +2362,20 @@ if run_all == True:
             particles['weight'][already_active_surface,1] = particles['weight'][already_active_surface,0] - (
                 particleweighing*total_atm_flux[kkk-1]) #mol/hr
             particles_atm_loss[kkk] = np.nansum((particleweighing*total_atm_flux[kkk-1])/np.nansum(particleweighing))
-            #weigh this with the gt_vel
-            #USING THE TOTAL ATM FLUX HERE.. 
-            #remove particles with weight less than 0
-            #if particles['weight'][already_active,j][particles['weight'][already_active,j]<0].any():
-            #    break
+            
+            ##### ADD AGE #####
+            particles['age'][already_active,1] = particles['age'][already_active,0] + 1
+            particles['age'].mask[already_active,1] = False
+
+            ##### CALCULATE VERTICAL DISPLACEMENT #####
+            particles['z_transport'][already_active,1] = particles['z'][already_active,1]-particles['z'][alrady_active,0]
+
+            ##### ADRESS PROBLEMATIC VALUES #####
             particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
             #add the bandwidth of the particle to the current timestep
             particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
             #limit the bandwidth to a maximum value
             particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
-            #add age
-            particles['age'][already_active,1] = particles['age'][already_active,0] + 1
-            particles['age'].mask[already_active,1] = False
 
         #finished with modifying weights, replace weights[0] with weights[1] for next step
         particles['weight'][:,0] = particles['weight'][:,1]
@@ -2396,12 +2405,7 @@ if run_all == True:
             surface_indices = np.searchsorted(already_active_surface, truly_active[surface_mask])
             np.add.at(particle_lifespan_matrix[:, :, 2], 
                     (ages[surface_mask], depths[surface_mask]),
-                    particleweighing[surface_indices] * total_atm_flux[kkk-1])
-
-        #normalize particle_lifespan_matrix for each age
-#        for nn in range(len(particle_lifespan_matrix)):
-#            particle_lifespan_matrix[nn,:,0] = particle_lifespan_matrix[nn,:,0]/np.sum(particle_lifespan_matrix[nn,:,0])
-        
+                    particleweighing[surface_indices] * total_atm_flux[kkk-1])        
 
         #--------------------------------------------------#
         #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
@@ -2427,6 +2431,9 @@ if run_all == True:
         
         #keep track of number of particles
         total_parts[kkk] = len(parts_active[0])
+
+        #Calculate and define the vertical transport for every particle at this timestep
+        parts_vert_trans = particles['z'][:,1].compressed()[sort_indices]
         
         #-----------------------------------#
         #INITIATE FOR LOOP OVER DEPTH LAYERS#
@@ -2508,6 +2515,13 @@ if run_all == True:
                 start_time = time.time()
                 #pre-kernel density estimate using the histogram estimator
                 preGRID_active,preGRID_active_counts,preGRID_active_bw = histogram_estimator(parts_active_z[0],
+                                                    parts_active_z[1],
+                                                    bin_x,
+                                                    bin_y,
+                                                    parts_active_z[5],
+                                                    parts_active_z[4])
+
+                preGRID_vert,preGRID_vert_counts,preGRID_vert_bw = histogram_estimator(parts_active_z[0],
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
@@ -3083,23 +3097,6 @@ plt.tight_layout()
 #save figure
 plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss.png')
 
-# For the single figure:
-fig = plt.figure(figsize=(16, 10))
-ax = fig.add_subplot(1, 1, 1)
-ax.plot(times_totatm, total_atm_flux, label='Total atmospheric flux', color='blue')
-ax.set_ylabel('Total atmospheric flux [mol/hr]', fontsize=16)
-ax.set_title('Total atmospheric flux', fontsize=16)
-ax.set_xticks(tick_positions)
-
-ax2 = ax.twinx()
-ax2.plot(times_totatm, particles_mox_loss[twentiethofmay:time_steps], color='0.4', label='Number of active particles')
-ax2.set_ylabel('Number of active particles', fontsize=16)
-ax2.set_xticks(tick_positions)
-
-# Apply to plots
-#save figure
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run\\total_atm_flux.png')
-
 #find the dominant periods in the total_atm_flux dataset
 #use the periodogram
 from scipy.signal import periodogram
@@ -3536,10 +3533,10 @@ plt.savefig('depth_layers_timestep_1000.png', dpi=150, bbox_inches='tight')
 ###############################################
 
 # Define the cross section
-lon_start = 12.
-lat_start = 70.
-lon_end = 20.
-lat_end = 70.
+lon_start = 14.3
+lat_start = 69.3
+lon_end = 14.8
+lat_end = 68.9
 
 timestep = 1000
 
@@ -3576,7 +3573,7 @@ lonlat_gridlist = np.zeros((len(gridlist),2))
 for i in range(len(gridlist)):
     lonlat_gridlist[i,1],lonlat_gridlist[i,0] = lat_mesh[gridlist[i,1],gridlist[i,0]],lon_mesh[gridlist[i,1],gridlist[i,0]]
 
-distances = np.sqrt(np.diff(gridlist[:,0])**2 + np.diff(gridlist[:,1])**2)
+distances = np.sqrt(np.diff(gridlist[:,0])**2 + np.diff(gridlist[:,1])**2)*0.8
 
 #create a longitude list
 lon_list = bin_x[gridlist[:,0]]
@@ -3610,43 +3607,67 @@ total_distances = np.cumsum(distances)
 for i in range(len(gridlist)):
     lonlat_gridlist[i,1],lonlat_gridlist[i,0] = utm.to_latlon(bin_x[gridlist[i,0]],bin_y[gridlist[i,1]],zone_number=33,zone_letter='W')
 
+#define levels
+levels = np.linspace(np.nanmin(concentration_cross_section)*1.1,np.nanmax(concentration_cross_section)/1.1,100)
+
+# Ensure concentration values are positive and non-zero
+concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
+# Replace NaNs with zeros
+concentration_cross_section = np.nan_to_num(concentration_cross_section)
+
+# Define levels
+levels = np.linspace(np.nanmin(concentration_cross_section) * 1.1, np.nanmax(concentration_cross_section), 100)
+
 # Create figure
 fig, ax = plt.subplots(figsize=(12, 6))
 
 # Plot concentration data
-pcm = ax.contourf(distance_mesh,depth_mesh, concentration_cross_section, 
-                    shading='auto',
-                    cmap='rocket',
-                    norm='log')  # log scale since concentrations often span orders of magnitude
+pcm = ax.contourf(distance_mesh, depth_mesh, concentration_cross_section, 
+                  shading='auto',
+                  cmap='rocket',
+                  levels=levels,
+                  extend='max')  # Extend colorbar to indicate values beyond specified levels
+
+
+# Plot contour lines with fewer levels
+contour = ax.contour(distance_mesh, depth_mesh, concentration_cross_section, levels=levels[::2], colors='white', linewidths=0.1, zorder=1, alpha=0.5)
+#ax.clabel(contour, inline=True, fontsize=8)
+#Try pcolor instead
+
 
 # Plot bathymetry as black line
-ax.plot(total_distances, -np.array(bathymetry_cross_section), 'k-', linewidth=2)
+ax.plot(total_distances, -np.array(bathymetry_cross_section), 'k-', linewidth=2, zorder=3)
 
 # Fill below bathymetry line
 ax.fill_between(total_distances, -np.array(bathymetry_cross_section), 
-                -np.ones(len(bathymetry_cross_section))*np.min(bathymetry_cross_section),
-                color='grey')
+                -np.ones(len(bathymetry_cross_section)) * np.min(bathymetry_cross_section),
+                color='grey', zorder=2)
 
 # Customize plot
-ax.set_xlabel('Longitude [°E]')
+ax.set_xlabel('Distance [km]')
 ax.set_ylabel('Depth [m]')
 ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
 
-# Add colorbar
-cbar = plt.colorbar(pcm)
+# Add colorbar with specified levels
+cbar = plt.colorbar(pcm, ticks=levels[::8])
 cbar.set_label('Concentration [mol/m³]')
 
 # Invert y-axis for depth
 ax.invert_yaxis()
 
-#limit the y-axis to 250 m depth
-ax.set_ylim([250,0])
+# Limit the y-axis to 250 m depth
+ax.set_ylim([225, 0])
 
+# Add grid lines
+#ax.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.5)
 
 plt.tight_layout()
 plt.show()
 
 # Make a map plot of the bathymetry and the line that was used for the cross section
+
+
+cross_section = lonlat_gridlist
 
 levels_bath = [0,25,50,75,100,125,150,175,200,225,250,275,300,350,400,450,500,600,700,800,900,1000]
 
@@ -3686,3 +3707,195 @@ fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
 particles_all_data.keys()
 
 #loop over 
+
+
+#######################################
+### PLOTLY CONTOUR WORK IN PROGRESS ###
+#######################################
+
+
+# Ensure concentration values are positive and non-zero
+concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
+
+# Create the plot
+fig = go.Figure()
+
+# Add concentration data as a filled contour plot (color fill)
+fig.add_trace(go.Contour(
+    z=concentration_cross_section,
+    x=distance_mesh[0],  # Assuming distance_mesh is a 2D array
+    y=depth_mesh[:, 0],  # Assuming depth_mesh is a 2D array
+    colorscale='Viridis',
+    colorbar=dict(
+        title='Concentration [mol/m³]',
+        tickvals=levels[::8],
+        ticktext=[f'{level:.1e}' for level in levels[::8]],
+        ticks='outside',
+        len=0.8
+    ),
+    contours=dict(
+        showlines=False  # Hide contour lines for the color fill
+    ),
+    zmin=np.min(levels),
+    zmax=np.max(levels)
+))
+
+# Add contour lines with fewer levels
+fig.add_trace(go.Contour(
+    z=concentration_cross_section,
+    x=distance_mesh[0],  # Assuming distance_mesh is a 2D array
+    y=depth_mesh[:, 0],  # Assuming depth_mesh is a 2D array
+    colorscale='Viridis',
+    showscale=False,  # Hide the colorbar for the contour lines
+    contours=dict(
+        start=np.min(levels),
+        end=np.max(levels),
+        size=(np.max(levels) - np.min(levels)) / 10,  # Fewer contour lines
+        coloring='none'  # No color fill for the contour lines
+    ),
+    line=dict(color='black')
+))
+
+# Add bathymetry line
+fig.add_trace(go.Scatter(
+    x=total_distances,
+    y=-np.array(bathymetry_cross_section),
+    mode='lines',
+    line=dict(color='black', width=2),
+    name='Bathymetry'
+))
+
+# Fill below bathymetry line
+fig.add_trace(go.Scatter(
+    x=np.concatenate([total_distances, total_distances[::-1]]),
+    y=np.concatenate([-np.array(bathymetry_cross_section), [-np.min(bathymetry_cross_section)] * len(bathymetry_cross_section)]),
+    fill='toself',
+    fillcolor='grey',
+    line=dict(color='grey'),
+    name='Bathymetry Fill'
+))
+
+# Customize layout
+fig.update_layout(
+    title=f'Concentration Cross Section (Timestep {timestep})',
+    xaxis_title='Longitude [°E]',
+    yaxis_title='Depth [m]',
+    yaxis=dict(range=[250, 0]),  # Invert y-axis for depth
+    template='plotly_white'
+)
+
+# Show the plot
+fig.show()
+
+#normalize particle_lifespan_matrix for each age
+for nn in range(len(particle_lifespan_matrix)):
+    particle_lifespan_matrix[nn,:,0] = particle_lifespan_matrix[nn,:,0]/np.sum(particle_lifespan_matrix[nn,:,0])
+
+
+#########################################
+############ LIFETIME PLOT ##############
+#########################################
+from scipy.ndimage import gaussian_filter1d
+#Create depth vector
+depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
+
+
+# Define time points
+hour12 = 11
+day1 = 23
+week1 = 167
+week2 = 335
+week3 = 503
+week4 = 671
+
+# Define profiles for each time point
+time_points = [hour12, day1, week1, week2, week3, week4]
+profiles = [particle_lifespan_matrix[time, :, 0] for time in time_points]
+
+# Apply Gaussian smoothing to each profile
+smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
+
+# Create a 2x3 plot
+fig, axs = plt.subplots(2, 3, figsize=(18, 12))
+
+# Titles for each subplot
+titles = ['Methane distribution after 12 hours', 'Methane distribution after 1 day',
+          'Methane distribution after 1 week', 'Methane distribution after 2 weeks',
+          'Methane distribution after 3 weeks', 'Methane distribution after 4 weeks']
+
+# Plot each smoothed profile
+for i, ax in enumerate(axs.flat):
+    ax.plot(smoothed_profiles[i], depth_vector)
+    ax.plot(profiles[i], depth_vector, linestyle='--')
+    ax.set_title(titles[i])
+    ax.set_xlabel('Concentration')
+    ax.set_ylabel('Depth')
+    ax.invert_yaxis()  # Flip the y-axis
+
+# Adjust layout
+plt.tight_layout()
+plt.show()
+
+
+
+# Define time points
+day1 = 23
+day7 = 24*7-1
+day14 = 24*14-1
+day28 = 24*28-1
+
+# Define profiles for each time point
+time_points = [day1, day7, day14, day28]
+profiles = [particle_lifespan_matrix[time, :, 0] for time in time_points]
+
+# Apply Gaussian smoothing to each profile
+smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
+
+# Create a 1x3 plot
+fig, axs = plt.subplots(2, 2, figsize=(10,10))
+
+# Titles for each subplot
+titles = ['Methane molecule distribution after 1 day', 'Methane molecule distribution after 7 days', 'Methane molecule distribution after 14 days', 'Methane molecule distribution 28 days later']
+
+# Plot each smoothed profile
+for i, ax in enumerate(axs.flat):
+    ax.plot(smoothed_profiles[i], depth_vector)
+    ax.set_title(titles[i])
+    ax.set_xlabel('Methane [mol]')
+    ax.set_ylabel('Depth')
+    ax.invert_yaxis()  # Flip the y-axis
+
+# Adjust layout
+plt.tight_layout()
+plt.show()
+
+# make a pcolor plot that illustrates the same thing (including the whole timeseries)
+
+# Create a pcolor plot for the entire time series
+fig, ax = plt.subplots(figsize=(10, 6))
+
+# Define the entire time series
+time_series = np.arange(particle_lifespan_matrix.shape[0])
+
+#define levels
+levels = np.linspace(np.nanmin(particle_lifespan_matrix[:, :, 0]),np.nanmax(particle_lifespan_matrix[:, :, 0])/5,100)
+
+# Create the pcolor plot
+c = ax.pcolor(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, shading='auto', cmap='rocket',vmin=np.nanmin(particle_lifespan_matrix[:, :, 0]),vmax=np.nanmax(particle_lifespan_matrix[:, :, 0])/5) 
+
+#plot some contours too
+contour = ax.contour(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, levels=levels[::2], colors='white', linewidths=0.1, zorder=1, alpha=0.5)
+
+# Add colorbar
+cbar = fig.colorbar(c, ax=ax)
+cbar.set_label('Methane [mol]')
+
+# Customize plot
+ax.set_title('Vertical position of released methane molecules over time after release')
+ax.set_xlabel('Time [hours]')
+ax.set_ylabel('Depth')
+ax.invert_yaxis()  # Flip the y-axis
+
+ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
+
+plt.show()

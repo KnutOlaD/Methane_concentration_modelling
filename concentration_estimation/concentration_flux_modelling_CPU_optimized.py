@@ -83,7 +83,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 50. #m
+dz_grid = 25. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -2054,7 +2054,11 @@ particle_mass_redistributed = np.zeros(len(bin_time))
 #Add a matrix for depth/time/moles/lost ti atni and lost to mox for each timestep in the lifespan
 #of a particle
 lifespan = 24*7*4 #4 weeks
-particle_lifespan_matrix = np.zeros((lifespan,4))
+#set depth resulution to twice the grid resolution
+depth_bins_lifespan = np.arange(0,np.max(bin_z)+dz_grid/2,dz_grid/2)
+
+particle_lifespan_matrix = np.zeros((lifespan,len(depth_bins_lifespan),3))
+particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
 
 if run_all == True:
 
@@ -2144,10 +2148,11 @@ if run_all == True:
 
         # Add weights and reset the aging parameter if it's the first timestep
         if kkk == 1:
-            particles['weight'][:,0] = particles['weight'][:,1]
             particles['weight'][:,1][np.where(particles['weight'][:,1].mask == False)] = weights_full_sim
+            particles['weight'][:,0] = particles['weight'][:,1]
+            particles['age'][:,1][np.where(particles['weight'][:,1].mask == False)] = 0
             particles['age'][:,0] = particles['age'][:,1]
-            particles['age'][:,1][np.where(particles['age'][:,1].mask == False)] = 0
+            
             
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -2311,25 +2316,14 @@ if run_all == True:
         # Get the indices where particles['age'][:,j] is not masked and equal to 0
         activated_indices = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == True))[0]
         already_active = np.where((particles['z'][:,1].mask == False) & (particles['z'][:,0].mask == False))[0]
-        
-        #print the number of true 
+
         ### ADD INITIAL WEIGHT IF THE PARTICLE HAS JUST BEEN ACTIVATED ###
-        if run_test == True:
-            if activated_indices.any(): #If there are new particles added at this timestep
-                # Use these indices to modify the original particles['weight'] array
-                particles['weight'][activated_indices,1] = (np.round(
-                    np.exp((np.abs(particles['z'][:,1][activated_indices]
-                                    )+10)/44)))*0.037586 #moles per particle
-                #Make the mask false for all subsquent timesteps
-                particles['weight'][activated_indices,1].mask = False
-                #do this for all the maske
-                #same for bandwidth
-                particles['bw'][activated_indices,1] = initial_bandwidth
-        elif run_full == True:
-            particles['weight'][activated_indices,1].mask = False
-            particles['weight'][activated_indices,1] = weights_full_sim
-            particles['bw'][activated_indices,1].mask = False
-            particles['bw'][activated_indices,1] = initial_bandwidth
+        particles['weight'][activated_indices,1].mask = False
+        particles['weight'][activated_indices,1] = weights_full_sim
+        particles['bw'][activated_indices,1].mask = False
+        particles['bw'][activated_indices,1] = initial_bandwidth
+        particles['age'][activated_indices,1].mask = False
+        particles['age'][activated_indices,1] = 0
 
         ### MODIFY ALREADY ACTIVE ###
         #add the weight of the particle to the current timestep 
@@ -2370,9 +2364,44 @@ if run_all == True:
             particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
             #limit the bandwidth to a maximum value
             particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
+            #add age
+            particles['age'][already_active,1] = particles['age'][already_active,0] + 1
+            particles['age'].mask[already_active,1] = False
 
         #finished with modifying weights, replace weights[0] with weights[1] for next step
         particles['weight'][:,0] = particles['weight'][:,1]
+        particles['age'][:,0] = particles['age'][:,1]
+
+        # -------------------------------------------------------------------------------------- #
+        ########## STORE STATS OF PARTICLES TO GET INFO ABOUT HOW METHANE IS DISTRIBUTED #########
+        # ---------------------------------------------------------------------------------------#
+
+        # First get only unmasked active particles
+        truly_active = np.where((particles['z'][:,1].mask == False) & 
+                            (particles['weight'][:,1].mask == False))[0]
+
+        # Get ages and depths for only unmasked active particles
+        ages = particles['age'][truly_active, 1].astype(int)
+        ages[ages >= lifespan] = lifespan - 1
+        depths = np.abs(particles['z'][truly_active, 1].astype(int))
+        weights = particles['weight'][truly_active, 1]
+
+        # Store MOx and weight
+        np.add.at(particle_lifespan_matrix[:, :, 0], (ages, depths), weights)
+        np.add.at(particle_lifespan_matrix[:, :, 1], (ages, depths), weights * R_ox * 3600)
+
+        # Handle atmospheric flux - only for unmasked surface particles
+        surface_mask = np.isin(truly_active, already_active_surface)
+        if surface_mask.any():
+            surface_indices = np.searchsorted(already_active_surface, truly_active[surface_mask])
+            np.add.at(particle_lifespan_matrix[:, :, 2], 
+                    (ages[surface_mask], depths[surface_mask]),
+                    particleweighing[surface_indices] * total_atm_flux[kkk-1])
+
+        #normalize particle_lifespan_matrix for each age
+#        for nn in range(len(particle_lifespan_matrix)):
+#            particle_lifespan_matrix[nn,:,0] = particle_lifespan_matrix[nn,:,0]/np.sum(particle_lifespan_matrix[nn,:,0])
+        
 
         #--------------------------------------------------#
         #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
@@ -2601,9 +2630,9 @@ if run_all == True:
 
                     
                 # Before assigning new values, check if anything exists
-                if GRID[kkk][i] is not None:
-                    print(f"Previous GRID value exists: {np.max(GRID[kkk][i].data)}")
-                    GRID[kkk][i] = None  # Clear previous value
+                #if GRID[kkk][i] is not None:
+                    #print(f"Previous GRID value exists: {np.max(GRID[kkk][i].data)}")
+                    #GRID[kkk][i] = None  # Clear previous value
                 
                 #_active value: {np.max(GRID_active)}")
                 # Create sparse matrix

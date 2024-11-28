@@ -886,14 +886,18 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
     lat_bounds = np.min(lat), np.max(lat)
     
     # Pre-calculate map extent with adjustments
-    adj_lon = kwargs.get('adj_lon', [0, 0])
-    adj_lat = kwargs.get('adj_lat', [0, 0])
-    extent = [
-        lon_bounds[0] + adj_lon[0],
-        lon_bounds[1] + adj_lon[1],
-        lat_bounds[0] + adj_lat[0],
-        lat_bounds[1] + adj_lat[1]
-    ]
+    # Override extent if custom extent provided
+    if plot_extent := kwargs.get('plot_extent', None):
+        extent = plot_extent
+    else:  
+        adj_lon = kwargs.get('adj_lon', [0, 0])
+        adj_lat = kwargs.get('adj_lat', [0, 0])
+        extent = [
+            lon_bounds[0] + adj_lon[0],
+            lon_bounds[1] + adj_lon[1],
+            lat_bounds[0] + adj_lat[0],
+            lat_bounds[1] + adj_lat[1]
+        ]
     
     # Setup figure
     figsize = kwargs.get('figuresize', [14, 10])
@@ -950,27 +954,36 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
                             transform=data_transform)
     except ValueError as e:
         raise ValueError(f"Contour plotting failed: {str(e)}")
-
-    # Optimize colorbar
-    cbar = plt.colorbar(contourf, ax=ax)
-    cbar.set_label(unit, fontsize=16)
     
     maxnumticks = kwargs.get('maxnumticks', 10)
-    if log_scale:
-        cbar.set_ticks(levels)
-        cbar.locator = LogLocator(base=10.0, subs='auto', numticks=maxnumticks)
-    else:
-        cbar.locator = MaxNLocator(nbins=maxnumticks)
+    # Optimize colorbar section - reordered and consolidated
+    cbar = plt.colorbar(contourf, ax=ax)
+    cbar.set_label(unit, fontsize=16, labelpad=10)
 
-    # Modify colorbar precision section
+    # First set locator
+    if log_scale:
+        #cbar.set_ticks(levels[::2])  # Use every second level to reduce overlap
+        #cbar.locator = LogLocator(base=10.0, subs='auto', numticks=min(maxnumticks, 6))
+        log_ticks = np.logspace(np.log10(levels[0]), np.log10(levels[-1]), maxnumticks)
+        cbar.set_ticks(log_ticks)
+    else:
+        cbar.locator = MaxNLocator(nbins=min(maxnumticks, 6), prune='both', steps=[1, 2, 5, 10])
+
+    # Then set formatter
     with plt.style.context({'text.usetex': False}):
-        cbar.formatter = ScalarFormatter(useMathText=True)
-        cbar.formatter.set_powerlimits((-2, 2))
-        cbar.formatter.set_scientific(True)
-        cbar.formatter.format = '%.2f'  # Direct property assignment
-        cbar.update_ticks()
-        cbar.ax.tick_params(labelsize=14, rotation=0)
-    
+        def fmt(x, p):
+            if log_scale:
+                if abs(x) < 1e-3 or abs(x) > 1e3:
+                    return f"{x:.1e}"
+                return f"{x:.4f}"
+            return f"{x:.4f}"
+        
+        cbar.formatter = FuncFormatter(fmt)
+
+    # Finally update appearance
+    cbar.ax.tick_params(labelsize=14, rotation=0, pad=10)  # Increased pad
+    cbar.update_ticks()
+
     # Add features with caching
     def get_cached_feature(name):
         if name not in _CACHED_FEATURES:
@@ -983,15 +996,36 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
     
     ax.set_extent(extent)
     
+    # Add point of interest if provided
+    if poi := kwargs.get('poi', None):
+        ax.plot(poi['lon'], 
+                poi['lat'],
+                marker='o',
+                color=poi.get('color', 'red'),
+                markersize=poi.get('size', 6),
+                transform=data_transform,
+                zorder=10)
+                        # Add label if provided
+    if 'label' in poi:
+        ax.text(poi['lon'], 
+                poi['lat'],
+                poi['label'],
+                color=poi.get('color', 'red'),
+                fontsize=12,
+                transform=data_transform,
+                zorder=10)
+
     # Custom markers (cached transform)
     ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=data_transform)
     ax.text(19.0553, 69.58006, 'Tromsø', transform=data_transform, color='white', fontsize=12)
     
     # Efficient gridlines
     gl = ax.gridlines(crs=data_transform, draw_labels=True, linewidth=0.5, 
-                     color='white', alpha=0.5, linestyle='--')
-    gl.top_labels = True
-    gl.left_labels = True
+                    color='grey', alpha=0.5, linestyle='--')
+    gl.top_labels = False      # No labels on top
+    gl.right_labels = False    # No labels on right
+    gl.left_labels = True      # Labels on left
+    gl.bottom_labels = True    # Labels on bottom
     gl.xlabel_style = {'size': 14}
     gl.ylabel_style = {'size': 14}
     
@@ -2271,7 +2305,7 @@ if run_all == True:
         #make sure outside_grid only have particles that left the domain in the current timestep
 
         # Mask those particles
-        particles['z_transport'].mask = True
+        particles['z_transport'][outside_grid,1].mask = True
         particles['z'][outside_grid,1].mask = True
         particles['weight'][outside_grid,1].mask = True
         particles['bw'][outside_grid,1].mask = True
@@ -2368,7 +2402,7 @@ if run_all == True:
             particles['age'].mask[already_active,1] = False
 
             ##### CALCULATE VERTICAL DISPLACEMENT #####
-            particles['z_transport'][already_active,1] = particles['z'][already_active,1]-particles['z'][alrady_active,0]
+            particles['z_transport'][already_active,1] = particles['z'][already_active,1]-particles['z'][already_active,0]
 
             ##### ADRESS PROBLEMATIC VALUES #####
             particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
@@ -2427,14 +2461,12 @@ if run_all == True:
                         particles['z'][:,1].compressed()[sort_indices],
                         bin_z_number,
                         particles['weight'][:,1].compressed()[sort_indices],
-                        particles['bw'][:,1].compressed()[sort_indices]]
+                        particles['bw'][:,1].compressed()[sort_indices],
+                        particles['z_transport'][:,1].compressed()[sort_indices]]
         
         #keep track of number of particles
         total_parts[kkk] = len(parts_active[0])
 
-        #Calculate and define the vertical transport for every particle at this timestep
-        parts_vert_trans = particles['z'][:,1].compressed()[sort_indices]
-        
         #-----------------------------------#
         #INITIATE FOR LOOP OVER DEPTH LAYERS#
         #-----------------------------------#
@@ -2463,7 +2495,8 @@ if run_all == True:
                             parts_active[2][change_indices[i]:change_indices[i+1]+1],
                             parts_active[3][change_indices[i]:change_indices[i+1]+1],
                             parts_active[4][change_indices[i]:change_indices[i+1]+1],
-                            parts_active[5][change_indices[i]:change_indices[i+1]+1]]
+                            parts_active[5][change_indices[i]:change_indices[i+1]+1],
+                            parts_active[6][change_indices[i]:change_indices[i+1]+1]]
 
             #-----------------------------------------------------#
             #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
@@ -2526,7 +2559,7 @@ if run_all == True:
                                                     bin_x,
                                                     bin_y,
                                                     parts_active_z[5],
-                                                    parts_active_z[4])
+                                                    parts_active_z[6])
                 
                 ###########################
                 ### Using no KDE at all ###
@@ -2613,6 +2646,15 @@ if run_all == True:
                                                 gaussian_bandwidths_h,
                                                 h_matrix_adaptive, #because it's symmetric
                                                 illegal_cells = illegal_cells[:,:,i])
+                    
+                    GRID_active_verttrans = grid_proj_kde(bin_x,
+                                                bin_y,
+                                                preGRID_vert,
+                                                gaussian_kernels,
+                                                gaussian_bandwidths_h,
+                                                h_matrix_adaptive, #because it's symmetric
+                                                illegal_cells = illegal_cells[:,:,i])
+                    
 
                     end_time = time.time()
                     elapsed_time = end_time - start_time
@@ -2636,60 +2678,45 @@ if run_all == True:
                         #calculate avareage time step of the previous 10 timesteps
                         print(f"Estimated time left is at least {((np.mean(kde_time_vector[kkk-10:kkk])*time_steps_full)/3600):.2f} hours")
 
+                #Get concentration
+                GRID_active = GRID_active/V_grid
 
-                if run_test == True:
-                    GRID_active = diag_rm_mat*(GRID_active/V_grid) #Dividing by V_grid to get concentration in mol/m^3
-                elif run_full == True:
-                    GRID_active = GRID_active/V_grid
+                #############################################
+                ####### ASSIGN VALUES TO SPARSE GRIDS #######
+                #############################################
 
-                    
-                # Before assigning new values, check if anything exists
-                #if GRID[kkk][i] is not None:
-                    #print(f"Previous GRID value exists: {np.max(GRID[kkk][i].data)}")
-                    #GRID[kkk][i] = None  # Clear previous value
+                # Make explicit copies to avoid values affecting each other
+                grid_copy = GRID_active.copy()
+                vtrans_copy = GRID_active.copy()
+
+                # Create sparse matrices from copies
+                sparse_grid = csr_matrix(grid_copy)
+                sparse_vtrans = csr_matrix(vtrans_copy)
                 
-                #_active value: {np.max(GRID_active)}")
-                # Create sparse matrix
+                GRID[kkk][i] = sparse_grid
+                GRID_vtrans[kkk][i] = sparse_vtrans
 
-                # Create and store sparse matrix
-                #print(f"Before sparse - Max GRID_active value: {np.max(GRID_active)}")
-                sparse_matrix = csr_matrix(GRID_active)
-                GRID[kkk][i] = sparse_matrix
-                #print(f"After storing - Max GRID value: {np.max(GRID[kkk][i].data)}\n")
-                del sparse_matrix
+                # Cleanup
+                del grid_copy, vtrans_copy
+                del sparse_grid, sparse_vtrans
 
-                GRID_top[kkk,:,:] = GRID_active
+                #Other stuff that could be added... 
+                #GRID_top[kkk,:,:] = GRID_copy
+                #GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid)
                 #integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
                 #standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
-                GRID_mox[kkk,:,:] = GRID_active*(R_ox*3600*V_grid) #need this to adjust the weights for next loop. MOx in each layer
-                
-                #stop the script at kkk = 100
-                #if kkk == 100 and i == 1:
-                    # During runtime, save reference values
-                    #reference_value = np.max(GRID[kkk][i].data)
-                    #print(f"Reference value saved: {reference_value}")
-
-                    # Add matrix property checks
-                    #print(f"Matrix shape: {GRID[kkk][i].shape}")
-                    #print(f"Number of stored elements: {len(GRID[kkk][i].data)}")
-                    #print(f"Memory layout: {GRID[kkk][i].format}")
-
-                    # Optional - save snapshot for comparison
-                    #np.save(f'grid_snapshot_{kkk}_{i}.npy', GRID[kkk][i].toarray())
-
 
                 #-------------------------------#
                 #CALCULATE ATMOSPHERIC FLUX/LOSS#
                 #-------------------------------#
-                #*dxy_grid**2
+
+                # dxy_grid**2
                 if i == 0:
                     #GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,
                     #    (((GRID_active+background_ocean_conc)-atmospheric_conc))
                     #    )*dxy_grid*0.01 
                     # If we assume equilibrium concentration this simplifies to
                     GRID_atm_flux[kkk,:,:] = np.multiply(GRID_gt_vel[kkk,:,:].T,GRID_active)*dxy_grid*dxy_grid*0.01
-                    #    )
-                    # 
                     # #This is in mol/hr for each gridcell. The gt_vel is cm/hr, multiply with 0.01 to get m/hr
                     #and GRID_active is in concentration
                     #GRID_active = (GRID_active*V_grid - GRID_atm_flux[kkk,:,:])/V_grid #We do this through weighing of particles, but need to account for loss on this ts as well
@@ -3682,8 +3709,8 @@ fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
                             levels=levels_bath,
                             timepassed = [0,1],
                             colormap=colormap,
-                            title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i])[5:-3],
-                            unit='mol m$^{-2}$ hr$^{-1}$',
+                            title='Bathymetry',
+                            unit='Depth [m]',
                             savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
                             adj_lon = [1,-1],
                             adj_lat = [0,-0.5],
@@ -3795,6 +3822,9 @@ for nn in range(len(particle_lifespan_matrix)):
 #########################################
 ############ LIFETIME PLOT ##############
 #########################################
+#set plotting style to default
+plt.style.use('default')
+
 from scipy.ndimage import gaussian_filter1d
 #Create depth vector
 depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
@@ -3881,10 +3911,10 @@ time_series = np.arange(particle_lifespan_matrix.shape[0])
 levels = np.linspace(np.nanmin(particle_lifespan_matrix[:, :, 0]),np.nanmax(particle_lifespan_matrix[:, :, 0])/5,100)
 
 # Create the pcolor plot
-c = ax.pcolor(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, shading='auto', cmap='rocket',vmin=np.nanmin(particle_lifespan_matrix[:, :, 0]),vmax=np.nanmax(particle_lifespan_matrix[:, :, 0])/5) 
+c = ax.pcolor(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, shading='auto', cmap='rocket_r',vmin=np.nanmin(particle_lifespan_matrix[:, :, 0]),vmax=np.nanmax(particle_lifespan_matrix[:, :, 0])/5) 
 
 #plot some contours too
-contour = ax.contour(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, levels=levels[::2], colors='white', linewidths=0.1, zorder=1, alpha=0.5)
+contour = ax.contour(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, levels=levels[::2], colors='black', linewidths=0.1, zorder=1, alpha=0.5)
 
 # Add colorbar
 cbar = fig.colorbar(c, ax=ax)
@@ -3899,3 +3929,123 @@ ax.invert_yaxis()  # Flip the y-axis
 ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
 
 plt.show()
+
+
+#####################################################
+###### CALCULATE VERTICAL MOLE FLUX EVERYWHERE ######
+#####################################################
+
+# Initialize matrix for vertical transport
+GRID_vert = [[None for _ in range(len(bin_z))] for _ in range(time_steps_full)]
+
+# Initialize matrix for vertical transport
+GRID_vert = [[None for _ in range(len(bin_z))] for _ in range(time_steps_full)]
+
+# Loop through timesteps and layers
+for kkk in range(1, time_steps_full-1):
+    for i in range(len(bin_z)-1):  # Stop at second-to-last layer
+        if GRID[kkk][i] is not None and GRID_vtrans[kkk][i] is not None:
+            # Get concentrations and velocities
+            conc = GRID[kkk][i].toarray()
+            vtrans = GRID_vtrans[kkk][i].toarray()
+            
+            # Calculate vertical flux:
+            # (mol/m³ * m³) * (m/m³ * 1/s) = mol/m²/s
+            vert_flux = (conc * V_grid) * (vtrans/V_grid/3600)
+            
+            # Convert to sparse and store
+            GRID_vert[kkk][i] = csr_matrix(vert_flux)
+            
+            # Clean up
+            del conc, vtrans, vert_flux
+
+print("Vertical transport calculation complete")
+
+# Initialize array for vertical sums
+GRID_vert_total = np.zeros((time_steps_full, len(bin_x), len(bin_y)))
+
+# Loop through timesteps
+for kkk in range(1, time_steps_full-1):
+    # Initialize temporary array for this timestep
+    timestep_sum = np.zeros((len(bin_x), len(bin_y)))
+    
+    # Sum through depth layers
+    for i in range(len(bin_z)-1):  # Stop at second-to-last layer
+        if GRID_vert[kkk][i] is not None:
+            # Convert sparse to array and add to sum
+            timestep_sum += GRID_vert[kkk][i].toarray()
+    
+    # Store sum for this timestep
+    GRID_vert_total[kkk] = timestep_sum
+    
+    # Clean up
+    del timestep_sum
+
+
+GRID_vert_total_sum = np.nansum(GRID_vert_total[twentiethofmay:time_steps,:,:],axis=0)*3600
+levels = np.linspace(np.nanmin(np.nanmin(GRID_vert_total_sum)),np.nanmax(np.nanmax(GRID_vert_total_sum)),1000)
+levels = levels[:]
+release_point = [14.279600,68.918600]
+#flip the lon_vector right/left
+#extent_limits = [100:200,100:200]
+
+#Release point
+poi={
+        'lon': 14.279600,
+        'lat': 68.918600,
+        'color': 'white',
+        'size': 8,
+        'label': ''
+    }
+
+plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
+                    lon=lon_mesh,
+                    lat=lat_mesh,
+                    projection=projection,
+                    levels=levels,
+                    timepassed=[1, time_steps],
+                    colormap=colormap,
+                    title='Total vertical transport of methane from May 20 to June 20',
+                    unit='mol m$^{-2}$',
+                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\vert_trans_sum.png',
+                    show=True,
+                    adj_lon = [0,0],
+                    adj_lat = [0,0],
+                    dpi=60,
+                    figuresize = [12,10],
+                    log_scale = True,
+                    plot_progress_bar = False,
+                    maxnumticks = 9,
+                    plot_model_domain = False,#[min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                    contoursettings = [10,'0.8',0.1],
+                    poi = poi,
+                    plot_extent=[14, 18.5, 68.6, 70.2])
+
+
+# And bathymetry
+
+fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
+                            lon=lon_mesh,
+                                lat=lat_mesh,
+                            projection=projection,
+                            levels=levels_bath,
+                            timepassed = [0,1],
+                            colormap=colormap,
+                            title='Bathymetry',
+                            unit='Depth [m]',
+                            savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
+                            adj_lon = [1,-1],
+                            adj_lat = [0,-0.5],
+                            show=False,
+                            dpi=90,
+                            figuresize = [12,10],
+                            log_scale = False,
+                            starttimestring = '20 May 2018',
+                            endtimestring = '21 June 2018',
+                            maxnumticks = 5,
+                            plot_progress_bar = False,
+                            #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                            contoursettings = [2,'0.8',0.1],
+                            plot_sect_line = cross_section,
+                            poi = poi,
+                            plot_extent=[14, 17, 68.6, 69.8])

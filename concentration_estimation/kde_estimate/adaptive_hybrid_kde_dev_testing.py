@@ -552,7 +552,7 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
 
     return total_weight,particle_count, cell_bandwidth
 
-def histogram_std(binned_data, effective_samples = None, bin_size=1):
+#def histogram_std(binned_data, effective_samples = None, bin_size=1):
     '''
     Calculate the simple variance of the binned data using ...
     '''
@@ -579,6 +579,58 @@ def histogram_std(binned_data, effective_samples = None, bin_size=1):
     #Sheppards correction
     std_data = std_data #- 1/12*bin_size*bin_size
     return std_data
+
+
+from numba import jit
+@jit(nopython=True)
+def histogram_std(binned_data, effective_samples=None, bin_size=1):
+    '''Calculate the simple variance of the binned data
+    using normal Bessel correction for unweighted samples adding Sheppards correction for weighted samples
+    calculates standard deviation for weigthed data assuming reliability weights and 
+    applying Bessels correction accordingly. Checks this automatically by comparing the sum of the binned data
+    with the effective samples.
+
+    Input:
+    binned_data: np.array
+        The binned data
+    effective_samples: float
+        The number of effective samples
+    bin_size: float
+        The size of the bins
+
+    Output:
+    float: The standard deviation of the binned data
+    '''
+    #Calculate the effective number of particles using Kish's formula. (for weighted data)
+    if effective_samples == None:
+        effective_samples = np.sum(binned_data)**2/np.sum(binned_data**2) #This is Kish's formula
+
+    # Check that there's data in the binned data
+    if np.sum(binned_data) == 0:
+        return 0
+
+    # Ensure effective_samples is larger than 1
+
+    grid_size = len(binned_data)
+    X = np.arange(0, grid_size * bin_size, bin_size)
+    Y = np.arange(0, grid_size * bin_size, bin_size)
+    
+    sum_data = np.sum(binned_data)
+    mu_x = np.sum(binned_data * X) / sum_data
+    mu_y = np.sum(binned_data * Y) / sum_data
+    
+    #Sheppards correction term
+    sheppard = (2/12)*bin_size*bin_size #weighted data
+
+    variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
+
+    #Do Bessel correction for weighted binned data using Kish's formula and add Sheppards correction
+    #variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / sum_data) * \
+    #        (1/(1 - 1/max(effective_samples,1.0000001))) - sheppard #Sheppards correction
+    #sheppards: https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
+    
+    return np.sqrt(variance)
+
 
 def histogram_std_sep(binned_data, effective_samples = None, bin_size=1):
     '''
@@ -949,10 +1001,18 @@ else:
 trajectories = trajectories[::1]
 bw = bw[::1]
 bw_full = np.ones(len(trajectories_full))
-weights_full = weights
+weights_full = weights *1#0.01
+#modify weights such that they are very heterogeneous for testing
+weights_heterogeneous = np.ones(len(trajectories_full)) * 0.1
+weights_heterogeneous = np.linspace(0.25,1,len(trajectories_full))
+#weights_heterogeneous[::10] = 10
+#weights_heterogeneous[::10] = 100
+weights_full = weights_heterogeneous
+weights_test = weights_heterogeneous[::frac_diff] * len(trajectories_full)/len(trajectories)
 #Set weights_full and weights to 1
-weights_full = np.ones(len(trajectories_full))
-weights_test = np.ones(len(trajectories))
+#weights_full = np.ones(len(trajectories_full)) * 0.1
+#weights_test = np.ones(len(trajectories)) *0.1 * len(trajectories_full)/len(trajectories)
+
 
 grid_size = 100
 #Get the grid
@@ -983,7 +1043,10 @@ plt.scatter(trajectories[:,0],trajectories[:,1])
 ######################################
 
 ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(p_full_x,p_full_y, x_grid,y_grid,bandwidths=bw_full,weights=weights_full
-)/np.sum(histogram_estimator(p_full_x,p_full_y, x_grid,y_grid,bandwidths=bw_full,weights=weights_full))   
+)
+
+#Removed normalization.
+#/np.sum(histogram_estimator(p_full_x,p_full_y, x_grid,y_grid,bandwidths=bw_full,weights=weights_full))   
 
 #make a plot of the ground truth
 plt.figure()
@@ -1000,7 +1063,10 @@ p_x = trajectories[:,0]
 p_y = trajectories[:,1]
 
 naive_estimate,count_naive,cell_bandwidths = histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test
-)/np.sum(histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test))
+)
+
+#Removed normalization
+#/np.sum(histogram_estimator(p_x,p_y, x_grid,y_grid,bandwidths=bw,weights=weights_test))
 
 #make a plot of the naive estimate
 plt.figure()
@@ -1053,7 +1119,7 @@ count_prebinned_padded = np.pad(count_prebinned, pad_size, mode='reflect')
 stats_threshold = window_size
 
 variance_estimate = np.zeros(np.shape(naive_estimate))
-weight_estimate = np.zeros(np.shape(naive_estimate))
+weight_estimate = np.zeros(np.shape(naive_estimate)) #this is the sum of the particles in each cell
 integral_length_scale_matrix = np.zeros(np.shape(naive_estimate))
 h_matrix = np.zeros(np.shape(naive_estimate))*np.nan
 #get non_zero indices
@@ -1064,6 +1130,8 @@ std_estimate = np.zeros(np.shape(naive_estimate))*np.nan
 N_silv = np.zeros(np.shape(naive_estimate))
 small_n_eff = np.zeros(np.shape(naive_estimate))
 
+#change to 
+
 #calculate variances, weights, integral length scales and hs for all non-zero cells
 for idx in non_zero_indices:
     i,j = idx
@@ -1071,10 +1139,12 @@ for idx in non_zero_indices:
     data_subset_counts = count_prebinned_padded[i:i+window_size,j:j+window_size]
     subset_indices = np.argwhere(data_subset != 0)
     #normalize the data subset to psi
+    print('Data subset:',np.sum(data_subset))
+
     data_subset = (data_subset/np.sum(data_subset))*np.sum(data_subset_counts)
+    print('Data subset:',np.sum(data_subset))
     weight_estimate[i,j] = np.sum(data_subset)
     
-
     #Calculate (depending on the number of particles in the window)
     if np.sum(data_subset) < stats_threshold:
         #print('Too few particles in window, using window size and simple N_eff')
@@ -1084,6 +1154,7 @@ for idx in non_zero_indices:
         N_eff_advanced[i,j] = np.sum(data_subset)/window_size
     else:
         std_estimate[i,j] = histogram_std(data_subset,effective_samples=None,bin_size=1)
+        print('Standard deviation:',std_estimate[i,j])
         autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
         autocorr = (autocorr_rows + autocorr_cols) / 2
 
@@ -1165,18 +1236,15 @@ h_grid = h_matrix
 h = h_matrix
 #DO a data driven estimate without boundary control
 kde_data_driven_naive = grid_proj_kde(x_grid_padded, y_grid_padded, histogram_prebinned_padded, gaussian_kernels, kernel_bandwidths, h_grid_padded, illegal_cells = np.zeros(np.shape(histogram_prebinned_padded)))
-# normalize
-kde_data_driven_naive = kde_data_driven_naive / np.sum(kde_data_driven_naive)
+#kde_data_driven_naive = kde_data_driven_naive / np.sum(kde_data_driven_naive)
 #Do a data driven estimate with boundary control
 #h_grid[std_estimate == 0] = 1000
 kde_data_driven = grid_proj_kde(x_grid_padded, y_grid_padded, histogram_prebinned_padded, gaussian_kernels, kernel_bandwidths, h_grid_padded, illegal_cells = illegal_positions_padded)
 #normalize
-kde_data_driven = kde_data_driven/np.sum(kde_data_driven)
+#kde_data_driven = kde_data_driven/np.sum(kde_data_driven)
 #Calculate estimate using time dependent bandwidth
 cell_bandwidths_padded = np.pad(cell_bandwidths, pad_size, mode='reflect')
 kde_time_bw = grid_proj_kde(x_grid_padded, y_grid_padded, histogram_prebinned_padded, gaussian_kernels, kernel_bandwidths, cell_bandwidths_padded, illegal_cells = illegal_positions_padded)
-
-
 
 # Compute 2D Silverman estimate using Gaussian KDE with trajectory data
 data = trajectories[~np.isnan(trajectories).any(axis=1)]
@@ -1185,7 +1253,7 @@ x = np.linspace(0, 100, 100)
 y = np.linspace(0, 100, 100)
 X, Y = np.meshgrid(x, y)
 Z = kde(np.vstack([X.flatten(), Y.flatten()])).reshape(X.shape)
-kde_silverman_naive = Z / np.sum(Z)
+kde_silverman_naive = Z * np.mean(weights_test) * len(trajectories_full) / len(trajectories)
 
 #set all nan values in h to 0
 #h[np.isnan(h)] = 0
@@ -1202,14 +1270,14 @@ h = np.nan_to_num(h, nan=0.0)
 N_eff_advanced = np.nan_to_num(N_eff_advanced, nan=0.0)
 std_estimate = np.nan_to_num(std_estimate, nan=0.0)
 
-#normalize the time dependent bandwidth estimate
-kde_time_bw = kde_time_bw/np.sum(kde_time_bw)
-
 # Determine the global min and max values for the lower three plots
 vmin = min(np.min(kde_data_driven), np.min(naive_estimate), np.min(ground_truth))
 vmax = max(np.max(kde_data_driven), np.max(naive_estimate), np.max(ground_truth))
 
-    ######### PLOT FOR ADAPTATION PARAMETERS #########
+######### PLOT FOR ADAPTATION PARAMETERS #########
+
+#set colormap to rocket
+cmap = 'rocket'
 
 if plotting == True:
 
@@ -1285,7 +1353,7 @@ if plotting == True:
 
 
     #Set colormap to be used for the pcolor and contour plots
-    cmap = 'mako_r'
+    cmap = 'rocket_r'
 
 
     ### MAKE PLOT OF ADAPTATION PARAMETERS ###
@@ -1338,6 +1406,21 @@ if plotting == True:
     ### PLOT THE GROUND TRUTH ###
     # Assuming ground_truth, naive_estimate, kde_data_driven, kde_time_bw, and kde_silverman_naive are defined
 
+    # calculate the sum of all the estimates
+    kde_data_driven_sum = np.sum(kde_data_driven)
+    print('Sum of data driven with boundary estimate:', kde_data_driven_sum)
+    kde_data_driven_naive_sum = np.sum(kde_data_driven_naive)
+    print('Sum of data driven without boundary estimate:', kde_data_driven_naive_sum)
+    naive_estimate_sum = np.sum(naive_estimate)
+    print('Sum of naive estimate:', naive_estimate_sum)
+    kde_time_bw_sum = np.sum(kde_time_bw)
+    print('Sum of time dependent bandwidth estimate:', kde_time_bw_sum)
+    kde_silverman_naive_sum = np.sum(kde_silverman_naive)
+    print('Sum of Silverman (naive) estimate:', kde_silverman_naive_sum)
+    ground_truth_sum = np.sum(ground_truth)
+    print('Sum of ground truth:', ground_truth_sum)
+
+
     vmin = ground_truth.min()
     vmax = ground_truth.max()
     levels = np.linspace(vmin, vmax, 50)
@@ -1350,8 +1433,7 @@ if plotting == True:
     kde_data_driven_naive = kde_data_driven_naive[pad_size:-pad_size, pad_size:-pad_size]
 #    kde_silverman_naive = kde_silverman_naive[pad_size:-pad_size, pad_size:-pad_size]
 #    illegal_positions = illegal_positions[pad_size:-pad_size, pad_size:-pad_size]
-
-    cmap = 'mako_r'
+    
 
     # Create a figure with a GridSpec layout
     fig = plt.figure(figsize=(12.5, 15))
@@ -1449,10 +1531,12 @@ if plotting == True:
 
 
 
+
+
     ########################################
 
     ###### testing reflection stuff #######
-
+'''
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -1573,11 +1657,11 @@ if not_now == 0:
             plt.ylabel('Y')
             plt.title(f'Line from ({x0}, {y0}) to ({i}, {j})')
             plt.show()
-    
+'''
 ############################################################
 ########### PLOT ILLUSTRATION OF GRID PROJECTION ###########
 ############################################################
-
+'''
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -1807,3 +1891,5 @@ for ax in axs:
 
 plt.tight_layout()
 plt.show()
+
+'''

@@ -842,22 +842,34 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
             bar_position : list [float, float, float, float]
                 [x, y, width, height] for progress bar
             dpi : int
-                DPI for saved figure
+                DPI for saved figure (default: 150)
             log_scale : bool
-                Use logarithmic color scale
+                Use logarithmic color scale (default: False)
             figuresize : list [float, float]
-                Figure dimensions in inches
+                Figure dimensions in inches (default: [14, 10])
             plot_model_domain : list
                 [min_lon, max_lon, min_lat, max_lat, linewidth, color]
             contoursettings : list
                 [stride, color, linewidth] for contour lines
             maxnumticks : int
-                Maximum number of colorbar ticks
+                Maximum number of colorbar ticks (default: 10)
+            decimal_places : int
+                Number of decimal places for colorbar labels (default: 2)
+            plot_extent : list
+                [lon_min, lon_max, lat_min, lat_max] to limit plot region
             starttimestring : str
-                Start time label
+                Start time label (default: 'May 20, 2021')
             endtimestring : str
-                End time label
-            plot_sect_line : list of grid points (2d list)
+                End time label (default: 'May 20, 2021')
+            plot_sect_line : list 
+                List of grid points (2d list) for cross section line
+            poi : dict
+                Point of interest with keys:
+                - 'lon': longitude
+                - 'lat': latitude
+                - 'color': marker color (default 'red')
+                - 'size': marker size (default 6)
+                - 'label': text label (optional)
 
     Returns
     -------
@@ -919,6 +931,7 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
             masked_data = np.ma.masked_less_equal(data, 0)
         else:
             log_scale = False
+            norm = None
             
     # Optimize contour plotting
     contourf_kwargs = {
@@ -927,61 +940,79 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
         'levels': levels,
         'cmap': colormap
     }
-        
+    
+    contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1, None, None])
+
     try:
-        if log_scale:
+        if log_scale == True:
             contourf_kwargs.update({'norm': norm, 'extend': 'both'})
             contourf = ax.contourf(lon, lat, masked_data, **contourf_kwargs)
             
-            # Add contour lines
-            contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1])
-            contour = ax.contour(lon, lat, masked_data,
-                            levels=levels[::contoursettings[0]],
-                            colors=contoursettings[1],
-                            linewidths=contoursettings[2],
-                            transform=data_transform,
-                            norm=norm)
+            # Add contour lines if contoursettings is provided
+            if 'contoursettings' in kwargs:
+                contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1, None, None])
+                contour = ax.contour(lon, lat, masked_data,
+                                levels=levels[::contoursettings[0]],
+                                colors=contoursettings[1],
+                                linewidths=contoursettings[2],
+                                transform=data_transform,
+                                norm=norm)
+
+            
         else:
             contourf_kwargs['extend'] = 'max'
             contourf = ax.contourf(lon, lat, data, **contourf_kwargs)
             
             # Add contour lines
-            contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1])
-            contour = ax.contour(lon, lat, data,
+            if 'contoursettings' in kwargs:
+                contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1, None, None])
+                contour = ax.contour(lon, lat, data,
                             levels=levels[::contoursettings[0]],
                             colors=contoursettings[1],
                             linewidths=contoursettings[2],
                             transform=data_transform)
+        # Add inline labels if requested
+        if len(contoursettings) > 3 and contoursettings[3] is not None:
+            # Handle both string format and decimal places
+            if isinstance(contoursettings[3], str):
+                fmt = contoursettings[3]
+            else:
+                fmt = f"%.{contoursettings[3]}f"
+            ax.clabel(contour, inline=True, fontsize=contoursettings[4], fmt=fmt)
+
     except ValueError as e:
         raise ValueError(f"Contour plotting failed: {str(e)}")
     
     maxnumticks = kwargs.get('maxnumticks', 10)
-    # Optimize colorbar section - reordered and consolidated
+    decimal_places = kwargs.get('decimal_places', 2)
+
+    # Optimize colorbar section
     cbar = plt.colorbar(contourf, ax=ax)
     cbar.set_label(unit, fontsize=16, labelpad=10)
 
-    # First set locator
+    # Set ticks based on scale
     if log_scale:
-        #cbar.set_ticks(levels[::2])  # Use every second level to reduce overlap
-        #cbar.locator = LogLocator(base=10.0, subs='auto', numticks=min(maxnumticks, 6))
+        # For log scale
         log_ticks = np.logspace(np.log10(levels[0]), np.log10(levels[-1]), maxnumticks)
         cbar.set_ticks(log_ticks)
+        # Log norm is already set in contourf creation
     else:
+        # For linear scale
         cbar.locator = MaxNLocator(nbins=min(maxnumticks, 6), prune='both', steps=[1, 2, 5, 10])
+        linear_ticks = np.linspace(np.min(levels), np.max(levels), maxnumticks)
+        cbar.set_ticks(linear_ticks)
 
-    # Then set formatter
+    # Format tick labels
     with plt.style.context({'text.usetex': False}):
         def fmt(x, p):
             if log_scale:
                 if abs(x) < 1e-3 or abs(x) > 1e3:
-                    return f"{x:.1e}"
-                return f"{x:.4f}"
-            return f"{x:.4f}"
+                    return f"{x:.{decimal_places}e}"
+                return f"{x:.{decimal_places}f}"
+            return f"{x:.{decimal_places}f}"
         
         cbar.formatter = FuncFormatter(fmt)
 
-    # Finally update appearance
-    cbar.ax.tick_params(labelsize=14, rotation=0, pad=10)  # Increased pad
     cbar.update_ticks()
 
     # Add features with caching
@@ -1161,13 +1192,33 @@ def histogram_variance_numba(binned_data, bins): #here, suggest to multiply with
 
 @jit(nopython=True)
 def histogram_std(binned_data, effective_samples=None, bin_size=1):
-    '''Calculate the simple variance of the binned data'''
+    '''Calculate the simple variance of the binned data
+    using normal Bessel correction for unweighted samples adding Sheppards correction for weighted samples
+    calculates standard deviation for weigthed data assuming reliability weights and 
+    applying Bessels correction accordingly. Checks this automatically by comparing the sum of the binned data
+    with the effective samples.
+
+    Input:
+    binned_data: np.array
+        The binned data
+    effective_samples: float
+        The number of effective samples
+    bin_size: float
+        The size of the bins
+
+    Output:
+    float: The standard deviation of the binned data
+    '''
+
+    # Check that there's data in the binned data
     if np.sum(binned_data) == 0:
         return 0
-        
-    if effective_samples is None:
-        effective_samples = np.sum(binned_data)
-    
+    #Calculate the effective number of particles using Kish's formula. (for weighted data)
+    if effective_samples == None:
+        effective_samples = np.sum(binned_data)**2/np.sum(binned_data**2) #This is Kish's formula
+    # Ensure effective_samples is larger than 1
+    effective_samples = max(effective_samples, 1.00001)
+
     grid_size = len(binned_data)
     X = np.arange(0, grid_size * bin_size, bin_size)
     Y = np.arange(0, grid_size * bin_size, bin_size)
@@ -1176,10 +1227,16 @@ def histogram_std(binned_data, effective_samples=None, bin_size=1):
     mu_x = np.sum(binned_data * X) / sum_data
     mu_y = np.sum(binned_data * Y) / sum_data
     
-    # Vectorized variance calculation
-    variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / 
-               (sum_data - 1)) - bin_size * bin_size / 12
-    
+    #Sheppards correction term
+    sheppard = (2/12)*bin_size*bin_size #weighted data
+
+    #variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
+
+    #Do Bessel correction for weighted binned data using Kish's formula and add Sheppards correction
+    variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / sum_data) * \
+            (1/(1 - 1/effective_samples)) - sheppard #Sheppards correction
+    #sheppards: https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
+ 
     return np.sqrt(variance)
 
 
@@ -1587,7 +1644,7 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
                     n_eff = np.sum(data_subset) / denominator
                 
                 # Calculate bandwidth with protection
-                h = np.sqrt((silverman_coeff * max(n_eff, 1e-10)**(-silverman_exponent)) * std) * dxy_grid
+                h = np.sqrt((silverman_coeff * max(n_eff, 1e-10)**(-silverman_exponent)) * std) * dxy_grid #Square root because of 2D grid??
                 
                 # Store results
                 std_estimate[row_idx, col_idx] = std
@@ -1696,70 +1753,59 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 #with open('grid_object.pickle', 'rb') as f:
 #   GRID = pickle.load(f)
 
-if run_test == True:
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_test.nc'#test dataset
-    ODdata = nc.Dataset(datapath, 'r', mmap=True)
-    particles = load_nc_data(datapath)
-    particles = add_utm(particles)
-    #adjust the time vector to start on May 20 2018
+# With vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+# Without vertical diffusion
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
+ODdata = nc.Dataset(datapath, 'r', mmap=True)
+#number of particles
+n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0].copy()
+#Create an empty particles dictionary with size n_particlesx2 (one for current and one for previous timestep)
+particles = {'lon':np.ma.zeros((len(n_particles),2)),
+            'lat':np.ma.zeros((len(n_particles),2)),
+            'z':np.ma.zeros((len(n_particles),2)),
+            'time':np.ma.zeros(2),}
+#first timestep:
+particles['lon'][:,0] = ODdata.variables['lon'][:, 0].copy()
+particles['lat'][:,0] = ODdata.variables['lat'][:, 0].copy() 
+particles['z'][:,0] = ODdata.variables['z'][:, 0].copy()
+particles['timefull'] = ODdata.variables['time'][:].copy()
+particles['time'][0] = ODdata.variables['time'][0].copy()
+#second timestep:
+particles['lon'][:,1] = ODdata.variables['lon'][:, 1].copy()
+particles['lat'][:,1] = ODdata.variables['lat'][:, 1].copy()
+particles['z'][:,1] = ODdata.variables['z'][:, 1].copy()
+#and current time step
+particles['time'][1] = ODdata.variables['time'][1].copy()
+#add utm
+particles = add_utm(particles)
+    
+#unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
+#set limits for grid manually since we dont know how this will evolv
+#loop over all timesteps to check the limits of the grid or define boundaries manually
+if manual_border == True:
     minlon = 12.5
     maxlon = 21
     minlat = 68.5
     maxlat = 72
     maxdepth = 15*20
+else:
+    for i in range(0,ODdata.variables['lon'].shape[1]):
+        #get max and min unmasked lat/lon values
+        print(i)
+        if i == 0:
+            minlon = np.min(ODdata.variables['lon'][:,i].compressed())
+            maxlon = np.max(ODdata.variables['lon'][:,i].compressed())
+            minlat = np.min(ODdata.variables['lat'][:,i].compressed())
+            maxlat = np.max(ODdata.variables['lat'][:,i].compressed())
+            maxdepth = np.max(np.abs(ODdata.variables['z'][:,i].compressed()))
+        else:
+            minlon = np.min([np.min(ODdata.variables['lon'][:,i].compressed()),minlon])
+            maxlon = np.max([np.max(ODdata.variables['lon'][:,i].compressed()),maxlon])
+            minlat = np.min([np.min(ODdata.variables['lat'][:,i].compressed()),minlat])
+            maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
+            maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
 
-if run_full == True:
-    datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
-    #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst.nc'#real dataset
-    ODdata = nc.Dataset(datapath, 'r', mmap=True)
-    #number of particles
-    n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0].copy()
-    #Create an empty particles dictionary with size n_particlesx2 (one for current and one for previous timestep)
-    particles = {'lon':np.ma.zeros((len(n_particles),2)),
-                'lat':np.ma.zeros((len(n_particles),2)),
-                'z':np.ma.zeros((len(n_particles),2)),
-                'time':np.ma.zeros(2),}
-    #first timestep:
-    particles['lon'][:,0] = ODdata.variables['lon'][:, 0].copy()
-    particles['lat'][:,0] = ODdata.variables['lat'][:, 0].copy() 
-    particles['z'][:,0] = ODdata.variables['z'][:, 0].copy()
-    particles['timefull'] = ODdata.variables['time'][:].copy()
-    particles['time'][0] = ODdata.variables['time'][0].copy()
-    #second timestep:
-    particles['lon'][:,1] = ODdata.variables['lon'][:, 1].copy()
-    particles['lat'][:,1] = ODdata.variables['lat'][:, 1].copy()
-    particles['z'][:,1] = ODdata.variables['z'][:, 1].copy()
-    #and current time step
-    particles['time'][1] = ODdata.variables['time'][1].copy()
-    #add utm
-    particles = add_utm(particles)
-        
-    #unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
-    #set limits for grid manually since we dont know how this will evolv
-    #loop over all timesteps to check the limits of the grid or define boundaries manually
-    if manual_border == True:
-        minlon = 12.5
-        maxlon = 21
-        minlat = 68.5
-        maxlat = 72
-        maxdepth = 15*20
-    else:
-        for i in range(0,ODdata.variables['lon'].shape[1]):
-            #get max and min unmasked lat/lon values
-            print(i)
-            if i == 0:
-                minlon = np.min(ODdata.variables['lon'][:,i].compressed())
-                maxlon = np.max(ODdata.variables['lon'][:,i].compressed())
-                minlat = np.min(ODdata.variables['lat'][:,i].compressed())
-                maxlat = np.max(ODdata.variables['lat'][:,i].compressed())
-                maxdepth = np.max(np.abs(ODdata.variables['z'][:,i].compressed()))
-            else:
-                minlon = np.min([np.min(ODdata.variables['lon'][:,i].compressed()),minlon])
-                maxlon = np.max([np.max(ODdata.variables['lon'][:,i].compressed()),maxlon])
-                minlat = np.min([np.min(ODdata.variables['lat'][:,i].compressed()),minlat])
-                maxlat = np.max([np.max(ODdata.variables['lat'][:,i].compressed()),maxlat])
-                maxdepth = np.max([np.max(np.abs(ODdata.variables['z'][:,i].compressed())),maxdepth])
-    
 #get the min/max values for the UTM coordinates using the utm package and the minlon/maxlon/minlat/maxlat values
 minUTMxminUTMy = utm.from_latlon(minlat,minlon)
 minUTMxmaxUTMy = utm.from_latlon(minlat,maxlon)
@@ -1773,40 +1819,15 @@ minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=zone_number, 
 maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
 maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
 
-#Create a test data set of binned values in a 10x10 grid containing 50% zeros
-histogram_prebinned = np.random.choice([0, 1], size=(10, 10), p=[0.5, 0.5])
-#replace all 1s with some random values
-histogram_prebinned_uneven_weights = histogram_prebinned.copy()
-histogram_prebinned_uneven_weights[histogram_prebinned_uneven_weights == 1] = np.random.randint(1, 10, size=np.sum(histogram_prebinned_uneven_weights == 1))
-
-N = np.shape(histogram_prebinned)[0]*np.shape(histogram_prebinned)[1]
-#Calculate the effective number of samples
-effective_samples = (np.sum(histogram_prebinned)**2)/np.sum(histogram_prebinned**2)
-effective_samples_uneven = (np.sum(histogram_prebinned_uneven_weights)**2)/np.sum(histogram_prebinned_uneven_weights**2)
-
-print('Effective samples:',effective_samples)
-print('Effective samples uneven:',effective_samples_uneven)
-
-plt.imshow(histogram_prebinned, cmap='viridis')
-plt.colorbar()
-
 ###### SET UP GRIDS FOR THE MODEL ######
 print('Creating the output grid...')
 #MODEELING OUTPUT GRID
-if run_test == True:
-    GRID,bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['time']),np.nan),
-                                                [np.max([100000-dxy_grid-1,minUTMxminUTMy[0]]),np.min([1000000-dxy_grid-1,maxUTMxmaxUTMy[0]])],
-                                                [np.max([dxy_grid+1,minUTMxminUTMy[1]]),np.min([10000000-dxy_grid-1,maxUTMxmaxUTMy[1]])],
-                                                maxdepth+25,
-                                                savefile_path=False,
-                                                resolution=np.array([dxy_grid,dz_grid]))
-elif run_full == True:
-    bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['timefull']),np.nan),
-                                                [np.max([100000-dxy_grid-1,minUTMxminUTMy[0]]),np.min([1000000-dxy_grid-1,maxUTMxmaxUTMy[0]])],
-                                                [np.max([dxy_grid+1,minUTMxminUTMy[1]]),np.min([10000000-dxy_grid-1,maxUTMxmaxUTMy[1]])],
-                                                maxdepth+25,
-                                                savefile_path=False,
-                                                resolution=np.array([dxy_grid,dz_grid]))
+bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['timefull']),np.nan),
+                                            [np.max([100000-dxy_grid-1,minUTMxminUTMy[0]]),np.min([1000000-dxy_grid-1,maxUTMxmaxUTMy[0]])],
+                                            [np.max([dxy_grid+1,minUTMxminUTMy[1]]),np.min([10000000-dxy_grid-1,maxUTMxmaxUTMy[1]])],
+                                            maxdepth+25,
+                                            savefile_path=False,
+                                            resolution=np.array([dxy_grid,dz_grid]))
 #CREATE ONE ACTIVE HORIZONTAL MODEL FIELD
 GRID_active = np.zeros((len(bin_x),len(bin_y)))
 #ATMOSPHERIC FLUX GRID
@@ -2099,7 +2120,6 @@ depth_bins_lifespan = np.arange(0,np.max(bin_z)+dz_grid/2,dz_grid/2)
 
 particle_lifespan_matrix = np.zeros((lifespan,len(depth_bins_lifespan),3))
 particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
-
 
 if run_all == True:
 
@@ -2862,6 +2882,17 @@ max_lat = np.max(lat_mesh)
 ############ PLOTTING TIMESERIES OF DIFFUSIVE ATMOSPHERIC FLUX FIELD ############
 #################################################################################
 
+#Define point of seep
+
+#Release point
+poi={
+        'lon': 14.279600,
+        'lat': 68.918600,
+        'color': 'white',
+        'size': 8,
+        'label': ''
+    }
+
 #OR ANY OTHER FIELD, REALLY, JUST CHANGE THE GRID VARIABLE...
 
 #Calculate atmospheric flux field per square meter per hour
@@ -2911,10 +2942,6 @@ if do == True:
 
     #create gif
     imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
-
-#Do the same proceedure for the gt_vel field
-
-
 
 #############################################################
 ############ PLOTTING TIMESERIES OF GT_VEL FIELD ############
@@ -3186,180 +3213,6 @@ if plot_all == True:
         images_field_test.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png'))
         plt.close(fig)
     
-
-
-
-
-####################################################################################################
-#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#DEPRACATED#
-####################################################################################################
-'''
-
-
-    #calculate wind speed
-    wind_speed = np.sqrt(u10**2 + v10**2)
-    wind_speed = np.transpose(wind_speed,(2,1,0))
-    sst = np.transpose(sst,(2,1,0)) #Just to get it to match with the UTM coordinate matrix and have time as the last dimension.
-    del u10,v10
-
-    #Calculate utm coordinates for the wind field
-    #loop over to be sure, so much weird going on now. 
-    #UTM_wind = np.zeros((len(lats),len(lons)))
-    #for i in range(0,len(lats)):
-    #    for j in range(0,len(lons)):
-    #        UTM_wind[i,j] = utm.from_latlon(lats[i],lons[j])[0]
-
-    latmesh,lonmesh = np.meshgrid(lats,lons)
-
-    UTM_wind = utm.from_latlon(latmesh,lonmesh)
-    
-    UTM_wind_x_mesh = UTM_wind[0]
-    UTM_wind_y_mesh = UTM_wind[1]
-       
-
-    from scipy.interpolate import griddata
-
-    wind_coo_mat = np.array([UTM_x_wind_mesh.flatten(),UTM_y_wind_mesh.flatten()]).T
-    
-    #Flatten wind and sst data
-    wind_speed_flat = wind_speed[:,:,0].flatten()
-    sst_flat = sst[:,:,0].flatten()
-
-    #Create 2d array of fine grid
-    #create mesh
-    bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x.T,bin_y.T)
-
-    #plot the outlines of the two domains in the same figure
-    plt.plot(bin_x_mesh,bin_y_mesh,'r.')
-    plt.plot(UTM_wind_x_mesh,UTM_wind_y_mesh,'b.')
-
-    GRID_coo_mat = np.array([bin_x_mesh.flatten(),bin_y_mesh.flatten()]).T
-
-    #Interpolate the wind field to the grid
-    wind_speed_interp = griddata(wind_coo_mat,wind_speed_flat,GRID_coo_mat,method='linear')
-
-    #reshape the interpolated wind field
-    wind_speed_interp = wind_speed_interp.reshape(bin_x_mesh.shape)
-
-    #Make a plot of the original and interpolated wind speed field with utm corrdinates in the same figure 
-    #using two subplots side by side. Use contourf
-    
-    levels = np.arange(0,21,1)
-    colormap = plt.cm.get_cmap('magma',20)
-    fig,ax = plt.subplots(2,2,figsize=(10,10))
-    ###WIND SPEED###
-    #original data
-    ax[0].contourf(UTM_x_wind_mesh,UTM_y_wind_mesh,wind_speed[:,:,0].T)
-    ax[0].contour(UTM_x_wind_mesh,UTM_y_wind_mesh,wind_speed[:,:,0].T,levels=levels,colors='black')
-    ax[0].set_title('Original wind speed field at time 0')
-    
-    #interpolated data
-    ax[1].contourf(bin_x_mesh,bin_y_mesh,wind_speed_interp)
-    ax[1].contour(bin_x_mesh,bin_y_mesh,wind_speed_interp,levels=levels,colors='black')
-    ax[1].set_title('Interpolated wind speed at time 0')
-
-
-
-    #ax[0].contourf(UTM_x_wind_mesh,UTM_y_wind_mesh,wind_speed[:,:,0].T)
-    #ax[0].set_title('Original wind speed field at time 0')
-    #ax[1].contourf(bin_x_mesh,bin_y_mesh,wind_speed_interp)
-    #ax[1].set_title('Interpolated wind speed field')
-    #plt.show()
-
-    ws = np.sqrt(u10**2 + v10**2)   
-    U_constant = 5 #m/s
-    T_constant = 10 #degrees celcius
-
-        if plot_wind_field == True:
-        levels_w = np.arange(-1, 24, 2)
-        levels_sst = np.arange(np.round(np.nanmin(sst_interp))-2, np.round(np.nanmax(sst_interp))+1, 1)
-        #do the same plot but just on lon lat coordinates
-        #convert bin_x_mesh and bin_y_mesh to lon/lat
-        lon_mesh,lat_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='V')
-        colormap = 'magma'
-
-        import imageio
-        import matplotlib.gridspec as gridspec
-
-        images_wind = []
-        images_sst = []
-        time_steps = len(bin_time)
-
-        #datetimevector
-        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-
-        for i in range(time_steps):
-            #WIND FIELD PLOT
-            fig = plt.figure(figsize=(7, 7))
-            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])  # Create a GridSpec object
-
-            lons_zoomed = lon_mesh
-            lats_zoomed = lat_mesh
-            ws_zoomed = ws_interp[i,:,:]
-
-            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
-            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_w,cmap=colormap)
-            cbar = plt.colorbar(contourf, ax=ax1)
-            cbar.set_label('[m/s]')
-            cbar.set_ticks(levels_w[1:-1])
-            ax1.set_title('Wind speed, '+str(times[i])[:10])
-            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_w, colors = 'w', linewidths = 0.2)
-            ax1.clabel(contour, inline=True, fontsize=8)
-            ax1.set_xlabel('Longitude')
-            ax1.set_ylabel('Latitude')
-
-            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-            ax2.set_position([0.12,0.12,0.6246,0.03])
-            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
-            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
-            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
-            ax2.set_yticks([])  # Hide the y-axis ticks
-            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
-            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
-
-            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png')
-            images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
-            plt.close()
-
-            #SST PLOT
-            fig = plt.figure(figsize=(7, 7))
-            gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
-
-            lons_zoomed = lon_mesh
-            lats_zoomed = lat_mesh
-            ws_zoomed = sst_interp[i,:,:]
-
-            ax1 = plt.subplot(gs[0])  # Create the first subplot for the contour plot
-            contourf = ax1.contourf(lons_zoomed, lats_zoomed, ws_zoomed, levels=levels_sst,cmap = colormap)
-            cbar = plt.colorbar(contourf, ax=ax1)
-            cbar.set_label('[m/s]')
-            cbar.set_ticks(levels_sst[1:-1])
-            ax1.set_title('Wind speed, '+str(times[i])[:10])
-            contour = ax1.contour(lons_zoomed, lats_zoomed, ws_zoomed, levels = levels_sst, colors = 'w', linewidths = 0.2)
-            ax1.clabel(contour, inline=True, fontsize=8)
-            ax1.set_xlabel('Longitude')
-            ax1.set_ylabel('Latitude')
-
-            ax2 = plt.subplot(gs[1])  # Create the second subplot for the progress bar
-            ax2.set_position([0.12,0.12,0.6246,0.03])
-            ax2.set_xlim(0, time_steps)  # Set the limits to match the number of time steps
-            #ax2.plot([i, i], [0, 1], color='w')  # Plot a vertical line at the current time step
-            ax2.fill_between([0, i], [0, 0], [1, 1], color='grey')
-            ax2.set_yticks([])  # Hide the y-axis ticks
-            ax2.set_xticks([0,time_steps])  # Set the x-axis ticks at the start and end
-            ax2.set_xticklabels(['May 20, 2018', 'June 20, 2018'])  # Set the x-axis tick labels to the start and end time
-
-            plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png')
-            images_sst.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field'+str(i)+'.png'))
-            plt.close()
-
-        #create a gif
-        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field.gif', images_wind, duration=0.5)
-        #and for sst
-        imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)
-
-
-'''
 
 ############################
 #######PLOTTING WIND########
@@ -3867,7 +3720,6 @@ plt.tight_layout()
 plt.show()
 
 
-
 # Define time points
 day1 = 23
 day7 = 24*7-1
@@ -3922,6 +3774,36 @@ cbar.set_label('Methane [mol]')
 
 # Customize plot
 ax.set_title('Vertical position of released methane molecules over time after release')
+ax.set_xlabel('Time [hours]')
+ax.set_ylabel('Depth')
+ax.invert_yaxis()  # Flip the y-axis
+
+ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
+
+plt.show()
+
+#Make a pcolor plot that illustrates a similar thing which is the vertical transport. I have to derivate the z-axis then
+
+vert_diff_lifetime = np.diff(particle_lifespan_matrix[:, :, 0], axis=1) #This is in mol/s ???
+
+# Create a pcolor plot for the entire time series
+fig, ax = plt.subplots(figsize=(10, 6))
+
+time_series = np.arange(0, vert_diff_lifetime.shape[0])
+
+levels = np.linspace(-500,500,100)
+
+# Create the pcolor plot
+c = ax.pcolor(time_series, depth_vector[1:], vert_diff_lifetime.T, shading='auto', cmap='rocket_r',vmin=np.min(levels),vmax=np.max(levels))
+
+#plot some contours too
+contour = ax.contour(time_series, depth_vector[1:], vert_diff_lifetime.T, levels=levels[::10], colors='black', linewidths=0.1, zorder=1, alpha=0.5)
+
+# Add colorbar
+cbar = fig.colorbar(c, ax=ax)
+cbar.set_label('Methane [mol/s]')
+# Customize plot
+ax.set_title('Vertical transport of released methane molecules over time after release')
 ax.set_xlabel('Time [hours]')
 ax.set_ylabel('Depth')
 ax.invert_yaxis()  # Flip the y-axis
@@ -3998,6 +3880,7 @@ poi={
         'label': ''
     }
 
+
 plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
                     lon=lon_mesh,
                     lat=lat_mesh,
@@ -4015,14 +3898,19 @@ plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
                     figuresize = [12,10],
                     log_scale = True,
                     plot_progress_bar = False,
-                    maxnumticks = 9,
+                    maxnumticks = 10,
                     plot_model_domain = False,#[min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
-                    contoursettings = [10,'0.8',0.1],
+                    contoursettings = [20,'0.8',0.1],
                     poi = poi,
-                    plot_extent=[14, 18.5, 68.6, 70.2])
+                    plot_extent=[14, 18.2, 68.6, 70.4])
+
+
+
 
 
 # And bathymetry
+
+levels = np.linspace(np.nanmin(np.nanmin(interpolated_bathymetry)),np.nanmax(np.nanmax(interpolated_bathymetry)),100)
 
 fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
                             lon=lon_mesh,
@@ -4042,10 +3930,10 @@ fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
                             log_scale = False,
                             starttimestring = '20 May 2018',
                             endtimestring = '21 June 2018',
-                            maxnumticks = 5,
+                            maxnumticks = 20,
                             plot_progress_bar = False,
                             #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
-                            contoursettings = [2,'0.8',0.1],
+                            contoursettings = [10,'0.8',0.1],
                             plot_sect_line = cross_section,
                             poi = poi,
-                            plot_extent=[14, 17, 68.6, 69.8])
+                            plot_extent=[14, 18.2, 68.6, 70.4])

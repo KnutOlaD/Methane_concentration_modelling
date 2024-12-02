@@ -796,7 +796,7 @@ def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cuto
     return GRID_active
 
 from matplotlib.colors import LogNorm
-from matplotlib.ticker import MaxNLocator, ScalarFormatter, LogLocator
+from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
 import matplotlib.patches as patches
 from matplotlib.ticker import FuncFormatter
 
@@ -847,10 +847,16 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
                 Use logarithmic color scale (default: False)
             figuresize : list [float, float]
                 Figure dimensions in inches (default: [14, 10])
-            plot_model_domain : list
-                [min_lon, max_lon, min_lat, max_lat, linewidth, color]
+            plot_model_domain : bool or list
+                If True: automatically plot domain boundaries from data extent
+                If list: [min_lon, max_lon, min_lat, max_lat, linewidth, color]
             contoursettings : list
-                [stride, color, linewidth] for contour lines
+                [stride, color, linewidth, decimal_places, fontsize]
+                - stride: int, use every nth level for contour lines
+                - color: str, contour line color
+                - linewidth: float, contour line width
+                - decimal_places: int or str, format for contour labels
+                - fontsize: int, size of contour labels
             maxnumticks : int
                 Maximum number of colorbar ticks (default: 10)
             decimal_places : int
@@ -870,6 +876,7 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
                 - 'color': marker color (default 'red')
                 - 'size': marker size (default 6)
                 - 'label': text label (optional)
+                - 'edgecolor': edge color (default 'black')
 
     Returns
     -------
@@ -1027,24 +1034,32 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
     
     ax.set_extent(extent)
     
-    # Add point of interest if provided
-    if poi := kwargs.get('poi', None):
-        ax.plot(poi['lon'], 
+    #set the edgecolor parameter to the inverse color of the facecolor
+
+    if poi := kwargs.get('poi'):  # Get poi with default None
+        # Plot point
+        ax.scatter(poi['lon'], 
                 poi['lat'],
-                marker='o',
+                poi.get('size', 6),
                 color=poi.get('color', 'red'),
-                markersize=poi.get('size', 6),
+                edgecolors = poi.get('edgecolor', 'black'),
+                label=poi.get('label', None),  # Add label parameter
                 transform=data_transform,
+                linewidths = 0.04*poi.get('size', 6),
                 zorder=10)
-                        # Add label if provided
-    if 'label' in poi:
-        ax.text(poi['lon'], 
-                poi['lat'],
-                poi['label'],
-                color=poi.get('color', 'red'),
-                fontsize=12,
-                transform=data_transform,
-                zorder=10)
+        
+        # Add label if provided
+        #if 'label' in poi:
+        #    ax.text(poi['lon']+0.1, 
+        #            poi['lat']-0.05,
+        #            poi['label'],
+        #            color=poi.get('color', 'red'),
+        #            fontsize=12,
+        #            transform=data_transform,
+        #            zorder=10)
+        
+        if poi.get('label'):
+            ax.legend(prop={'size': 12})
 
     # Custom markers (cached transform)
     ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=data_transform)
@@ -1057,8 +1072,8 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
     gl.right_labels = False    # No labels on right
     gl.left_labels = True      # Labels on left
     gl.bottom_labels = True    # Labels on bottom
-    gl.xlabel_style = {'size': 14}
-    gl.ylabel_style = {'size': 14}
+    gl.xlabel_style = {'size': 12}
+    gl.ylabel_style = {'size': 12}
     
     # Progress bar
     if kwargs.get('plot_progress_bar', True):
@@ -1083,20 +1098,33 @@ def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
             kwargs.get('starttimestring', 'May 20, 2021'),
             kwargs.get('endtimestring', 'May 20, 2021')
         ], fontsize=16)
-    # Model domain
+    
+    #Plot model domain...
     plot_model_domain = kwargs.get('plot_model_domain', False)
     if plot_model_domain:
-        rect = patches.Rectangle(
-            (plot_model_domain[0], plot_model_domain[2]),
-            plot_model_domain[1] - plot_model_domain[0],
-            plot_model_domain[3] - plot_model_domain[2],
-            linewidth=plot_model_domain[4],
-            edgecolor=plot_model_domain[5],
-            facecolor='none',
-            transform=data_transform
-        )
-        ax.add_patch(rect)
-    
+        if isinstance(plot_model_domain, bool):
+            # Get boundary points from meshgrid
+            left_edge = np.column_stack((lon[:,0], lat[:,0]))     # Western boundary
+            right_edge = np.column_stack((lon[:,-1], lat[:,-1]))  # Eastern boundary
+            bottom_edge = np.column_stack((lon[0,:], lat[0,:]))   # Southern boundary
+            top_edge = np.column_stack((lon[-1,:], lat[-1,:]))    # Northern boundary
+            
+            # Combine edges with explicit ordering to avoid diagonals
+            boundary = np.vstack([
+                bottom_edge,        # South
+                right_edge[1:],     # East (skip first point)
+                top_edge[::-1],     # North (reversed)
+                left_edge[::-1][1:] # West (reversed, skip first point)
+            ])
+            
+            # Plot boundary
+            ax.plot(boundary[:,0], boundary[:,1],
+                    color='0.8',
+                    linewidth=0.5,
+                    transform=data_transform,
+                    linestyle='--',
+                    label='Model Domain')
+            
     plot_sect_line = kwargs.get('plot_sect_line', None)
 
     #Plot a line along the grid points in plot_sect_line
@@ -1754,9 +1782,9 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 #   GRID = pickle.load(f)
 
 # With vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
 # Without vertical diffusion
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
 n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0].copy()
@@ -2792,14 +2820,14 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
     #create a sparse matrix first
 #load the GRID file
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
-    GRID_mox = pickle.load(f)
+    GRID = pickle.load(f)
 
 #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
 GRID_atm_sparse = GRID_atm_flux
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'wb') as f:
     pickle.dump(GRID_atm_sparse, f)
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
-    GRID_atm = pickle.load(f)
+    GRID_atm_flux = pickle.load(f)
 #GRID_mox_sparse = csr_matrix(GRID_mox)
 #GRID_mox_sparse = GRID_mox
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
@@ -2833,6 +2861,9 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\integral_length_scale_full.pickle', 'wb') as f:
     pickle.dump(integral_length_scale_full, f)
 #and the time it took to estimate the bandwidths
+#Save the GRID_vtrans as well
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_vtrans.pickle', 'wb') as f:
+    pickle.dump(GRID_vtrans, f)
 
 
 #save a short textfile with the settings
@@ -2860,6 +2891,17 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
 #----------------------------------------------------------------------------------------------------#
 ######################################################################################################
 
+#define plotting style set do default
+dark_mode = True
+#Set to dark mode
+dark_mode = True
+if dark_mode == True:
+    plt.style.use('dark_background')
+    colormap = 'rocket'
+else:
+    plt.style.use('default')
+    colormap = 'rocket_r'
+
 #Remove the first 
 
 #Get grid on lon/lat and limits for the figures. 
@@ -2882,17 +2924,15 @@ max_lat = np.max(lat_mesh)
 ############ PLOTTING TIMESERIES OF DIFFUSIVE ATMOSPHERIC FLUX FIELD ############
 #################################################################################
 
-#Define point of seep
-
-#Release point
+#Define seep site location
 poi={
         'lon': 14.279600,
         'lat': 68.918600,
-        'color': 'white',
-        'size': 8,
-        'label': ''
+        'color': 'yellow',
+        'size': 22,
+        'label': 'Seep site',
+        'edgecolor': 'black'
     }
-
 #OR ANY OTHER FIELD, REALLY, JUST CHANGE THE GRID VARIABLE...
 
 #Calculate atmospheric flux field per square meter per hour
@@ -2979,7 +3019,8 @@ if plot_atm == True:
                                     figuresize = [12,10],
                                     log_scale = False,
                                     starttimestring = '20 May 2018',
-                                    endtimestring = '20 June 2018')
+                                    endtimestring = '20 June 2018',
+                                    poi=poi)
         images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
         plt.close(fig)  # Close the figure to avoid displaying it
 
@@ -2997,7 +3038,6 @@ GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol. TH
 levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),100)
 levels = levels[:]
 #flip the lon_vector right/left
-
 
 plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
                     lon=lon_mesh,
@@ -3017,8 +3057,9 @@ plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
                     log_scale = True,
                     plot_progress_bar = False,
                     maxnumticks = 9,
-                    plot_model_domain = False,#[min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
-                    contoursettings = [4,'0.8',0.1])
+                    plot_model_domain = True,#[min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                    contoursettings = [4,'0.8',0.1],
+                    poi=poi)
 
 #######################################################################
 ############ PLOTTING TIMESERIES OF TOTAL ATMOSPHERIC FLUX ############
@@ -3149,7 +3190,7 @@ for ax in [ax1, ax2, ax3, ax4]:
 plt.tight_layout()
 
 #save figure
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss.png')
+plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss_no_vdiff.png')
 
 #find the dominant periods in the total_atm_flux dataset
 #use the periodogram
@@ -3597,80 +3638,6 @@ particles_all_data.keys()
 # Ensure concentration values are positive and non-zero
 concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
 
-# Create the plot
-fig = go.Figure()
-
-# Add concentration data as a filled contour plot (color fill)
-fig.add_trace(go.Contour(
-    z=concentration_cross_section,
-    x=distance_mesh[0],  # Assuming distance_mesh is a 2D array
-    y=depth_mesh[:, 0],  # Assuming depth_mesh is a 2D array
-    colorscale='Viridis',
-    colorbar=dict(
-        title='Concentration [mol/m³]',
-        tickvals=levels[::8],
-        ticktext=[f'{level:.1e}' for level in levels[::8]],
-        ticks='outside',
-        len=0.8
-    ),
-    contours=dict(
-        showlines=False  # Hide contour lines for the color fill
-    ),
-    zmin=np.min(levels),
-    zmax=np.max(levels)
-))
-
-# Add contour lines with fewer levels
-fig.add_trace(go.Contour(
-    z=concentration_cross_section,
-    x=distance_mesh[0],  # Assuming distance_mesh is a 2D array
-    y=depth_mesh[:, 0],  # Assuming depth_mesh is a 2D array
-    colorscale='Viridis',
-    showscale=False,  # Hide the colorbar for the contour lines
-    contours=dict(
-        start=np.min(levels),
-        end=np.max(levels),
-        size=(np.max(levels) - np.min(levels)) / 10,  # Fewer contour lines
-        coloring='none'  # No color fill for the contour lines
-    ),
-    line=dict(color='black')
-))
-
-# Add bathymetry line
-fig.add_trace(go.Scatter(
-    x=total_distances,
-    y=-np.array(bathymetry_cross_section),
-    mode='lines',
-    line=dict(color='black', width=2),
-    name='Bathymetry'
-))
-
-# Fill below bathymetry line
-fig.add_trace(go.Scatter(
-    x=np.concatenate([total_distances, total_distances[::-1]]),
-    y=np.concatenate([-np.array(bathymetry_cross_section), [-np.min(bathymetry_cross_section)] * len(bathymetry_cross_section)]),
-    fill='toself',
-    fillcolor='grey',
-    line=dict(color='grey'),
-    name='Bathymetry Fill'
-))
-
-# Customize layout
-fig.update_layout(
-    title=f'Concentration Cross Section (Timestep {timestep})',
-    xaxis_title='Longitude [°E]',
-    yaxis_title='Depth [m]',
-    yaxis=dict(range=[250, 0]),  # Invert y-axis for depth
-    template='plotly_white'
-)
-
-# Show the plot
-fig.show()
-
-#normalize particle_lifespan_matrix for each age
-for nn in range(len(particle_lifespan_matrix)):
-    particle_lifespan_matrix[nn,:,0] = particle_lifespan_matrix[nn,:,0]/np.sum(particle_lifespan_matrix[nn,:,0])
-
 
 #########################################
 ############ LIFETIME PLOT ##############
@@ -3871,14 +3838,7 @@ release_point = [14.279600,68.918600]
 #flip the lon_vector right/left
 #extent_limits = [100:200,100:200]
 
-#Release point
-poi={
-        'lon': 14.279600,
-        'lat': 68.918600,
-        'color': 'white',
-        'size': 8,
-        'label': ''
-    }
+
 
 
 plot_2d_data_map_loop(data=GRID_vert_total_sum.T,

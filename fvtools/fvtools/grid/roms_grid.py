@@ -33,6 +33,9 @@ def get_roms_grid(mother, projection = None, offset = 7500):
     elif mother == 'MET-NK':
         ROMS = METNorKyst()
 
+    elif mother == 'MET-NK-Z':
+        ROMS = METNorKystZ()
+
     else:
         raise InputError(f'{mother=} is not a valid option. See docstring for more info.')
 
@@ -130,6 +133,50 @@ class ROMSdepths:
     @cached_property
     def dsigma_v(self):
         return np.diff(self.zw_v, axis = 0)/self.h_v[None, :, :]
+
+class ROMSdepthsZ:
+    @property
+    def zeta(self):
+        '''
+        z is the sea surface elevation interpolated from ROMS. Its added to h_rho later, and will be used
+        when computing the vertical interpolation coefficients
+        '''
+        if not hasattr(self, '_zeta'):
+            self._zeta = np.zeros(self.lon_rho.shape)
+        return self._zeta
+
+    @zeta.setter
+    def zeta(self, var):
+        '''SSE at rho points'''
+        if var.shape != self.lon_rho.shape:
+            raise ValueError(f'zeta and h_rho needs to have the same shape')
+        self._zeta = var
+    
+    @property
+    def h_rho(self):
+        '''depth at rho points'''
+        return self._h_rho+self.zeta
+    
+    @h_rho.setter
+    def h_rho(self, var):
+        self._h_rho = var
+
+    @property
+    def h_u(self):
+        return (self.h_rho[:, 1:, :]   + self.h_rho[:, :-1, :])/2
+    
+    @property
+    def h_v(self):
+        return (self.h_rho[1:, :, :]   + self.h_rho[:-1, :, :])/2
+
+    @property
+    def zw_rho(self):
+        '''depth at sigma-interfaces'''
+        return self._zw_rho
+
+    @zw_rho.setter
+    def zw_rho(self, var):
+        self._zw_rho = var
 
 # We always deal with a cropped verison of the ROMS grid in the nesting- restart- and movie routines.
 # These classes are used to crop the roms domain to cover xbounds, ybounds (xy-coordinates), and provides metrics (m_ri, x_ri) etc,
@@ -351,6 +398,75 @@ class ROMSCropper(CropU, CropV, CropRho):
         '''Exclusively used in the ROMS movie maker'''
         return self.y_rho[self.m_ri:(self.x_ri+1), self.m_rj:(self.x_rj+1)]
 
+class ROMSbaseZ(ROMSdepthsZ, ROMSCropper):
+    '''
+    Containing methods we need when trying to couple a FVCOM and ROMS model
+    '''
+    def load_grid(self, xbounds=None, ybounds=None, offset=7500):
+        '''
+        Load grid from ROMS output file
+        - xbounds: limit of the domain in x-direction
+        - ybounds: limit of the domain in the y-direction
+        - offset:  offset in x-y direction (to make sure to include all relevant ROMS points)
+        '''
+        # Add xbounds and ybounds to self
+        # ----
+        self.xbounds = xbounds
+        self.ybounds = ybounds
+        self.offset  = offset
+
+        # Load grid positions
+        self.load_grid_from_nc()
+        self.get_x_y_z()
+
+    @property
+    def path(self):
+        if not hasattr(self, '_path'):
+            try:
+                self._path = self.test_day(datetime.now())
+            except:
+                self._path = self.test_day(datetime.now()-timedelta(days=1))
+        return self._path
+    
+    @path.setter
+    def path(self, var):
+        self._path = var
+
+    def load_grid_from_nc(self):
+        '''
+        Load the position data we need to get going
+        - positions (of rho, u and v points)
+        - depth (at rho points)
+        - stretching functions (for rho and w points)
+        - angle between XI-axis and east
+        '''
+        aliases = {
+            'lon_rho': 'lon',
+            'lat_rho': 'lat',
+            }
+        with Dataset(self.path, 'r') as ncdata:
+            load_position_fields = ['lon_rho', 'lat_rho']
+            for load in load_position_fields:
+                setattr(self, load, ncdata.variables.get(aliases[load])[:])
+
+            load_mask = ['u', 'v', 'rho']
+            for load in load_mask:
+                setattr(self, f'{load}_mask', ((ncdata.variables.get(f'mask_{load}')[:]-1)*(-1)).astype(bool))
+
+            # Set the depth
+            self.h_rho = ncdata['h'][:]
+
+            # Set the depth at all z-levels
+            self.zw_rho = np.tile(self.h_rho, [ncdata.X.size, ncdata.Y.size, 1])
+
+    def get_x_y_z(self):
+        '''
+        compute z at each S level for mean sealevel, project roms lon,lat to desired projection
+        '''
+        self.x_rho, self.y_rho = self.Proj(self.lon_rho, self.lat_rho, inverse=False)
+        self.x_u,   self.y_u   = self.Proj(self.lon_u,   self.lat_u,   inverse=False)
+        self.x_v,   self.y_v   = self.Proj(self.lon_v,   self.lat_v,   inverse=False)
+    
 class ROMSbase(ROMSdepths, ROMSCropper):
     '''
     Containing methods we need when trying to couple a FVCOM and ROMS model
@@ -427,12 +543,13 @@ class HINorKyst(ROMSbase):
         '''
         property holding all local ncfiles
         '''
-        self.folders     = ['/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2016-2017',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2017',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2018',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2019',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_20194',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2020']
+        #self.folders     = ['/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2016-2017',\
+        #                    '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2017',\
+        #                    '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2018',\
+        #                    '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2019',\
+        #                    '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_20194',\
+        #                    '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2020']
+        self.folders = ['/cluster/work/users/hes001/ROMS/NK800_2018']
         self._bottom_folders()
         return self._list_ncfiles()
 
@@ -542,6 +659,40 @@ class METNorKyst(ROMSbase):
         Give it a date, and you will get the corresponding url in return
         '''
         https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/his/ocean_his.an.'
+        year        = str(date.year)
+        month       = '{:02d}'.format(date.month)
+        day         = '{:02d}'.format(date.day)
+        return f'{https}{year}{month}{day}.nc'
+
+class METNorKystZ(ROMSbase):
+    '''
+    Routines to check if MET-NorKyst data is available
+    '''
+    def __str__(self):
+        return 'Met Norway NorKyst z-levels'
+
+    def test_day(self, date):
+        '''
+        Check if the file exists that day, and that it has enough data
+        '''
+        file = self.get_norkyst_url(date)
+        self.test_ncfile(file)
+        self.path = file
+        return file
+
+    def test_ncfile(self, file):
+        try:
+            with Dataset(file, 'r') as d:
+                if len(d.variables['time'][:])<24:
+                    raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
+        except:
+            raise NoAvailableData
+
+    def get_norkyst_url(self, date):
+        '''
+        Give it a date, and you will get the corresponding url in return
+        '''
+        https       = 'https://thredds.met.no/thredds/dodsC/sea/norkyst800mv0_1h/NorKyst-800m_ZDEPTHS_his.fc'
         year        = str(date.year)
         month       = '{:02d}'.format(date.month)
         day         = '{:02d}'.format(date.day)
@@ -745,12 +896,12 @@ class ROMSTimeStep:
     Fields we expect in other routines from this field
     '''
     netcdf_target_index: int
-    salt: np.array = np.empty(0)
-    temp: np.array = np.empty(0)
-    u: np.array = np.empty(0)
-    v: np.array = np.empty(0)
-    ua: np.array = np.empty(0)
-    va: np.array = np.empty(0)
+    salt: np.array = np.ndarray
+    temp: np.array = np.ndarray
+    u: np.array = np.ndarray
+    v: np.array = np.ndarray
+    ua: np.array = np.ndarray
+    va: np.array = np.ndarray
 
 class NoAvailableData(Exception): pass
 class InputError(Exception): pass

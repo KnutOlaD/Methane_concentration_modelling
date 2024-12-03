@@ -622,11 +622,11 @@ def histogram_std(binned_data, effective_samples=None, bin_size=1):
     #Sheppards correction term
     sheppard = (2/12)*bin_size*bin_size #weighted data
 
-    variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
+    #variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
 
     #Do Bessel correction for weighted binned data using Kish's formula and add Sheppards correction
-    #variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / sum_data) * \
-    #        (1/(1 - 1/max(effective_samples,1.0000001))) - sheppard #Sheppards correction
+    variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / sum_data) * \
+            (1/(1 - 1/max(effective_samples,1.0000001))) - sheppard #Sheppards correction
     #sheppards: https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
     
     return np.sqrt(variance)
@@ -1141,6 +1141,7 @@ for idx in non_zero_indices:
     #normalize the data subset to psi
     print('Data subset:',np.sum(data_subset))
 
+    #normalize the data subset to psi
     data_subset = (data_subset/np.sum(data_subset))*np.sum(data_subset_counts)
     print('Data subset:',np.sum(data_subset))
     weight_estimate[i,j] = np.sum(data_subset)

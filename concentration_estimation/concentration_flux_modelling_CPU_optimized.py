@@ -2929,7 +2929,7 @@ poi={
         'lon': 14.279600,
         'lat': 68.918600,
         'color': 'yellow',
-        'size': 22,
+        'size': 24,
         'label': 'Seep site',
         'edgecolor': 'black'
     }

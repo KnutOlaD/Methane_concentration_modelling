@@ -17,7 +17,7 @@ import numpy as np
 
 RADIUS = 100
 
-def run(with_diffusion = False, hours_pr_release = 1, use_local = False):
+def run(with_diffusion = False, zlevel_norkyst = False, hours_pr_release = 1, use_local = False):
     '''
     Release NorKyst particles
     - hours_pr_release : how often to release particles
@@ -43,21 +43,30 @@ def run(with_diffusion = False, hours_pr_release = 1, use_local = False):
     dates = [start - timedelta(days = 1) + timedelta(days = n) for n in range((stop + timedelta(days=1) - start).days)]
 
     # If using local files
-    if use_local:
-        o = get_local_reader(dates, o)
-    
+    if not zlevel_norkyst:
+        if use_local:
+            o = get_local_reader(dates, o)
+        else:
+            o = get_thredds_reader(dates, o)
+
     else:
-        o = get_thredds_reader(dates, o)
+        o = get_thredds_zlevel_reader(dates, o)
 
     # Configure particle behaviour, environmental fallback values and vertical mixing parameterization parameters
     # ----
     o = set_config(o)
 
-    if with_diffusion:
-        o.set_config('environment:fallback:ocean_mixed_layer_thickness', 75) # Set the MLD to 50 meters.
+    if with_diffusion and not zlevel_norkyst:
+        o.set_config('environment:fallback:ocean_mixed_layer_thickness', 75) # Set the MLD to 75 meters.
         o.set_config('drift:vertical_mixing', True)
         o.set_config('vertical_mixing:diffusivitymodel', 'windspeed_Large1994')
+        o.set_config('vertical_mixing:timestep', 20.) # copied from the test cases, not sure if this is strict
 
+    elif with_diffusion and zlevel_norkyst:
+        o.set_config('drift:vertical_mixing', True)
+        o.set_config('vertical_mixing:diffusivitymodel', 'environment')
+        o.set_config('vertical_mixing:timestep', 20.) # copied from the test cases, not sure if this is strict
+        
     # Define particle seed times
     start_times = [start + timedelta(hours=n) for n in range((stop - start).days*24)]
     
@@ -116,6 +125,62 @@ def get_local_reader(dates, o):
     o.add_reader(reader_ROMS_native.Reader(files))
     return o
 
+def get_thredds_zlevel_reader(dates, o):
+    '''
+    Get zlevel files stored on thredds
+    '''
+    # For å hente grid for ROMS-NK
+    M = rg.get_roms_grid('MET-NK-Z', pyproj.Proj('EPSG:32633'))
+    M.load_grid()
+
+    N = rg.get_roms_grid('H-NS', pyproj.Proj('EPSG:32633')) # Bruker NorShelf for å fylle hull
+    N.load_grid()
+
+    # Opening consequtive ROMS files using MFDataset. Making sure not to do so over gaps
+    metnorkyst_files = []
+
+    print('Finding ROMS files')
+    for d in dates:
+        try:
+            fil = M.test_day(d)
+            metnorkyst_files.append(fil)
+            print(f'- Found {fil}')
+
+        except:
+            # Make a reader out of the available files stored to the roms_files list
+            print(f'- {d} is not available from MET-NorKyst')
+            if any(metnorkyst_files):
+                o.add_reader(reader_ROMS_native.Reader(metnorkyst_files))
+                roms_files = []
+
+            # Fill date with data from NorShelf
+            try:
+                # This is not ideal, since it could end up making multiple readers for the same day
+                present = N.test_day(d)
+                past    = N.test_day(d-timedelta(days=1))
+                future  = N.test_day(d+timedelta(days=1))
+                o.add_reader(reader_ROMS_native.Reader([past, present, future]))
+                print(f'  - Filled {d} with data from hourly NorShelf')
+
+            except:
+                if d == datetime(2018, 4, 10):
+                    print(f'  - using local files to fill data not covered by MET files at {d}')
+                    o.add_reader(
+                        reader_ROMS_native.Reader(
+                            ['/home/hes/work/norkyst/norkyst_800m_his.nc4_2018040901-2018041000', '/home/hes/work/norkyst/norkyst_800m_his.nc4_2018041001-2018041100']
+                        )
+                    )
+                else:
+                    print(f'  - Could not find any data for {d} at MET-NO servers, consider downloading more IMR NorKyst files.')
+                    raise NoAvailableData
+
+    # Read NorKyst data, add as reader
+    if any(metnorkyst_files):
+        reader_norkyst = reader_ROMS_native.Reader(metnorkyst_files)
+        o.add_reader(reader_norkyst)
+        
+    return o
+
 def get_thredds_reader(dates, o):
     '''
     Get files stored on thredds (and locally for some problematic dates)
@@ -155,7 +220,11 @@ def get_thredds_reader(dates, o):
             except:
                 if d == datetime(2018, 4, 10):
                     print(f'  - using local files to fill data not covered by MET files at {d}')
-                    o.add_reader(reader_ROMS_native.Reader(['/home/hes/work/norkyst/norkyst_800m_his.nc4_2018040901-2018041000', '/home/hes/work/norkyst/norkyst_800m_his.nc4_2018041001-2018041100']))
+                    o.add_reader(
+                        reader_ROMS_native.Reader(
+                            ['/home/hes/work/norkyst/norkyst_800m_his.nc4_2018040901-2018041000', '/home/hes/work/norkyst/norkyst_800m_his.nc4_2018041001-2018041100']
+                        )
+                    )
                 else:
                     print(f'  - Could not find any data for {d} at MET-NO servers, consider downloading more IMR NorKyst files.')
                     raise NoAvailableData

@@ -422,10 +422,7 @@ class ROMSbaseZ(ROMSdepthsZ, ROMSCropper):
     @property
     def path(self):
         if not hasattr(self, '_path'):
-            try:
-                self._path = self.test_day(datetime.now())
-            except:
-                self._path = self.test_day(datetime.now()-timedelta(days=1))
+            self._path = self.test_day(datetime(2018, 11, 1))
         return self._path
     
     @path.setter
@@ -449,23 +446,20 @@ class ROMSbaseZ(ROMSdepthsZ, ROMSCropper):
             for load in load_position_fields:
                 setattr(self, load, ncdata.variables.get(aliases[load])[:])
 
-            load_mask = ['u', 'v', 'rho']
-            for load in load_mask:
-                setattr(self, f'{load}_mask', ((ncdata.variables.get(f'mask_{load}')[:]-1)*(-1)).astype(bool))
-
             # Set the depth
             self.h_rho = ncdata['h'][:]
 
             # Set the depth at all z-levels
-            self.zw_rho = np.tile(self.h_rho, [ncdata.X.size, ncdata.Y.size, 1])
+            #print('Compute value at each depth')
+            #self.zw_rho = np.tile(self.h_rho, [ncdata['X'].size, ncdata['Y'].size, 1])
 
     def get_x_y_z(self):
         '''
         compute z at each S level for mean sealevel, project roms lon,lat to desired projection
         '''
         self.x_rho, self.y_rho = self.Proj(self.lon_rho, self.lat_rho, inverse=False)
-        self.x_u,   self.y_u   = self.Proj(self.lon_u,   self.lat_u,   inverse=False)
-        self.x_v,   self.y_v   = self.Proj(self.lon_v,   self.lat_v,   inverse=False)
+        #self.x_u,   self.y_u   = self.Proj(self.lon_u,   self.lat_u,   inverse=False)
+       # self.x_v,   self.y_v   = self.Proj(self.lon_v,   self.lat_v,   inverse=False)
     
 class ROMSbase(ROMSdepths, ROMSCropper):
     '''
@@ -664,7 +658,7 @@ class METNorKyst(ROMSbase):
         day         = '{:02d}'.format(date.day)
         return f'{https}{year}{month}{day}.nc'
 
-class METNorKystZ(ROMSbase):
+class METNorKystZ(ROMSbaseZ):
     '''
     Routines to check if MET-NorKyst data is available
     '''
@@ -692,11 +686,11 @@ class METNorKystZ(ROMSbase):
         '''
         Give it a date, and you will get the corresponding url in return
         '''
-        https       = 'https://thredds.met.no/thredds/dodsC/sea/norkyst800mv0_1h/NorKyst-800m_ZDEPTHS_his.fc'
+        https       = 'https://thredds.met.no/thredds/dodsC/sea/norkyst800mv0_1h/NorKyst-800m_ZDEPTHS_his.an.'
         year        = str(date.year)
         month       = '{:02d}'.format(date.month)
         day         = '{:02d}'.format(date.day)
-        return f'{https}{year}{month}{day}.nc'
+        return f'{https}{year}{month}{day}00.nc'
 
 class NorShelf(ROMSbase):
     '''
@@ -711,7 +705,7 @@ class NorShelf(ROMSbase):
 
     def __init__(self, avg):
         self.avg  = avg
-        self.path = 'https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_20210531T00Z.nc'
+        self.path = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/2021/05/norshelf_avg_an_20210531T00Z.nc"
         self.min_len = 24
         if self.avg:
             self.min_len = 1
@@ -753,21 +747,23 @@ class NorShelf(ROMSbase):
         Give it a date, and you will get the corresponding url in return
         '''
         date = date-timedelta(days=1) # minus since this is a forecast, see *_dat_* file for best data
+        base = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/"
         if self.avg:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_fc_"
+            filename = "norshelf_avg_fc_"
         else:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_fc_"
-        return https + "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
+            filename = "/norshelf_qck_fc_"
+        return base + "{0.year}/{0.month:02}/".format(date) + filename + "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
     def get_norshelf_day_url(self, date):
         '''
         Give it a date, and you will get the corresponding url in return
         '''
+        base = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/"
         if self.avg:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_"
+            filename = "norshelf_avg_fc_"
         else:
-            https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
-        return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
+            filename = "/norshelf_qck_fc_"
+        return base + "{0.year}/{0.month:02}/".format(date) + filename + "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
 # Methods for downloading data from a ROMS output file and preparing them to be interpolated to FVCOM
 # ----

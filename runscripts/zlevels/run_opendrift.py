@@ -38,7 +38,7 @@ def run(with_diffusion = False, zlevel_norkyst = False, hours_pr_release = 1, us
     o = OceanDrift(loglevel=20)
 
     # Ok, and then we need to identify readable files
-    start = datetime(2018, 3, 20)
+    start = datetime(2018, 4, 20)
     stop  = datetime(2018, 6, 25)
     dates = [start - timedelta(days = 1) + timedelta(days = n) for n in range((stop + timedelta(days=1) - start).days)]
 
@@ -67,6 +67,9 @@ def run(with_diffusion = False, zlevel_norkyst = False, hours_pr_release = 1, us
         o.set_config('drift:vertical_mixing', True)
         o.set_config('vertical_mixing:diffusivitymodel', 'environment')
         o.set_config('vertical_mixing:timestep', 20.) # copied from the test cases, not sure if this is strict
+
+    elif not with_diffusion and zlevel_norkyst:
+        o.set_config('drift:vertical_mixing', False)
         
     # Define particle seed times
     start_times = [start + timedelta(hours=n) for n in range((stop - start).days*24)]
@@ -105,12 +108,24 @@ def run(with_diffusion = False, zlevel_norkyst = False, hours_pr_release = 1, us
                     time = t,
                 )
 
+    if with_diffusion and not zlevel_norkyst:
+        savename = 'drift_norkyst_unlimited_vdiff.nc'
+        
+    elif not with_diffusion and not zlevel_norkyst:
+        savename = 'drift_norkyst_unlimited.nc'
+        
+    elif with_diffusion and zlevel_norkyst:
+        savename = 'drift_norkyst_zlevel_unlimited_vdiff.nc'
+
+    else:
+        savename = 'drift_norkyst_zlevel_unlimited.nc'
+        
     # Run the particle model
     o.run(
         time_step=300,
         duration=timedelta(days=(stop-start).days), 
         time_step_output=3600,
-        outfile=f'drift_norkyst_unlimited_vdiff.nc' if with_diffusion else 'drift_norkyst_unlimited.nc',
+        outfile=savename,
         export_buffer_length=12,
         export_variables=['time', 'lon', 'lat', 'z'],
     )
@@ -121,7 +136,9 @@ def get_local_reader(dates, o):
     '''
     Find local NorKyst files between start and stop stored in a directory
     '''
-    files = [f'/nird/projects/NS9067K/apn_backup/ROMS/NK800_2018/norkyst_800m_his.nc4_{date.strftime("%Y%m%d")}01-{(date+timedelta(days=1)).strftime("%Y%m%d")}00' 
+    nirdbase = '/nird/projects/NS9067K/apn_backup/ROMS/NK800_2018'
+    betzybase = '/cluster/work/users/hes001/ROMS/NK800_2018'
+    files = [f'{betzybase}/norkyst_800m_his.nc4_{date.strftime("%Y%m%d")}01-{(date+timedelta(days=1)).strftime("%Y%m%d")}00' 
              for date in dates]
     o.add_reader(reader_ROMS_native.Reader(files))
     return o
@@ -271,7 +288,7 @@ def set_config(o):
     o.set_config('drift:horizontal_diffusivity', 10) # Since this is value apparently is common for NorKyst applications
     o.set_config('general:coastline_action', 'previous') # This way, all particles that do not reach the open boundary, will stay active
     o.set_config('general:seafloor_action', 'lift_to_seafloor') # It makes sense to not let particles advect through the seafloor
-    #o.set_config('drift:max_age_seconds', timedelta(days = 4*7).total_seconds()) # 4 weeks of data
+    o.set_config('drift:max_age_seconds', timedelta(days = 4*7).total_seconds()) # 4 weeks of data
     o.set_config('drift:stokes_drift', False)
     o.set_config('seed:wind_drift_factor', 0.0)
     o.set_config('environment:fallback:x_sea_water_velocity', None)

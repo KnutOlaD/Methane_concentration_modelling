@@ -93,14 +93,15 @@ class Reader(StructuredReader, BaseReader):
                     if ('*' in filestr) or ('?' in filestr) or ('[' in filestr):
                         logger.info('Opening files with MFDataset')
                         self.Dataset = xr.open_mfdataset(filename, data_vars='minimal', coords='minimal',
-                                                        chunks={'time': 1}, decode_times=False)
+                                                         chunks={'time': 1}, decode_times=False, compat='override')
                     elif type(filestr) == list:
                         self.Dataset = xr.open_mfdataset(filename, data_vars='minimal', coords='minimal',
-                                                        chunks={'time': 1}, decode_times=False)
+                                                         chunks={'time': 1}, decode_times=False)
                     elif ensemble_member is not None:
                         self.Dataset = xr.open_dataset(filename, decode_times=False).isel(ensemble_member=ensemble_member)
                     else:
                         self.Dataset = xr.open_dataset(filename, decode_times=False)
+                        
                 except Exception as e:
                     raise ValueError(e)
 

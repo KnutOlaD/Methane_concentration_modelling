@@ -40,6 +40,9 @@ from pyproj import Proj, Transformer
 import  xarray as xr
 import gc
 from scipy.spatial import cKDTree
+from matplotlib.colors import LogNorm
+from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
+from matplotlib.ticker import FuncFormatter
 
 ############################
 ###DEFINE SOM COOL COLORS###
@@ -286,55 +289,6 @@ def add_utm(particles,utm_zone = 33,utm_letter = 'W'):
 
 ###########################################################################################
 
-
-def get_grid_params(particles,resolution=[1000,10]):
-    '''
-    Gets the grid parameters, i.e. the bin edges for the horizontal, vertical and temporal grids
-    from the particles dictionary
-
-    Input:
-    particles: dictionary containing the variables from the netcdf file. Must contain the UTM coordinates
-    resolution: list containing the horizontal, vertical and temporal resolution of the grid
-        default is [1000,10] which means 1000 meters in the horizontal, 10 meters in the vertical.
-
-    Output:
-    bin_x: bin edges for the horizontal grid
-    bin_y: bin edges for the horizontal grid
-    bin_z: bin edges for the vertical grid
-    bin_time: bin edges for the temporal grid 
-    '''
-    #Get min/max values for the horizontal grid
-    UTM_x_min = np.min(particles['UTM_x'])
-    UTM_x_max = np.max(particles['UTM_x'])
-    UTM_y_min = np.min(particles['UTM_y'])
-    UTM_y_max = np.max(particles['UTM_y'])
-
-    grid_resolution = resolution[0] #in meters
-    #Define temporal resolution
-    grid_temporal_resolution = particles['time'][1] - particles['time'][0] #the time resolution from OD.
-    #Define vertical resolution
-    grid_vertical_resolution = resolution[1] #in meters
-    
-    #Define the bin edges using the grid resolution and min/max values
-    bin_x = np.arange(UTM_x_min-grid_resolution,
-                        UTM_x_max+grid_resolution,
-                        grid_resolution)
-    bin_y = np.arange(UTM_y_min-grid_resolution,
-                          UTM_y_max+grid_resolution,
-                          grid_resolution)
-    #Define the bin edges using the grid resolution and min/max values
-    bin_z = np.arange(0,
-                          np.max(np.abs(particles['z']))+grid_vertical_resolution,
-                          grid_vertical_resolution)
-    #Define the bin edges using the grid resolution and min/max values
-    bin_time = np.arange(np.min(particles['time']),
-                         np.max(particles['time'])+grid_temporal_resolution,
-                         grid_temporal_resolution)
-
-    return bin_x,bin_y,bin_z,bin_time
-
-#############################################################################################################
-
 def calc_schmidt_number(T=5,gas='methane'):
     '''
     Calculates the Schmidt number for methane, co2, oxygen or nitrogen in 
@@ -408,6 +362,8 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
 
     return k
 
+#############################################################################################################
+
 def calc_mox_consumption(C_o,R_ox):
     '''
     Calculates the consumption of oxygen due to methane oxidation
@@ -423,49 +379,7 @@ def calc_mox_consumption(C_o,R_ox):
 
     return CH4_consumption
 
-@numba.jit(parallel=True,nopython=True)
-def histogram_estimator_numba(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None):
-    '''
-    Input:
-    x_pos (np.array): x-coordinates of the particles
-    y_pos (np.array): y-coordinates of the particles
-    grid_x (np.array): grid cell boundaries in the x-direction
-    grid_y (np.array): grid cell boundaries in the y-direction
-
-    Output:
-    particle_count: np.array of shape (grid_size, grid_size)
-    total_weight: np.array of shape (grid_size, grid_size)
-    average_bandwidth: np.array of shape (grid_size, grid_size)
-    '''
-
-    #get size of grid in x and y direction
-    grid_size_x = len(grid_x)
-    grid_size_y = len(grid_y)
-
-    # Initialize the histograms
-    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
-    total_weight = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
-    sum_bandwidth = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
-    
-    #Normalize the particle positions to the grid
-    x_pos = (x_pos - grid_x[0])/(grid_x[1]-grid_x[0])
-    y_pos = (y_pos - grid_y[0])/(grid_y[1]-grid_y[0])
-    
-    # Create a 2D histogram of particle positions
-    for i in numba.prange(len(x_pos)):
-        if np.isnan(x_pos[i]) or np.isnan(y_pos[i]):
-            continue
-        x = int(x_pos[i])
-        y = int(y_pos[i])
-        if x >= grid_size_x or y >= grid_size_y or x < 0 or y < 0: #check if the particle is outside the grid
-            continue
-        total_weight[y, x] += weights[i] #This is just the mass in each cell
-        particle_count[y, x] += 1
-        sum_bandwidth[y, x] += bandwidths[i]*weights[i] #weighted sum of bandwidths
-    
-    #print(np.shape(particle_count))
-
-    return particle_count, total_weight, sum_bandwidth 
+#############################################################################################################
 
 def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
     '''
@@ -527,13 +441,14 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
 
     return total_weight, particle_count, cell_bandwidth
 
+#############################################################################################################
+
 def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
     Generates Gaussian kernels and their bandwidths. The function generates a kernel with support
     equal to the bandwidth multiplied by the ratio and the ratio sets the "resolution" of the 
     gaussian bandwidth family, i.e. ratio = 1/3 means that one kernel will be created for 0.33, 0.66, 1.0 etc.
     The kernels are stretched in the x-direction by the stretch factor.
-
 
     Parameters:
     num_kernels (int): The number of kernels to generate.
@@ -565,15 +480,48 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 
     return gaussian_kernels, bandwidths_h#, kernel_origin
 
-##############################
-### ONGOING OPTIMIZASATION ###
-##############################
+#############################################################################################################
 
 @jit(nopython=True, parallel=True)
 def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwidths, 
                     gaussian_kernels, illegal_cells, gridsize_x, gridsize_y):
     
-    """Numba-optimized kernel processing"""
+    """
+    Project kernel density estimation onto a 2D grid with optimized memory layout and Numba acceleration.
+    Handles illegal/blocked cells by redistributing their density contribution to surrounding legal cells.
+    Uses pre-computed Gaussian kernels for efficiency and variable bandwidth selection based on pilot estimate.
+    
+    Parameters
+    ----------
+    grid_x : array-like
+        X-coordinates of the grid points
+    grid_y : array-like
+        Y-coordinates of the grid points
+    kde_pilot : ndarray
+        Pilot kernel density estimate on the grid
+    gaussian_kernels : list of ndarrays
+        Pre-computed Gaussian kernels for different bandwidths
+    kernel_bandwidths : ndarray
+        Bandwidths corresponding to pre-computed kernels
+    cell_bandwidths : ndarray
+        Bandwidth values for each cell in the grid
+    illegal_cells : ndarray, optional
+        Boolean mask of illegal/blocked cells (True = blocked)
+        
+    Returns
+    -------
+    ndarray
+        Updated kernel density estimate with illegal cell handling
+        
+    Notes
+    -----
+    - Uses contiguous memory layout for performance
+    - Handles illegal cells by redistributing their weights
+    - Optimized with Numba for parallel processing
+    - Only processes non-zero pilot KDE values
+    - Kernel selection based on closest available bandwidth
+    - Memory efficient by processing only required grid cells
+    """
     
     n_u = np.zeros((gridsize_x, gridsize_y))
     
@@ -633,9 +581,43 @@ def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwi
     
     return n_u
 
-def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, 
+def grid_proj_kde(grid_x, 
+                  grid_y, 
+                  kde_pilot, 
+                  gaussian_kernels, 
                   kernel_bandwidths, cell_bandwidths, illegal_cells=None):
-    """Optimized version of grid_proj_kde"""
+    """
+    Project kernel density estimation onto a 2D grid with optimized memory layout and Numba acceleration.
+    
+    Parameters
+    ----------
+    grid_x : array-like
+        X-coordinates of the grid points
+    grid_y : array-like
+        Y-coordinates of the grid points
+    kde_pilot : ndarray
+        Pilot kernel density estimate on the grid
+    gaussian_kernels : list of ndarrays
+        Pre-computed Gaussian kernels for different bandwidths
+    kernel_bandwidths : ndarray
+        Bandwidths corresponding to pre-computed kernels
+    cell_bandwidths : ndarray
+        Bandwidth values for each cell in the grid
+    illegal_cells : ndarray, optional
+        Boolean mask of illegal/blocked cells (True = blocked)
+        
+    Returns
+    -------
+    ndarray
+        Updated kernel density estimate with illegal cell handling
+        
+    Notes
+    -----
+    - Uses contiguous memory layout for performance
+    - Handles illegal cells by redistributing their weights
+    - Optimized with Numba for parallel processing
+    - Only processes non-zero pilot KDE values
+    """
     
     # Initialize illegal cells if None
     if illegal_cells is None:
@@ -663,163 +645,8 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels,
     
     return n_u
 
-##############################
-### ONGOING OPTIMIZASATION ###
-##############################
+#############################################################################################################
 
-#Function to calculate the grid projected kernel density estimator
-def grid_proj_kde_deprec(grid_x, 
-                  grid_y, 
-                  kde_pilot, 
-                  gaussian_kernels, 
-                  kernel_bandwidths, 
-                  cell_bandwidths,
-                  illegal_cells = None):
-    """
-    Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
-
-    Parameters:
-    grid_x (np.array): Array of grid cell boundaries in the x-direction.
-    grid_y (np.array): Array of grid cell boundaries in the y-direction.
-    kde_pilot (np.array): The pilot KDE values on the grid.
-    gaussian_kernels (list): List of Gaussian kernel matrices.
-    kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
-    cell_bandwidths (np.array): Array of bandwidths of the particles.
-    illegal_cells = array of size grid_x,grid_y with True/False values for illegal cells
-
-    Returns:
-    np.array: The resulting KDE projected onto the grid.
-
-    Notes:
-    - This function only works with a simple histogram estimator as the pilot KDE.
-    - The function assumes that the Gaussian kernels are symmetric around their center.
-    - The grid size is determined by the lengths of grid_x and grid_y.
-    - The function iterates over non-zero values in the pilot KDE and applies the corresponding Gaussian kernel.
-    - The appropriate Gaussian kernel is selected based on the bandwidth of each particle.
-    - The resulting KDE is accumulated in the output grid n_u.
-    - Uses the reflection method to handle boundary conditions.
-    """
-    # ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
-
-    if illegal_cells is None:
-        illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=bool)
-
-    # Get the grid size
-    gridsize_x = len(grid_x)
-    gridsize_y = len(grid_y)
-
-    n_u = np.zeros((gridsize_x, gridsize_y))
-
-    # Get the indices of non-zero kde_pilot values
-    non_zero_indices = np.argwhere(kde_pilot > 0)
-   
-    # Find the closest kernel indices for each particle bandwidth
-    # kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
-    
-    for idx in non_zero_indices:
-        i, j = idx
-        # Get the appropriate kernel for the current particle bandwidth
-        # find the right kernel index
-        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j])) #Can be vectorized
-        # kernel_index = kernel_indices[i * grid_size + j]
-        kernel = gaussian_kernels[kernel_index]
-        kernel_size = len(kernel) // 2  # Because it's symmetric around the center.
-
-        # Define the window boundaries
-        i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, gridsize_x)
-        j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, gridsize_y)
-
-        #Check if there are illegal cells in the kernel area and run reflect_kernel_contribution if there are
-        #if np.any(illegal_cells[i_min:i_max, j_min:j_max]):
-
-        #Handle illegal cells
-        if np.any(np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])):
-            illegal_indices = np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])
-            #Sum contribution for all illegal cells in the kernel
-            illegal_kernel_sum = np.sum(kernel[illegal_indices[:,0],illegal_indices[:,1]])
-            #set them to zero
-            kernel[illegal_indices[:,0],illegal_indices[:,1]] = 0
-            #calculat the weighted kernel sum
-            weighted_kernel = kernel*(kde_pilot[i,j]+illegal_kernel_sum)
-        else:
-            weighted_kernel = kernel * kde_pilot[i, j]
-
-        # Add the contribution to the result matrix
-        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
-        ]
-
-    return n_u
-
-def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
-    ''' 
-    Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 
-    2*bw for all datapoints and sums them onto grid x_grid,ygrid. The kernel matrices are 
-    created by binning the kernel values (the 2d gaussian) are created with a grid with
-    adaptive resolution such that the kernel resolution fits within the x_grid/y_grid grid resolution. 
-    Normalizes with the sum of the kernel values (l2norm). Assumes uniform x_grid/y_grid resolution.
-    Input: 
-    x: x-coordinates of the datapoints
-    y: y-coordinates of the datapoints
-    x_grid: x-coordinates of the grid
-    y_grid: y-coordinates of the grid
-    bw: bandwidth of the kernel (vector of length n with the bandwidth for each datapoint)
-    weights: weights for each datapoint
-    ker_size_frac: the fraction of the grid size of the underlying grid that the kernel grid should be
-    bw_cutoff: the cutoff for the kernel in standard deviations
-
-    Output:
-    GRID_active: a 3d matrix with the kernel values for each datapoint
-    '''
-
-    #desired fractional difference between kernel grid size and grid size
-    ker_size_frac = 4 #1/3 of the grid size of underlying grid
-    bw_cutoff = 2 #cutoff for the kernel in standard deviations
-
-    #calculate the grid resolution
-    dxy_grid = x_grid[1]-x_grid[0]
-
-    #create a grid for z values
-    GRID_active = np.zeros((len(x_grid),len(y_grid)))
-
-    for i in range(len(x)):
-        #calculate the kernel for each datapoint
-        #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
-        #create a matrix for the kernel that makes sure the kernel resolution fits
-        #within the grid resolution (adaptive kernel size). ker_size is the number of points in each direction
-        #in the kernel. Can also add in weight of kernel here to save time, but let's do that later if needed.
-        ker_size = int(np.ceil((bw_cutoff*2*bw[i]*ker_size_frac)/dxy_grid))
-        a = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
-        b = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
-        #create the 2d coordinate matrix
-        a = a.reshape(-1,1)
-        b = b.reshape(1,-1)
-        #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
-        kernel_matrix = ((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2)))/np.sum(((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2))))
-        #add the kernel_matrix values by binning them into the grid using digitize
-        #get the indices of the grid points that are closest to the datapoints
-        lx = a+x[i]
-        ly = b+y[i]
-        #get the indices of the grid points that are closest to the datapoints
-        ix = np.digitize(lx,x_grid)
-        iy = np.digitize(ly,y_grid)
-
-        #if any values in ix or iy is outside the grid, remove the kernel entirely and skip to next iteration
-        if np.any(ix >= len(x_grid)) or np.any(iy >= len(y_grid)) or np.any(ix < 0) or np.any(iy < 0):
-            continue
-
-        #add the kernel values to the grid
-        GRID_active[ix,iy] += kernel_matrix*weights[i]
-
-    return GRID_active
-
-from matplotlib.colors import LogNorm
-from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
-import matplotlib.patches as patches
-from matplotlib.ticker import FuncFormatter
 
 # Cache features for reuse
 _CACHED_FEATURES = {}

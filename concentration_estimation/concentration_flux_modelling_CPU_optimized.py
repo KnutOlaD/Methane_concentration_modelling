@@ -83,7 +83,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 25. #m
+dz_grid = 50. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -104,7 +104,7 @@ num_seed = 500
 weights_full_sim = sum_sb_release_hr/num_seed #mol/hr
 total_seabed_release = num_seed*weights_full_sim*(30*24) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
-kde_all = True
+kde_all = False
 #Weight full sim - think this is wrong
 #weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
 #I think this might be mmol? 81.18
@@ -593,13 +593,34 @@ def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwi
         
         # Handle illegal cells
         illegal_window = illegal_cells[i_min:i_max, j_min:j_max]
+        #find blocked cells
+        x0, y0 = i, j
+        xi = np.arange(i_min, i_max)
+        yj = np.arange(j_min, j_max)
+
+
         if np.any(illegal_window):
             illegal_sum = 0.0
+            # Problem 2: zip() not supported
+            shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, ~illegal_cells)
+            
+            # Problem 3: Replace zip with direct array indexing
+            for cell_idx in range(len(shadowed_cells)):
+                shadow_i = shadowed_cells[cell_idx][0] - i
+                shadow_j = shadowed_cells[cell_idx][1] - j
+                if (0 <= shadow_i < illegal_window.shape[0] and 
+                    0 <= shadow_j < illegal_window.shape[1]):
+                    illegal_window[shadow_i, shadow_j] = True
+
             for ii in range(i_max - i_min):
                 for jj in range(j_max - j_min):
+                    #calculate line of sight to each cell using Bresenham
+
                     if illegal_window[ii, jj]:
                         illegal_sum += kernel[ii, jj]
                         kernel[ii, jj] = 0
+
+                
             weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum)
         else:
             weighted_kernel = kernel * kde_pilot[i, j]
@@ -1413,8 +1434,8 @@ def reflect_with_shadow(x, y, xi, yj, legal_grid):
     else:
         return None, None  # No valid reflection found
 
-#Make a bresenham line
-def bresenham(x0, y0, x1, y1): 
+@jit(nopython=True)
+def bresenham(x0, y0, x1, y1):
     """
     Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
 
@@ -1430,43 +1451,59 @@ def bresenham(x0, y0, x1, y1):
     points = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1 # Step direction for x
-    sy = 1 if y0 < y1 else -1 # Step direction for y
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
     err = dx - dy
 
     while True:
         points.append((x0, y0))
         if x0 == x1 and y0 == y1:
             break
-        e2 = err * 2
+        e2 = 2 * err
         if e2 > -dy:
             err -= dy
             x0 += sx
         if e2 < dx:
             err += dx
             y0 += sy
-
     return points
 
-#Identify shadowed cells
+@jit(nopython=True)
 def identify_shadowed_cells(x0, y0, xi, yj, legal_grid):
     """
-    Identify shadowed cells in the legal grid.
-
-    Input: 
-    x0: x-coordinate of the kernel origin grid cell (for grid projected)
-    y0: y-coordinate of the kernel origin grid cell (for grid projected)
-    xi: x-coordinates of the kernel
-    yj: y-coordinates of the kernel
-    legal_grid: 2D boolean array with legal cells (true means legal)
+    Identify shadowed cells by tracing from edges inward.
+    Cells start as potentially shadowed and are marked free 
+    if they have line of sight to kernel center.
     """
-    shadowed_cells = []
-    for i in xi:
-        for j in yj:
-            cells = bresenham(x0, y0, i, j)
-            for cell in cells:
+    grid_size = legal_grid.shape[0]
+    # Start with all cells potentially shadowed
+    shadowed = np.ones((grid_size, grid_size), dtype=np.bool_)
+    
+    # Trace from edges
+    for edge_x in [0, grid_size-1]:
+        for y in range(grid_size):
+            los_cells = bresenham(x0,y0,edge_x, y)
+            # Mark cells as free until hitting illegal cell
+            for cell in los_cells:
                 if not legal_grid[cell[0], cell[1]]:
-                    shadowed_cells.append((i,j))
+                    break
+                shadowed[cell[0], cell[1]] = False
+                
+    for edge_y in [0, grid_size-1]:
+        for x in range(grid_size):
+            los_cells = bresenham(x0, y0, x, edge_y)
+            for cell in los_cells:
+                if not legal_grid[cell[0], cell[1]]:
+                    break
+                shadowed[cell[0], cell[1]] = False
+    
+    # Convert to list format
+    shadowed_cells = []
+    for i in range(len(xi)):
+        for j in range(len(yj)):
+            if shadowed[xi[i], yj[j]]:
+                shadowed_cells.append((xi[i], yj[j]))
+                
     return shadowed_cells
 
 def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
@@ -1782,9 +1819,20 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 #   GRID = pickle.load(f)
 
 # With vertical diffusion
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
 # Without vertical diffusion
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
+# Z-level dataset with vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited_vdiff.nc'
+# Z-level dataset without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited.nc'
+# Sigma-level dataset with vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'
+# Sigma-level dataset without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'
+# Sigma-level dataset with vertical diffusion in the whole water column
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
+
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
 n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0].copy()
@@ -1816,7 +1864,7 @@ if manual_border == True:
     maxlon = 21
     minlat = 68.5
     maxlat = 72
-    maxdepth = 15*20
+    maxdepth = 50*60
 else:
     for i in range(0,ODdata.variables['lon'].shape[1]):
         #get max and min unmasked lat/lon values
@@ -2062,7 +2110,7 @@ for i in range(len(bin_x)):
     for j in range(len(bin_y)):
         for k in range(len(bin_z)):
             if bin_z_bath_test[k] > np.abs(interpolated_bathymetry[j, i]):
-                illegal_cells[i, j, k] = 1
+                illegal_cells[i, j, k] = 0.1
 # Plotting
 if plotting == True:
     # Plot the illegal cell matrices in a 3x3 grid
@@ -2241,8 +2289,10 @@ if run_all == True:
             particles['weight'][:,0] = particles['weight'][:,1]
             particles['age'][:,1][np.where(particles['weight'][:,1].mask == False)] = 0
             particles['age'][:,0] = particles['age'][:,1]
-            
-            
+
+        #set all nan values in aprticles['z'] to the deepest grid
+        particles['z'][np.isnan(particles['z'])] = -(np.max(bin_z)-1)
+        
         end_time = time.time()
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
@@ -2471,13 +2521,20 @@ if run_all == True:
         truly_active = np.where((particles['z'][:,1].mask == False) & 
                             (particles['weight'][:,1].mask == False))[0]
 
-        # Get ages and depths for only unmasked active particles
         ages = particles['age'][truly_active, 1].astype(int)
         ages[ages >= lifespan] = lifespan - 1
         depths = np.abs(particles['z'][truly_active, 1].astype(int))
         weights = particles['weight'][truly_active, 1]
-
+        # Get ages and depths for only unmasked active particles
+        #valid_mask_lifetime = (ages < particle_lifespan_matrix.shape[0]) & (depths < particle_lifespan_matrix.shape[1])
+        #give warning if data is outside the matrix
+        #if not valid_mask_lifetime.all():
+        #    num_outside = np.sum(np.logical_not(valid_mask_lifetime))
+        #    print('Warning: Data outside the matrix. N=',num_outside)
         # Store MOx and weight
+        #if np.any(valid_mask_lifetime):
+        #    particle_lifespan_matrix[ages[valid_mask_lifetime], depths[valid_mask_lifetime], 0] += weights[valid_mask_lifetime]
+        #    particle_lifespan_matrix[ages[valid_mask_lifetime], depths[valid_mask_lifetime], 1] += weights[valid_mask_lifetime] * R_ox * 3600
         np.add.at(particle_lifespan_matrix[:, :, 0], (ages, depths), weights)
         np.add.at(particle_lifespan_matrix[:, :, 1], (ages, depths), weights * R_ox * 3600)
 
@@ -2574,7 +2631,7 @@ if run_all == True:
             #CALCULATE THE KERNEL DENSITY ESTIMATE#
             #-------------------------------------#
 
-            if kde_all == True or i==0: #dont bother with the kde if there are no particles in the depth layer
+            if (kde_all and i < 10) or i == 0:  # Perform KDE for first 10 layers or layer 0
                 #print('Doing kde for depth layer',i)
                 ### THIS IS THE OLD WAY OF DOING IT ###            
                 #ols_GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
@@ -2815,12 +2872,12 @@ print(f"Full calculation time was: {total_computation_time}")
 #----------------------#
 
 #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
-    pickle.dump(GRID, f)
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
+#    pickle.dump(GRID, f)
     #create a sparse matrix first
 #load the GRID file
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
-    GRID = pickle.load(f)
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
+#    GRID = pickle.load(f)
 
 #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
 GRID_atm_sparse = GRID_atm_flux
@@ -3192,31 +3249,6 @@ plt.tight_layout()
 #save figure
 plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss_no_vdiff.png')
 
-#find the dominant periods in the total_atm_flux dataset
-#use the periodogram
-from scipy.signal import periodogram
-f, Pxx = periodogram(total_atm_flux,1/3600,window='hann',nfft=1024)
-plt.plot(f,Pxx)
-plt.xlabel('Frequency [Hz]')
-plt.ylabel('Power spectral density [mol$^2$ hr]')
-plt.xlim([0,0.00009])
-#plot a vertical line at the semidiurnal and diurnal frequency
-f_semi = 1/(12.42*3600)
-f_semi_idx = np.where(np.abs(f-f_semi) == np.min(np.abs(f-f_semi)))[0]
-Pxx_semi = Pxx[f_semi_idx]
-plt.plot(f_semi,Pxx_semi,'ro')
-f_diurnal = 1/(24*3600)
-f_diurnal_idx = np.where(np.abs(f-f_diurnal) == np.min(np.abs(f-f_diurnal)))[0]
-Pxx_diurnal = Pxx[f_diurnal_idx]
-plt.plot(f_diurnal,Pxx_diurnal,'bo')
-#plot grid
-plt.grid()
-
-#find tidal frequency in the periodogram
-f_tidal = 1/(12.42*3600)
-f_tidal_idx = np.where(np.abs(f-f_tidal) == np.min(np.abs(f-f_tidal)))[0]
-Pxx_tidal = Pxx[f_tidal_idx]
-plt.plot(f_tidal,Pxx_tidal,'ro')
 
 #Check what's going on in the top layer, i.e. we need to loop through 
 #GRID and sum all the top layers
@@ -3645,6 +3677,16 @@ concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
 #set plotting style to default
 plt.style.use('default')
 
+# Calculate the fraction of molecules at each depth level using the particle_lifespan_matrix[:,:,0] data
+
+mole_fraction_z = np.zeros_like(particle_lifespan_matrix[:,:,0])
+
+for i in range(particle_lifespan_matrix.shape[0]):
+    for j in range(particle_lifespan_matrix.shape[1]):
+        mole_fraction_z[i,j] = particle_lifespan_matrix[i,j,0]/np.sum(particle_lifespan_matrix[i,:,0])
+
+
+
 from scipy.ndimage import gaussian_filter1d
 #Create depth vector
 depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
@@ -3660,7 +3702,8 @@ week4 = 671
 
 # Define profiles for each time point
 time_points = [hour12, day1, week1, week2, week3, week4]
-profiles = [particle_lifespan_matrix[time, :, 0] for time in time_points]
+profiles = [mole_fraction_z[time, :] for time in time_points]
+profiles = profiles*100
 
 # Apply Gaussian smoothing to each profile
 smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
@@ -3678,8 +3721,9 @@ for i, ax in enumerate(axs.flat):
     ax.plot(smoothed_profiles[i], depth_vector)
     ax.plot(profiles[i], depth_vector, linestyle='--')
     ax.set_title(titles[i])
-    ax.set_xlabel('Concentration')
-    ax.set_ylabel('Depth')
+    ax.set_xlabel('Distibution of methane molecules [%]', fontsize=14)
+    ax.set_ylabel('Depth [m]', fontsize=14)
+    ax.set_ylim([0,400])  # Limit the y-axis to 250 m depth
     ax.invert_yaxis()  # Flip the y-axis
 
 # Adjust layout
@@ -3688,62 +3732,90 @@ plt.show()
 
 
 # Define time points
-day1 = 23
-day7 = 24*7-1
-day14 = 24*14-1
+day1 = 0
+day7 = 24*3
+day14 = 24*7
 day28 = 24*28-1
+time_series = [day1,  # First day in hours
+    day7,  # Week in hours
+    day14, # Two weeks in hours
+    day28  # Four weeks in hours
+]
 
 # Define profiles for each time point
 time_points = [day1, day7, day14, day28]
-profiles = [particle_lifespan_matrix[time, :, 0] for time in time_points]
+profiles = [mole_fraction_z[time,:] for time in time_points]
 
 # Apply Gaussian smoothing to each profile
-smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
+smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]*100
+
+#calculate maximum value for the x axis
+maxval = np.max([np.max(smoothed_profiles) for smooth_profiles in smoothed_profiles])
 
 # Create a 1x3 plot
 fig, axs = plt.subplots(2, 2, figsize=(10,10))
 
-# Titles for each subplot
-titles = ['Methane molecule distribution after 1 day', 'Methane molecule distribution after 7 days', 'Methane molecule distribution after 14 days', 'Methane molecule distribution 28 days later']
-
 # Plot each smoothed profile
 for i, ax in enumerate(axs.flat):
     ax.plot(smoothed_profiles[i], depth_vector)
-    ax.set_title(titles[i])
-    ax.set_xlabel('Methane [mol]')
-    ax.set_ylabel('Depth')
+    if ax == axs[1, 0] or ax == axs[1, 1]:
+        ax.set_xlabel('Methane distribution [%]', fontsize=14)
+    if ax == axs[0, 0] or ax == axs[1, 0]:
+        ax.set_ylabel('Depth [m]', fontsize=14)
+    ax.set_ylim([0, 250])  # Limit the x-axis to 0.5e-5 mol
     ax.invert_yaxis()  # Flip the y-axis
+    ax.set_xlim([0, maxval])  # Limit the x-axis to 0.5e-5 mol
+    # Add text box inside plot
+    time_text = 'After {:.0f} days'.format(time_series[i]/24)
+    ax.text(0.95, 0.95, time_text,
+        transform=ax.transAxes,  # Use axes coordinates (0-1)
+        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'),
+        horizontalalignment='right',
+        verticalalignment='top',
+        fontsize=14)
 
 # Adjust layout
+    #add hlines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
+    #for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
+    #    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
+# Remove the title line
+# ax.set_title('Methane distribution at t = {:.1f} hours'.format(time_series[i]))
+
+
 plt.tight_layout()
 plt.show()
 
-# make a pcolor plot that illustrates the same thing (including the whole timeseries)
 
 # Create a pcolor plot for the entire time series
 fig, ax = plt.subplots(figsize=(10, 6))
 
 # Define the entire time series
-time_series = np.arange(particle_lifespan_matrix.shape[0])
+time_series = np.arange(particle_lifespan_matrix.shape[0])/24
 
 #define levels
-levels = np.linspace(np.nanmin(particle_lifespan_matrix[:, :, 0]),np.nanmax(particle_lifespan_matrix[:, :, 0])/5,100)
+levels = np.linspace(np.nanmin(mole_fraction_z),np.nanmax(mole_fraction_z),100)
 
 # Create the pcolor plot
-c = ax.pcolor(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, shading='auto', cmap='rocket_r',vmin=np.nanmin(particle_lifespan_matrix[:, :, 0]),vmax=np.nanmax(particle_lifespan_matrix[:, :, 0])/5) 
+c = ax.pcolor(time_series, depth_vector, mole_fraction_z.T, shading='auto', cmap='rocket_r',vmin=np.nanmin(mole_fraction_z),vmax=np.nanmax(mole_fraction_z))
 
 #plot some contours too
-contour = ax.contour(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, levels=levels[::2], colors='black', linewidths=0.1, zorder=1, alpha=0.5)
+contour = ax.contour(time_series, depth_vector, mole_fraction_z.T, levels=levels[::5], colors='black', linewidths=0.2, zorder=1, alpha=0.5)
 
 # Add colorbar
 cbar = fig.colorbar(c, ax=ax)
-cbar.set_label('Methane [mol]')
+cbar.set_label('Methane distribution [%]', fontsize=14)
 
 # Customize plot
-ax.set_title('Vertical position of released methane molecules over time after release')
-ax.set_xlabel('Time [hours]')
-ax.set_ylabel('Depth')
+#ax.set_title('Position of released methane molecules over time after release',fontsize=14)
+ax.set_xlabel('Time [days]', fontsize=14)
+ax.set_ylabel('Depth', fontsize=14)
 ax.invert_yaxis()  # Flip the y-axis
+#plot vertical dashed lines 
+
+
+#plot horizontal lines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
+#for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
+#    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
 
 ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
 
@@ -3830,16 +3902,12 @@ for kkk in range(1, time_steps_full-1):
     # Clean up
     del timestep_sum
 
-
 GRID_vert_total_sum = np.nansum(GRID_vert_total[twentiethofmay:time_steps,:,:],axis=0)*3600
 levels = np.linspace(np.nanmin(np.nanmin(GRID_vert_total_sum)),np.nanmax(np.nanmax(GRID_vert_total_sum)),1000)
 levels = levels[:]
 release_point = [14.279600,68.918600]
 #flip the lon_vector right/left
 #extent_limits = [100:200,100:200]
-
-
-
 
 plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
                     lon=lon_mesh,

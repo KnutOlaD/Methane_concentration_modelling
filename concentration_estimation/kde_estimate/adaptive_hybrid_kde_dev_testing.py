@@ -28,7 +28,7 @@ from scipy.spatial import KDTree
 #set plotting style
 plt.style.use('dark_background')
 #set the plotting style back to default
-plt.style.use('default')
+#plt.style.use('default')
 
 #Triggers
 create_test_data_this_run = False
@@ -755,37 +755,47 @@ def get_integral_length_scale_vectorized(histogram_prebinned, window_size):
     
     return integral_length_scale_matrix
     
+    
+@jit(nopython=True)
 def calculate_autocorrelation(data):
-    '''
-    Calculates the autocorrelation for all lags along rows and columns, separately, as an average.
-    
-    Input:
-    data: 2D matrix with possibly unequal number of rows and columns
-    
-    Output:
-    autocorr_rows: 1D array with the average autocorrelation for each lag along rows
-    autocorr_cols: 1D array with the average autocorrelation for each lag along columns
-    '''
+    '''Calculate autocorrelation for rows and columns'''
     num_rows, num_cols = data.shape
     max_lag = min(num_rows, num_cols) - 1
+
+    # Ensure we have enough data points
+    if num_rows < 2 or num_cols < 2:
+        return np.array([0.0]), np.array([0.0])
     
-    # Initialize the autocorrelation arrays
     autocorr_rows = np.zeros(max_lag)
     autocorr_cols = np.zeros(max_lag)
     
-    # Precompute denominators for efficiency
-    row_denominators = np.array([1 / (num_cols - k) for k in range(1, max_lag + 1)])
-    col_denominators = np.array([1 / (num_rows - k) for k in range(1, max_lag + 1)])
+    # Precompute denominators
+    #row_denominators = 1.0 / np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
+    #col_denominators = 1.0 / np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
+
+    # Protect against zero division in denominators
+    row_range = np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
+    col_range = np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
     
-    # Calculate the autocorrelation for all lags along rows
-    for k in range(1, max_lag + 1):
-        autocorr_rows[k - 1] = np.mean([row_denominators[k - 1] * np.sum(data[i, :num_cols - k] * data[i, k:]) for i in range(num_rows)])
+    # Add small epsilon to prevent division by zero
+    row_denominators = 1.0 / np.maximum(row_range, 1e-10)
+    col_denominators = 1.0 / np.maximum(col_range, 1e-10)
     
-    # Calculate the autocorrelation for all lags along columns
+    # Vectorized autocorrelation calculation
     for k in range(1, max_lag + 1):
-        autocorr_cols[k - 1] = np.mean([col_denominators[k - 1] * np.sum(data[:num_rows - k, j] * data[k:, j]) for j in range(num_cols)])
+        row_sum = 0.0
+        col_sum = 0.0
+        
+        for i in range(num_rows):
+            row_sum += np.sum(data[i, :num_cols-k] * data[i, k:])
+        for j in range(num_cols):
+            col_sum += np.sum(data[:num_rows-k, j] * data[k:, j])
+            
+        autocorr_rows[k-1] = row_sum * row_denominators[k-1] / max(num_rows, 1e-10)
+        autocorr_cols[k-1] = col_sum * col_denominators[k-1] / max(num_cols, 1e-10)
     
     return autocorr_rows, autocorr_cols
+
 
 def get_integral_length_scale(histogram_prebinned, window_size):
     '''
@@ -923,26 +933,36 @@ def reflect_with_shadow(x, y, xi, yj, legal_grid):
     else:
         return None, None  # No valid reflection found
     
-def bresenham(x0, y0, x1, y1):
+@jit(nopython=True)
+def bresenham(x0, y0, x1, y1): 
     """
     Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
+
+    Input:
+    x0: x-coordinate of the starting point
+    y0: y-coordinate of the starting point
+    x1: x-coordinate of the ending point
+    y1: y-coordinate of the ending point
+
+    Output:
+    points: List of points between (x0, y0) and (x1, y1)
     """
     points = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
-    # checking the direction of the line and which octant it is in
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx - dy #This is the difference between the distances in the two directions
+    sx = 1 if x0 < x1 else -1  # Step direction for x
+    sy = 1 if y0 < y1 else -1  # Step direction for y
+    err = dx - dy
 
     while True:
         points.append((x0, y0))
         if x0 == x1 and y0 == y1:
             break
-        if 2*err > -dy: #This means that ||dx|| > ||dy||
+        e2 = err * 2
+        if e2 > -dy:
             err -= dy
-            x0 += sx #...which means that we should move in the x direction
-        if 2*err < dx:
+            x0 += sx
+        if e2 < dx:
             err += dx
             y0 += sy
 
@@ -993,7 +1013,7 @@ illegal_positions[:50, 80:100] = 1
 illegal_positions = illegal_positions.T
 #get the test data
 if create_test_data_this_run == True:
-    trajectories,trajectories_full,bw,weights,weights_test = get_test_data(load_test_data=False,frac_diff=frac_diff,illegal_positions=illegal_positions.T)
+    trajectories,trajectories_full,bw,weights,weights_test = get_test_data(load_test_data=False,frac_diff=frac_diff)
 else:
     trajectories, trajectories_full, bw, weights, weights_test = get_test_data(load_test_data=True,frac_diff=frac_diff,illegal_positions=illegal_positions.T)   
 
@@ -1034,6 +1054,8 @@ gaussian_kernels, kernel_bandwidths = generate_gaussian_kernels(num_kernels, rat
 #and corresponding test data
 #trajectories = trajectories_full[::frac_diff]
 #weights = weights_full[::frac_diff]
+
+
 
 plt.figure()
 plt.scatter(trajectories[:,0],trajectories[:,1])
@@ -1354,7 +1376,7 @@ if plotting == True:
 
 
     #Set colormap to be used for the pcolor and contour plots
-    cmap = 'rocket_r'
+    cmap = 'rocket'
 
 
     ### MAKE PLOT OF ADAPTATION PARAMETERS ###
@@ -1424,7 +1446,8 @@ if plotting == True:
 
     vmin = ground_truth.min()
     vmax = ground_truth.max()
-    levels = np.linspace(vmin, vmax, 50)
+    levels = np.linspace(vmin, vmax, 100)
+    levels = levels[:50]
 
     # Adjust for padding
 #    ground_truth = ground_truth[pad_size:-pad_size, pad_size:-pad_size]
@@ -1444,7 +1467,7 @@ if plotting == True:
     ax1 = fig.add_subplot(gs[0, 0])
     cf1 = ax1.contourf(ground_truth, levels=levels, cmap=cmap, extend='max')
     ax1.set_title('Ground truth', fontsize=14)
-    ax1.contour(ground_truth, levels=levels[::2], colors='black', linewidths=0.25)
+    ax1.contour(ground_truth, levels=levels[::2], colors='white', linewidths=0.1)
     cbar1 = fig.colorbar(cf1, ax=ax1, extend='max', location='right')
     cbar1.formatter = ScalarFormatter(useMathText=True)
     cbar1.formatter.set_scientific(True)
@@ -1452,7 +1475,7 @@ if plotting == True:
     cbar1.update_ticks()
 
     # Add a black line around the illegal cells
-    #ax1.contour(illegal_positions, levels=[0.5], colors='black', linewidths=1)
+    #ax1.contour(illegal_positions, levels=[0.5], colors='white', linewidths=1)
 
     # Hide the top right subplot
     fig.delaxes(fig.add_subplot(gs[0, 1]))
@@ -1462,7 +1485,7 @@ if plotting == True:
     cf2 = ax2.contourf(naive_estimate, levels=levels, cmap=cmap, extend='max')
     #cf2 = ax2.pcolor(naive_estimate, vmin = np.min(levels),vmax = np.max(levels))
     ax2.set_title('Histogram estimate', fontsize=14)
-    ax2.contour(naive_estimate, levels=levels[::2], colors='black', linewidths=0.25)
+    ax2.contour(naive_estimate, levels=levels[::2], colors='white', linewidths=0.1)
     cbar2 = fig.colorbar(cf2, ax=ax2, extend='max', location='right')
     cbar2.formatter = ScalarFormatter(useMathText=True)
     cbar2.formatter.set_scientific(True)
@@ -1473,7 +1496,7 @@ if plotting == True:
     ax3 = fig.add_subplot(gs[1, 1])
     cf3 = ax3.contourf(kde_data_driven_naive, levels=levels, cmap=cmap, extend='max')
     ax3.set_title('AKDE', fontsize=14)
-    ax3.contour(kde_data_driven_naive, levels=levels[::2], colors='black', linewidths=0.25)
+    ax3.contour(kde_data_driven_naive, levels=levels[::2], colors='white', linewidths=0.1)
     cbar3 = fig.colorbar(cf3, ax=ax3, extend='max', location='right')
     cbar3.formatter = ScalarFormatter(useMathText=True)
     cbar3.formatter.set_scientific(True)
@@ -1484,7 +1507,7 @@ if plotting == True:
     ax4 = fig.add_subplot(gs[2, 0])
     cf4 = ax4.contourf(kde_time_bw, levels=levels, cmap=cmap, extend='max')
     ax4.set_title('TKDE and boundary control', fontsize=14)
-    ax4.contour(kde_time_bw, levels=levels[::2], colors='black', linewidths=0.25)
+    ax4.contour(kde_time_bw, levels=levels[::2], colors='white', linewidths=0.1)
     cbar4 = fig.colorbar(cf4, ax=ax4, extend='max', location='right')
     cbar4.formatter = ScalarFormatter(useMathText=True)
     cbar4.formatter.set_scientific(True)
@@ -1495,7 +1518,7 @@ if plotting == True:
     ax5 = fig.add_subplot(gs[2, 1])
     cf5 = ax5.contourf(kde_silverman_naive, levels=levels, cmap=cmap, extend='max')
     ax5.set_title('Silverman (non-adaptive) KDE', fontsize=14)
-    ax5.contour(kde_silverman_naive, levels=levels[::2], colors='black', linewidths=0.25)
+    ax5.contour(kde_silverman_naive, levels=levels[::2], colors='white', linewidths=0.1)
     cbar5 = fig.colorbar(cf5, ax=ax5, extend='max', location='right')
     cbar5.formatter = ScalarFormatter(useMathText=True)
     cbar5.formatter.set_scientific(True)
@@ -1506,19 +1529,19 @@ if plotting == True:
     ax6 = fig.add_subplot(gs[0, 1])
     cf6 = ax6.contourf(kde_data_driven, levels=levels, cmap=cmap, extend='max')
     ax6.set_title('AKDE and boundary control', fontsize=14)
-    ax6.contour(kde_data_driven, levels=levels[::2], colors='black', linewidths=0.25)
+    ax6.contour(kde_data_driven, levels=levels[::2], colors='white', linewidths=0.1)
     cbar6 = fig.colorbar(cf6, ax=ax6, extend='max', location='right')
     cbar6.formatter = ScalarFormatter(useMathText=True)
     cbar6.formatter.set_scientific(True)
     cbar6.formatter.set_powerlimits((0, 0))
     cbar6.update_ticks()
 
-    illegal_positions_0_1 = np.logical_not(illegal_positions).astype(int)
+    #illegal_positions_0_1 = np.logical_not(illegal_positions).astype(int)
 
     # Add a black line around the illegal cells for each plot
     for ax in [ax1, ax2, ax3, ax4, ax5, ax6]:
-        ax.contour(illegal_positions, levels=[0,1], colors='black', linewidths=2)
-        ax.pcolormesh(illegal_positions_0_1[1:,:], cmap='gray', alpha=0.2, vmin=0, vmax=1,shading='flat')
+        ax.contour(illegal_positions, levels=[0,1], colors='white', linewidths=2)
+        ax.pcolormesh(illegal_positions[1:,:], cmap='gray', alpha=0.2, vmin=0, vmax=1,shading='flat')
         #fill the illegal positions with a transparent color
         #ax.imshow(illegal_positions, cmap='gray')
         
@@ -1537,128 +1560,11 @@ if plotting == True:
     ########################################
 
     ###### testing reflection stuff #######
-'''
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-
-# Example usage
-x0, y0 = 5, 5
-xi = np.arange(11)
-yj = np.arange(11)
-legal_grid = np.ones((11, 11), dtype=bool)
-legal_grid[7, 8] = False  # Example of an illegal cell
-legal_grid[8,7] = False
-legal_grid[7,7] = False
-
-#creatte an island in some other octant
-legal_grid[:3,4:6] = False
-legal_grid[2,3] = False
-legal_grid[2,2] = False
-
-
-shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, legal_grid)
-# Plot all shadowed cells in yellow, the illegal cell in red, and the origin as a green dot
-fig, ax = plt.subplots()
-ax.set_aspect('equal')
-ax.set_xticks(np.arange(0, 11, 1))
-ax.set_yticks(np.arange(0, 11, 1))
-ax.grid(False)  # Disable the grid
-
-# Plot a Gaussian centered at the origin
-x, y = np.mgrid[0:11, 0:11]
-pos = np.empty(x.shape + (2,))
-pos[:, :, 0] = x
-pos[:, :, 1] = y
-rv = multivariate_normal([5, 5], [[4, 0], [0, 4]])
-density = ax.pcolor(x, y, rv.pdf(pos), label='Kernel density')
-
-# Plot the shadowed cells
-for cell in shadowed_cells:
-    ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='yellow', alpha=1))
-
-# Plot the legal and illegal cells
-for m in range(11):
-    for n in range(11):
-        if legal_grid[m, n]:
-            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, fill=None, edgecolor='black'))
-        else:
-            ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, color='black'))
-
-# Calculate the line from 5,5 to 8,1 and plot it
-cells = bresenham(x0, y0, 8, 1)
-for cell in cells:
-    ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='grey', alpha=0.7))
-
-# Plot the line
-ax.plot([x0, 8], [y0, 1], color='white', marker='o')
-
-# Create legend patches
-shadowed_patch = mpatches.Patch(color='yellow', label='Blocked cells')
-illegal_patch = mpatches.Patch(color='black', label='Bathymetry/land')
-plt.legend(handles=[illegal_patch, shadowed_patch])
-
-# Plot the origin
-ax.plot(x0, y0, color='green', marker='o')
-ax.text(x0+2.3, y0, 'x_0, y_0', color='white', fontsize=10, ha='right',
-        bbox=dict(facecolor='black', alpha=0.4, edgecolor='none', boxstyle='round,pad=0'))
-
-# Plot the endpoint
-ax.plot(8, 1, color='white', marker='o')
-ax.text(8+0.34, 1, 'x_1, y_1', color='white', fontsize=10, ha='left',
-        bbox=dict(facecolor='black', alpha=0.4, edgecolor='none', boxstyle='round,pad=0'))
-
-plt.xlim(-1, 11)
-plt.ylim(-1, 11)
-plt.xlabel('x')
-plt.ylabel('y')
-
-plt.show()
-
-# Plot the grid and the shadowed cells for each iteration
-not_now = 1
-if not_now == 0:
-    for i in xi:
-        for j in yj:
-            fig, ax = plt.subplots()
-            ax.set_aspect('equal')
-            ax.set_xticks(np.arange(0, 10, 1))
-            ax.set_yticks(np.arange(0, 10, 1))
-            ax.grid(True)
-
-            # Plot the legal and illegal cells
-            for m in range(10):
-                for n in range(10):
-                    if legal_grid[m, n]:
-                        ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, fill=None, edgecolor='black'))
-                    else:
-                        ax.add_patch(plt.Rectangle((m - 0.5, n - 0.5), 1, 1, color='red'))
-
-            # Get the intersecting cells
-            cells = bresenham(x0, y0, i, j)
-
-            # Plot the intersecting cells
-            for cell in cells:
-                ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='blue', alpha=0.5))
-
-            # Identify shadowed cells
-            shadowed_cells = identify_shadowed_cells(x0, y0, [i], [j], legal_grid)
-
-            # Plot the shadowed cells
-            for cell in shadowed_cells:
-                ax.add_patch(plt.Rectangle((cell[0] - 0.5, cell[1] - 0.5), 1, 1, color='yellow', alpha=0.5))
-
-            # Plot the line
-            ax.plot([x0, i], [y0, j], color='green', marker='o')
-
-            plt.xlim(-1, 10)
-            plt.ylim(-1, 10)
-            plt.xlabel('X')
-            plt.ylabel('Y')
-            plt.title(f'Line from ({x0}, {y0}) to ({i}, {j})')
-            plt.show()
-'''
 ############################################################
 ########### PLOT ILLUSTRATION OF GRID PROJECTION ###########
 ############################################################
@@ -1893,4 +1799,515 @@ for ax in axs:
 plt.tight_layout()
 plt.show()
 
+'''
+'''
+##########################################
+### MAKING THINGS FOR THE PRESENTATION ###
+##########################################
+
+#define total mass (for concervation)
+total_mass = 1000
+#create small trajectory dataset
+trajectories_small = trajectories[::5,:]
+#and weight vector (set all to 1)
+weights_small = np.ones(trajectories_small.shape[0])*total_mass/trajectories_small.shape[0]
+
+plt.style.use('dark_background')
+
+color_1 = '#7e1e9c'
+color_2 = '#014d4e'
+
+colormapchoice = 'rocket'
+
+########## PLOTTING SMALL DATASET ##########
+
+#Calculate how many particles are in the grid
+parts_in_domain = len(np.where((trajectories_small[:,0] > 0) & (trajectories_small[:,0] < 100) & (trajectories_small[:,1] > 0) & (trajectories_small[:,1] < 100))[0])
+
+
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+
+# Plot trajectories with enhanced styling
+plt.scatter(trajectories_small[:,0]-1, trajectories_small[:,1]-1, 
+           c=color_1,            # Nice blue color
+           alpha=1,               # Some transparency
+           s=20,                    # Point size
+           edgecolor='none',        # No edge color
+           label='Particle trajectories')
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+plt.pcolor(illegal_region, 
+           alpha=0.3, 
+           color='gray',
+           zorder=2)  # Place on top
+
+#set fontsize for title, labels and ticks
+plt.title('Particle positions, $N_{particles}$ = ' + str(parts_in_domain), fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.xlim(0,100)
+plt.ylim(0,100)
+
+# Customize plot
+plt.xlabel('X coordinate [m]')
+plt.ylabel('Y coordinate [m]')
+
+##################################################
+########### SIMPLE HISTOGRAM ESTIMATOR ###########
+##################################################
+
+# Calculate the histogram
+small_hist_est,small_hist_est_count,small_bw = histogram_estimator(trajectories_small[:,0],trajectories_small[:,1], x_grid,y_grid,bandwidths= np.ones(len(trajectories_small)),weights=weights_small)
+
+#define grid
+x_grid = np.arange(0,100,1)
+y_grid = np.arange(0,100,1)
+
+#Make a pcolor plot of this in the same style as the scatterplot
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+
+# Create custom colormap with black at zero
+from matplotlib.colors import LinearSegmentedColormap
+rocket = plt.cm.get_cmap('rocket')
+colors = rocket(np.linspace(0, 1, 256))
+custom_cmap = LinearSegmentedColormap.from_list('custom_rocket', colors)
+custom_cmap.set_bad('black')  # Set zeros/NaN to black
+
+vmin = 0
+vmax = np.max(small_hist_est)
+# Plot the histogram estimate
+masked_hist = np.ma.masked_where(small_hist_est == 0, small_hist_est)
+pcm = plt.pcolor(masked_hist, cmap=custom_cmap, vmin=vmin, vmax=vmax)
+cbar = plt.colorbar(pcm)
+cbar.set_label('Estimated density', fontsize=16)
+cbar.ax.tick_params(labelsize=14)
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+plt.pcolor(illegal_region, 
+           alpha=0.2, 
+           color='gray',
+           zorder=2)  # Place on top
+
+# Labels and formatting
+plt.title('Histogram estimate, $N_{particles}$ = ' + str(parts_in_domain), fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.xlim(0,100)
+plt.ylim(0,100)
+
+plt.show()
+
+###############################################################################
+############ MAKE A NEW SCATTER PLOT WITH THE TRAJECTORIES DATASET ############
+###############################################################################
+
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+
+# Plot trajectories with enhanced styling
+plt.scatter(trajectories[:,0]-1, trajectories[:,1]-1, 
+           c=color_1,            # Nice blue color
+           alpha=1,               # Some transparency
+           s=20,                    # Point size
+           edgecolor='none',        # No edge color
+           label='Particle trajectories')
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+plt.pcolor(illegal_region, 
+           alpha=0.2, 
+           color='gray',
+           zorder=2)  # Place on top
+
+#set fontsize for title, labels and ticks
+plt.title('Particle positions, $N_{particles}$ = ' + str(len(trajectories)), fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.xlim(0,100)
+plt.ylim(0,100)
+
+plt.show()
+
+######### DO THE HISTOGRAM ESTIMATE AND PLOT #########
+
+weights = np.ones(len(trajectories))*total_mass/len(trajectories)
+# Calculate the histogram
+hist_est,hist_est_count,bw = histogram_estimator(trajectories[:,0],trajectories[:,1], x_grid,y_grid,bandwidths= np.ones(len(trajectories)),weights=weights)
+vmin = 0
+vmax = np.max(hist_est)
+#Make a pcolor plot of this in the same style as the scatterplot
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+
+# Create custom colormap with black at zero
+from matplotlib.colors import LinearSegmentedColormap
+rocket = plt.cm.get_cmap('rocket')
+colors = rocket(np.linspace(0, 1, 256))
+custom_cmap = LinearSegmentedColormap.from_list('custom_rocket', colors)
+custom_cmap.set_bad('black')  # Set
+
+# Plot the histogram estimate
+masked_hist = np.ma.masked_where(hist_est == 0, hist_est)
+pcm = plt.pcolor(masked_hist, cmap=custom_cmap, vmin=vmin, vmax=vmax)
+cbar = plt.colorbar(pcm)
+
+cbar.set_label('Estimated density', fontsize=16)
+cbar.ax.tick_params(labelsize=14)
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+
+plt.pcolor(illegal_region,
+              alpha=0.2,
+              color='gray',
+              zorder=2)  # Place on top
+
+# Labels and formatting
+plt.title('Histogram estimate, $N_{particles}$ = ' + str(len(trajectories)), fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.xlim(40,50)
+plt.ylim(15,25)
+
+plt.show()
+
+
+
+###############################################################################
+############ MAKE A NEW SCATTER PLOT WITH THE TRAJECTORIES_FULL DATASET ############
+###############################################################################
+
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+
+# Plot trajectories with enhanced styling
+plt.scatter(trajectories_full[:,0]-1, trajectories_full[:,1]-1, 
+           c=color_1,            # Nice blue color
+           alpha=1,               # Some transparency
+           s=20,                    # Point size
+           edgecolor='none',        # No edge color
+           label='Particle trajectories')
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+plt.pcolor(illegal_region, 
+           alpha=0.2, 
+           color='gray',
+           zorder=2)  # Place on
+
+#set fontsize for title, labels and ticks
+plt.title('Particle positions, $N_{particles}$ = ' + str(len(trajectories_full)), fontsize=20)
+
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xticks(fontsize=14)
+
+plt.yticks(fontsize=14)
+
+plt.xlim(0,100)
+plt.ylim(0,100)
+
+plt.show()
+
+######### DO THE HISTOGRAM ESTIMATE AND PLOT #########
+
+weights_full = np.ones(len(trajectories_full))*total_mass/len(trajectories_full)
+# Calculate the histogram
+hist_est_full,hist_est_count_full,bw_full = histogram_estimator(trajectories_full[:,0],trajectories_full[:,1], x_grid,y_grid,bandwidths= np.ones(len(trajectories_full)),weights=weights_full)
+
+vmin = 0
+vmax = np.max(hist_est_full)
+
+#Make a pcolor plot of this in the same style as the scatterplot
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+
+# Create custom colormap with black at zero
+from matplotlib.colors import LinearSegmentedColormap
+rocket = plt.cm.get_cmap('rocket')
+colors = rocket(np.linspace(0, 1, 256))
+custom_cmap = LinearSegmentedColormap.from_list('custom_rocket', colors)
+custom_cmap.set_bad('black')  # Set
+
+# Plot the histogram estimate
+masked_hist = np.ma.masked_where(hist_est_full == 0, hist_est_full)
+pcm = plt.pcolor(masked_hist, cmap=custom_cmap, vmin=vmin, vmax=vmax)
+cbar = plt.colorbar(pcm)
+
+cbar.set_label('Estimated density', fontsize=16)
+cbar.ax.tick_params(labelsize=14)
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+
+plt.pcolor(illegal_region,
+                alpha=0.2,
+                color='gray',
+                zorder=2)  # Place on top  
+
+# Labels and formatting
+plt.title('Histogram estimate, $N_{particles}$ = ' + str(len(trajectories_full)), fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.xlim(0,100)
+plt.ylim(0,100)
+
+plt.show()
+
+
+########################################################
+######### PLOT THE PROFILE FROM 0,0 TO 100,100 #########
+########################################################
+
+#define a new cool color
+color_1 = '#7e1e9c'
+color_2  = '#89fe05'
+color_3 = '#d7fffe'
+
+#find values of all grid cells on the line between 0,0 and 100,100  
+# Calculate the line from 0,0 to 100,100
+cells = bresenham(10, 0, 99, 99)
+cells = np.array(cells)
+
+#calculate the distance vector
+distance = np.sqrt((cells[:,0]-10)**2 + (cells[:,1])**2)
+
+# Extract the values of the grid cells
+values = hist_est_full[cells[:, 1], cells[:, 0]]
+# And from the trajectory histogram estimate dataset¨
+values_medium = hist_est[cells[:, 1], cells[:, 0]]
+# and from the small dataset
+values_small = small_hist_est[cells[:, 1], cells[:, 0]]
+
+# Create figure with larger size
+plt.figure(figsize=(10, 8))
+# Plot the values
+plt.plot(distance,values, color=color_1, label='Values along line (0,0) to (100,100)')
+# ANd plot the small  and medium dataset
+plt.plot(distance,values_medium, color=color_2, linestyle = '--', label='Values along line (0,0) to (100,100) - medium dataset')
+plt.plot(distance,values_small, color=color_3, linestyle = '-.',label='Values along line (0,0) to (100,100) - small dataset')
+
+#Plot legend where we give the number of particles in each simulation
+plt.legend({'$N_{particles}$ = ' + str(len(trajectories_full)),'$N_{particles}$ = ' + str(len(trajectories)),'$N_{particles}$ = ' + str(len(trajectories_small))},fontsize=14)      
+
+# set the tick and labelsizes
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.title('Values along line (10,0) to (100,100)', fontsize=20)
+plt.xlabel('Index', fontsize=16)
+plt.ylabel('Value', fontsize=16)
+
+#############################################
+############ ADDING KDE KERNELS #############
+#############################################
+
+from scipy.stats import multivariate_normal
+
+# Select one particle for Gaussian visualization
+selected_particle = trajectories_small[int(len(trajectories_small)/2)]  # Pick the first particle for demonstration
+x, y = selected_particle
+
+# Define the grid for visualization
+#x_grid, y_grid = np.meshgrid(np.linspace(0, 100, 500), np.linspace(0, 100, 500))
+
+# Define Gaussian parameters (mean at particle position, small sigma)
+mean = [x, y]
+sigma = 5  # Adjust for desired spread
+covariance = [[sigma**2, 0], [0, sigma**2]]
+
+# Generate the Gaussian kernel
+rv = multivariate_normal(mean, covariance)
+z = rv.pdf(np.dstack((x_grid, y_grid)))
+
+# Normalize for better visualization
+#z = z / z.max()
+
+# Plot the original data
+plt.figure(figsize=(10, 8))
+
+from matplotlib.colors import LinearSegmentedColormap
+rocket = plt.cm.get_cmap('rocket')
+colors = rocket(np.linspace(-0.2, 1, 256))
+custom_cmap = LinearSegmentedColormap.from_list('custom_rocket', colors)
+custom_cmap.set_bad('black')  # Set
+
+masked_z = np.ma.masked_where(z <= 1e-5, z)
+
+# Overlay the Gaussian kernel
+pcm = plt.pcolor(x_grid, y_grid, masked_z, cmap=custom_cmap, vmin=np.min(z), vmax=np.max(z))
+
+cbar = plt.colorbar(pcm)
+
+cbar.set_label('Estimated density', fontsize=16)
+cbar.ax.tick_params(labelsize=14)
+
+plt.scatter(trajectories_small[:, 0], trajectories_small[:, 1],
+            c=color_1, alpha=1, s=20, edgecolor='none', label='Particle trajectories')
+
+
+# Add illegal region as hatched area instead of contour
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+
+plt.pcolor(illegal_region,
+                alpha=0.2,
+                color='gray',
+                zorder=2)  # Place on top  
+
+
+# Customize plot
+plt.title('Replacing with gaussian kernels', fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xlim(0, 100)
+plt.ylim(0, 100)
+plt.show()
+
+
+#################################
+####### MULTIPLE KERNELS ########
+#################################
+
+# Select a subset of particles for Gaussian visualization
+selected_particles = trajectories_small[int(len(trajectories_small)/2):int(len(trajectories_small)/2)+10]  # Pick the first 10 particles for demonstration
+
+# Select particles
+selected_particles = trajectories_small[[190,195,200,205,210,220,230,240,250,260,280,300]]
+
+# Create grid
+x_grid, y_grid = np.meshgrid(np.linspace(0, 100, 500), np.linspace(0, 100, 500))
+
+# Set kernel parameters
+sigma = 5
+covariance = [[sigma**2, 0], [0, sigma**2]]
+
+# Initialize density field
+z_total = np.zeros_like(x_grid)
+
+# Add Gaussian kernels
+for particle in selected_particles:
+    mean = particle
+    rv = multivariate_normal(mean, covariance)
+    z = rv.pdf(np.dstack((x_grid, y_grid)))
+    z_total += z
+
+# Plot
+plt.figure(figsize=(10, 8))
+
+# Create custom colormap
+custom_cmap = LinearSegmentedColormap.from_list('custom_rocket', 
+                                               rocket(np.linspace(0, 1, 256)))
+custom_cmap.set_bad('black')
+
+# Mask and plot density
+masked_z_total = np.ma.masked_where(z_total <= 1e-5, z_total)
+pcm = plt.pcolormesh(x_grid, y_grid, masked_z_total, 
+                     cmap=custom_cmap,
+                     vmin=1e-5,
+                     vmax=np.max(z_total))
+
+# Add colorbar
+cbar = plt.colorbar(pcm)
+cbar.set_label('Estimated density', fontsize=16)
+cbar.ax.tick_params(labelsize=14)
+
+# Add scatter points
+plt.scatter(trajectories_small[:, 0], trajectories_small[:, 1],
+           c=color_1, alpha=1, s=20, edgecolor='none', 
+           label='Particle trajectories', zorder=3)
+
+# Add illegal region
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+plt.pcolor(illegal_region, alpha=0.2, color='gray', zorder=2)
+
+plt.title('Gaussian Kernel Density Estimate', fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xlim(0, 100)
+plt.ylim(0, 100)
+plt.legend()
+plt.show()
+
+###########################################################################################
+######### MAKE A PLOT SIMILAR TO THE ONE ABOVE USING THE SILVERMAN NAIVE ESTIMATE #########
+###########################################################################################
+import numpy as np
+from scipy.stats import gaussian_kde
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+
+# Create grid
+x_grid, y_grid = np.meshgrid(np.linspace(0, 100, 500), np.linspace(0, 100, 500))
+positions = np.vstack([x_grid.ravel(), y_grid.ravel()])
+
+# Compute Silverman's KDE
+data = np.vstack([trajectories_small[:,0], trajectories_small[:,1]])
+kde = gaussian_kde(data, bw_method='silverman')
+z = kde.evaluate(positions)
+z = z.reshape(x_grid.shape)
+
+# Plot
+plt.figure(figsize=(10, 8))
+
+# Create custom colormap
+rocket = plt.cm.get_cmap('rocket')
+custom_cmap = LinearSegmentedColormap.from_list('custom_rocket', 
+                                               rocket(np.linspace(0, 1, 256)))
+custom_cmap.set_bad('black')
+
+# Mask and plot density
+masked_z = np.ma.masked_where(z <= 1e-5, z)
+pcm = plt.pcolormesh(x_grid, y_grid, masked_z, 
+                     cmap=custom_cmap,
+                     vmin=1e-5,
+                     vmax=np.max(z))
+
+# Add colorbar
+cbar = plt.colorbar(pcm)
+cbar.set_label('Estimated density', fontsize=16)
+cbar.ax.tick_params(labelsize=14)
+
+# Add scatter points
+plt.scatter(trajectories_small[:, 0], trajectories_small[:, 1],
+           c=color_1, alpha=1, s=20, edgecolor='none', 
+           label='Particle trajectories', zorder=3)
+
+# Add illegal region
+illegal_region = np.ma.masked_where(illegal_positions == 0, illegal_positions)
+plt.pcolor(illegal_region, alpha=0.2, color='gray', zorder=2)
+
+plt.title("Silverman's Rule KDE Estimate", fontsize=20)
+plt.xlabel('X coordinate', fontsize=16)
+plt.ylabel('Y coordinate', fontsize=16)
+plt.xlim(0, 100)
+plt.ylim(0, 100)
+plt.legend()
+plt.show()
+
+######################################
+############ GROUND TRUTH ############
+######################################
+
+ground_truth,count_truth,bandwidths_placeholder = histogram_estimator(p_full_x,p_full_y, x_grid,y_grid,bandwidths=bw_full,weights=weights_full
+
+)
 '''

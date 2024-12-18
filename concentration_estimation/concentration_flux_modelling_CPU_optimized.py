@@ -542,10 +542,10 @@ def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwi
         # Handle illegal cells
         illegal_window = illegal_cells[i_min:i_max, j_min:j_max]
         #find blocked cells
+        #Define the grid with xi and yj and the origin of the kernel as x0 and y0
         x0, y0 = i, j
         xi = np.arange(i_min, i_max)
         yj = np.arange(j_min, j_max)
-
 
         if np.any(illegal_window):
             illegal_sum = 0.0
@@ -646,7 +646,6 @@ def grid_proj_kde(grid_x,
     return n_u
 
 #############################################################################################################
-
 
 # Cache features for reuse
 _CACHED_FEATURES = {}
@@ -1055,17 +1054,6 @@ def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
         pickle.dump([ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix], f)
     return None
 
-
-@jit(nopython=True)
-def histogram_variance_numba(binned_data, bins): #here, suggest to multiply with (M-1)/M to get unbiased estimate
-    if np.sum(binned_data) == 0:
-        return 0.0
-    hist, bin_edges = np.histogram(binned_data, bins=bins)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    mean = np.sum(hist * bin_centers) / np.sum(hist) #Weighted mean position
-    variance = np.sum(hist * (bin_centers - mean) ** 2) / np.sum(hist)
-    return variance
-
 @jit(nopython=True)
 def histogram_std(binned_data, effective_samples=None, bin_size=1):
     '''Calculate the simple variance of the binned data
@@ -1104,7 +1092,7 @@ def histogram_std(binned_data, effective_samples=None, bin_size=1):
     mu_y = np.sum(binned_data * Y) / sum_data
     
     #Sheppards correction term
-    sheppard = (2/12)*bin_size*bin_size #weighted data
+    sheppard = (1/12)*bin_size*bin_size #weighted data
 
     #variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
 
@@ -1115,61 +1103,35 @@ def histogram_std(binned_data, effective_samples=None, bin_size=1):
  
     return np.sqrt(variance)
 
-
-def histogram_variance(binned_data, bin_size=1):
-    '''
-    Calculate the simple variance of the binned data using ...
-    '''
-    #check that there's data in the binned data
-    if np.sum(binned_data) == 0:
-        return 0
-    #get the central value of all bins
-    grid_size = len(binned_data)
-    #Central point of all grid cells
-    X = np.arange(0,grid_size*bin_size,bin_size) #I think this doesnt work.. 
-    Y = np.arange(0,grid_size*bin_size,bin_size)
-    #Calculate the average position in the binned data
-    mu_x = np.sum(binned_data*X)/np.sum(binned_data)
-    mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
-    #Calculate the variance
-    var_y = np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)
-    var_x = np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)
-    #Calculate the covariance
-    cov_xy = np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)
-    #Calculate the total variance
-    variance_data = var_x+var_y+2*cov_xy*0
-    #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
-    #Sheppards correction
-    variance_data = variance_data - 1/12*(3*bin_size**2)
-    return variance_data
-
-def window_sum(data):
-    # Filter out zero values
-    non_zero_data = data[data != 0]
-    return np.sum(non_zero_data)
-
-@jit(nopython=True)
-def calculate_autocorrelation_numba(data):
-    num_rows, num_cols = data.shape
-    max_lag = min(num_rows, num_cols) - 1
-    
-    autocorr_rows = np.zeros(max_lag)
-    autocorr_cols = np.zeros(max_lag)
-    
-    row_denominators = np.array([1 / (num_cols - k) for k in range(1, max_lag + 1)])
-    col_denominators = np.array([1 / (num_rows - k) for k in range(1, max_lag + 1)])
-    
-    for k in range(1, max_lag + 1):
-        autocorr_rows[k - 1] = np.mean([row_denominators[k - 1] * np.sum(data[row, :num_cols - k] * data[row, k:]) for row in range(num_rows)])
-    
-    for k in range(1, max_lag + 1):
-        autocorr_cols[k - 1] = np.mean([col_denominators[k - 1] * np.sum(data[:num_rows - k, col] * data[k:, col]) for col in range(num_cols)])
-    
-    return autocorr_rows, autocorr_cols
-
 @jit(nopython=True)
 def calculate_autocorrelation(data, bin_size=1):
-    '''Calculate autocorrelation for rows and columns'''
+    """
+    Calculate spatial autocorrelation along rows and columns of 2D data.
+
+    Computes the autocorrelation function separately for rows and columns of a 2D array,
+    using a vectorized implementation optimized with Numba. The autocorrelation is normalized
+    by the number of points and includes protection against zero division.
+
+    Parameters
+    ----------
+    data : ndarray
+        2D input array for which to calculate autocorrelation
+
+    Returns
+    -------
+    autocorr_rows : ndarray
+        1D array containing autocorrelation values for row-wise shifts
+    autocorr_cols : ndarray
+        1D array containing autocorrelation values for column-wise shifts
+
+    Notes
+    -----
+    - Uses Numba JIT compilation
+    - Handles edge cases (small arrays, zero values)
+    - Maximum lag is determined by smallest dimension
+    - Includes epsilon protection against zero division
+    - Returns single zero value arrays if input is too small
+    """
     num_rows, num_cols = data.shape
     max_lag = min(num_rows, num_cols) - 1
 
@@ -1239,30 +1201,8 @@ def get_integral_length_scale(histogram_prebinned, window_size):
 
     return integral_length_scale_matrix
 
-#Reflect kernel density at predefined boundaries
-def reflect_with_shadow(x, y, xi, yj, legal_grid):
-    """
-    Helper function to reflect (xi, yj) back to a legal position
-    across the barrier while respecting the shadow.
-    """
-    x_reflect, y_reflect = xi, yj
-
-    # Reflect along x-axis if needed
-    while not legal_grid[x_reflect, yj] and x_reflect != x:
-        x_reflect += np.sign(x - xi)  # Step towards the particle
-
-    # Reflect along y-axis if needed
-    while not legal_grid[xi, y_reflect] and y_reflect != y:
-        y_reflect += np.sign(y - yj)  # Step towards the particle
-    
-    # Check final reflection position legality
-    if legal_grid[x_reflect, y_reflect]:
-        return x_reflect, y_reflect
-    else:
-        return None, None  # No valid reflection found
-
 @jit(nopython=True)
-def bresenham(x0, y0, x1, y1):
+def bresenham(x0, y0, x1, y1): 
     """
     Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
 
@@ -1278,21 +1218,22 @@ def bresenham(x0, y0, x1, y1):
     points = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
+    sx = 1 if x0 < x1 else -1 # Step direction for x
+    sy = 1 if y0 < y1 else -1 # Step direction for y
     err = dx - dy
 
     while True:
         points.append((x0, y0))
         if x0 == x1 and y0 == y1:
             break
-        e2 = 2 * err
+        e2 = err * 2
         if e2 > -dy:
             err -= dy
             x0 += sx
         if e2 < dx:
             err += dx
             y0 += sy
+
     return points
 
 @jit(nopython=True)
@@ -1420,30 +1361,6 @@ def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
     except Exception as e:
         raise RuntimeError(f"Error processing bathymetry data: {str(e)}")
 
-@jit(nopython=True)
-def _process_window_statistics(data_subset, subset_counts, pad_size, window_size, 
-                             stats_threshold, silverman_coeff, silverman_exponent, dxy_grid):
-    """Compute statistics for a single window"""
-    if np.sum(subset_counts) < stats_threshold:
-        std = window_size/2
-        n_eff = np.sum(data_subset)/window_size
-        integral_length_scale = window_size
-    else:
-        # Assuming histogram_std is available to Numba
-        std = histogram_std(data_subset, None, 1)
-        # Assuming calculate_autocorrelation is available to Numba
-        autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
-        autocorr = (autocorr_rows + autocorr_cols) / 2
-        if autocorr.any():
-            non_zero_idx = np.where(autocorr != 0)[0][0]
-            integral_length_scale = np.sum(autocorr) / autocorr[non_zero_idx]
-        else:
-            integral_length_scale = 0.000001
-        n_eff = np.sum(data_subset) / integral_length_scale
-    
-    h = np.sqrt((silverman_coeff * n_eff**(-silverman_exponent)) * std) * dxy_grid
-    return std, n_eff, integral_length_scale, h
-
 @jit(nopython=True, parallel=True)
 def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_padded,
                               window_size, pad_size, stats_threshold,
@@ -1546,69 +1463,6 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
     
     return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
 
-@jit(nopython=True, parallel=True)
-def compute_adaptive_bandwidths_old(preGRID_active_padded, preGRID_active_counts_padded,
-                              window_size, pad_size, stats_threshold,
-                              silverman_coeff, silverman_exponent, dxy_grid):
-    """Compute adaptive bandwidths for all windows"""
-    shape = preGRID_active_padded.shape
-    std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size))
-    N_eff = np.zeros_like(std_estimate)
-    h_matrix_adaptive = np.zeros_like(std_estimate)
-    integral_length_scale_matrix = np.zeros_like(std_estimate)
-    
-    for row in prange(pad_size, shape[0]-pad_size):
-        for col in range(pad_size, shape[1]-pad_size):
-            if preGRID_active_counts_padded[row, col] > 0:
-                data_subset = preGRID_active_padded[row-pad_size:row+pad_size+1,
-                                                  col-pad_size:col+pad_size+1]
-                subset_counts = preGRID_active_counts_padded[row-pad_size:row+pad_size+1,
-                                                           col-pad_size:col+pad_size+1]
-                
-                if data_subset[pad_size,pad_size] == 0:
-                    continue
-                
-                data_subset = (data_subset/np.sum(data_subset))*subset_counts
-                
-                row_idx = row - pad_size
-                col_idx = col - pad_size
-                
-                std, n_eff, ils, h = _process_window_statistics(
-                    data_subset, subset_counts, pad_size, window_size,
-                    stats_threshold, silverman_coeff, silverman_exponent, dxy_grid
-                )
-                
-                std_estimate[row_idx, col_idx] = std
-                N_eff[row_idx, col_idx] = n_eff
-                integral_length_scale_matrix[row_idx, col_idx] = ils
-                h_matrix_adaptive[row_idx, col_idx] = h
-    
-    return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
-
-
-def load_variable(args):
-    """Helper function to load a single variable"""
-    var_name, variable = args
-    return var_name, variable[:]
-
-def load_netcdf_optimized(datapath):
-    """Optimized loading of NetCDF data"""
-    # Open dataset with memory mapping
-    ODdata = nc.Dataset(datapath, 'r', mmap=True)
-    print('Loading all data into memory from nc file...')
-    
-    # Initialize dictionary
-    particles_all_data = {}
-    
-    # Load variables with progress bar
-    for var_name in tqdm(ODdata.variables, desc="Loading variables"):
-        particles_all_data[var_name] = ODdata.variables[var_name][:].copy()
-    
-    # Add UTM coordinates
-    particles_all_data = add_utm(particles_all_data)
-    print('Data loaded from nc file.')
-    
-    return particles_all_data
 
 def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_z):
     """Find nearest grid cell for a given coordinate"""

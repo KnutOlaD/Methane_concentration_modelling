@@ -482,6 +482,7 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 
 #############################################################################################################
 
+
 @jit(nopython=True, parallel=True)
 def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwidths, 
                     gaussian_kernels, illegal_cells, gridsize_x, gridsize_y):
@@ -540,39 +541,36 @@ def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwi
         j_max = min(j + kernel_size + 1, gridsize_y)
         
         # Handle illegal cells
-        illegal_window = illegal_cells[i_min:i_max, j_min:j_max]
-        #find blocked cells
-        #Define the grid with xi and yj and the origin of the kernel as x0 and y0
+        illegal_window = illegal_cells.copy()[i_min:i_max, j_min:j_max]
+
+        # ## Find blocked cells... ## #
+
+        # Define adaptation grid
         x0, y0 = i, j
         xi = np.arange(i_min, i_max)
         yj = np.arange(j_min, j_max)
+        
+        legal_cells = ~illegal_cells.copy()
+        illegal_sum = 0
 
-        if np.any(illegal_window):
-            illegal_sum = 0.0
-            # Problem 2: zip() not supported
-            shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, ~illegal_cells)
+        if np.any(illegal_window):# and illegal_sum > 0:
+            shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, legal_cells)
+            #print(shadowed_cells)
             
-            # Problem 3: Replace zip with direct array indexing
             for cell_idx in range(len(shadowed_cells)):
-                shadow_i = shadowed_cells[cell_idx][0] - i
-                shadow_j = shadowed_cells[cell_idx][1] - j
+                shadow_i = shadowed_cells[cell_idx][0] - i_min #convert to adaptation grid
+                shadow_j = shadowed_cells[cell_idx][1] - j_min
+                #print(shadow_i, shadow_j)
                 if (0 <= shadow_i < illegal_window.shape[0] and 
                     0 <= shadow_j < illegal_window.shape[1]):
                     illegal_window[shadow_i, shadow_j] = True
+                    illegal_sum += kde_pilot[i,j]*kernel[shadow_i, shadow_j]                       
+                    kernel[shadow_i, shadow_j] = 0 #setting the kernel to zero in the shadowed cells
 
-            for ii in range(i_max - i_min):
-                for jj in range(j_max - j_min):
-                    #calculate line of sight to each cell using Bresenham
+        weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum) #adding the shadowed cell weight to the non-zero cells
+        #else:
+        #    weighted_kernel = kernel * kde_pilot[i,j]
 
-                    if illegal_window[ii, jj]:
-                        illegal_sum += kernel[ii, jj]
-                        kernel[ii, jj] = 0
-
-                
-            weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum)
-        else:
-            weighted_kernel = kernel * kde_pilot[i, j]
-            
         # Add contribution
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
             max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
@@ -1512,7 +1510,9 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 # Sigma-level dataset without vertical diffusion
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'
 # Sigma-level dataset with vertical diffusion in the whole water column
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
 
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
@@ -2314,13 +2314,6 @@ if run_all == True:
 
             if (kde_all and i < 10) or i == 0:  # Perform KDE for first 10 layers or layer 0
                 #print('Doing kde for depth layer',i)
-                ### THIS IS THE OLD WAY OF DOING IT ###            
-                #ols_GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
-                                            #parts_active_z[1],
-                                            #bin_x,
-                                            #bin_y,
-                                            #parts_active_z[5],
-                                            #parts_active_z[4])
 
                 ###################
                 ### preGRIDding ###

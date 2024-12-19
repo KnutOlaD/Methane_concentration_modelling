@@ -40,6 +40,9 @@ from pyproj import Proj, Transformer
 import  xarray as xr
 import gc
 from scipy.spatial import cKDTree
+from matplotlib.colors import LogNorm
+from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
+from matplotlib.ticker import FuncFormatter
 
 ############################
 ###DEFINE SOM COOL COLORS###
@@ -83,7 +86,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 25. #m
+dz_grid = 50. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -104,7 +107,7 @@ num_seed = 500
 weights_full_sim = sum_sb_release_hr/num_seed #mol/hr
 total_seabed_release = num_seed*weights_full_sim*(30*24) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
-kde_all = True
+kde_all = False
 #Weight full sim - think this is wrong
 #weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
 #I think this might be mmol? 81.18
@@ -286,55 +289,6 @@ def add_utm(particles,utm_zone = 33,utm_letter = 'W'):
 
 ###########################################################################################
 
-
-def get_grid_params(particles,resolution=[1000,10]):
-    '''
-    Gets the grid parameters, i.e. the bin edges for the horizontal, vertical and temporal grids
-    from the particles dictionary
-
-    Input:
-    particles: dictionary containing the variables from the netcdf file. Must contain the UTM coordinates
-    resolution: list containing the horizontal, vertical and temporal resolution of the grid
-        default is [1000,10] which means 1000 meters in the horizontal, 10 meters in the vertical.
-
-    Output:
-    bin_x: bin edges for the horizontal grid
-    bin_y: bin edges for the horizontal grid
-    bin_z: bin edges for the vertical grid
-    bin_time: bin edges for the temporal grid 
-    '''
-    #Get min/max values for the horizontal grid
-    UTM_x_min = np.min(particles['UTM_x'])
-    UTM_x_max = np.max(particles['UTM_x'])
-    UTM_y_min = np.min(particles['UTM_y'])
-    UTM_y_max = np.max(particles['UTM_y'])
-
-    grid_resolution = resolution[0] #in meters
-    #Define temporal resolution
-    grid_temporal_resolution = particles['time'][1] - particles['time'][0] #the time resolution from OD.
-    #Define vertical resolution
-    grid_vertical_resolution = resolution[1] #in meters
-    
-    #Define the bin edges using the grid resolution and min/max values
-    bin_x = np.arange(UTM_x_min-grid_resolution,
-                        UTM_x_max+grid_resolution,
-                        grid_resolution)
-    bin_y = np.arange(UTM_y_min-grid_resolution,
-                          UTM_y_max+grid_resolution,
-                          grid_resolution)
-    #Define the bin edges using the grid resolution and min/max values
-    bin_z = np.arange(0,
-                          np.max(np.abs(particles['z']))+grid_vertical_resolution,
-                          grid_vertical_resolution)
-    #Define the bin edges using the grid resolution and min/max values
-    bin_time = np.arange(np.min(particles['time']),
-                         np.max(particles['time'])+grid_temporal_resolution,
-                         grid_temporal_resolution)
-
-    return bin_x,bin_y,bin_z,bin_time
-
-#############################################################################################################
-
 def calc_schmidt_number(T=5,gas='methane'):
     '''
     Calculates the Schmidt number for methane, co2, oxygen or nitrogen in 
@@ -408,6 +362,8 @@ def calc_gt_vel(u10=5,temperature=20,gas='methane'):
 
     return k
 
+#############################################################################################################
+
 def calc_mox_consumption(C_o,R_ox):
     '''
     Calculates the consumption of oxygen due to methane oxidation
@@ -423,49 +379,7 @@ def calc_mox_consumption(C_o,R_ox):
 
     return CH4_consumption
 
-@numba.jit(parallel=True,nopython=True)
-def histogram_estimator_numba(x_pos,y_pos,grid_x,grid_y,bandwidths = None,weights=None):
-    '''
-    Input:
-    x_pos (np.array): x-coordinates of the particles
-    y_pos (np.array): y-coordinates of the particles
-    grid_x (np.array): grid cell boundaries in the x-direction
-    grid_y (np.array): grid cell boundaries in the y-direction
-
-    Output:
-    particle_count: np.array of shape (grid_size, grid_size)
-    total_weight: np.array of shape (grid_size, grid_size)
-    average_bandwidth: np.array of shape (grid_size, grid_size)
-    '''
-
-    #get size of grid in x and y direction
-    grid_size_x = len(grid_x)
-    grid_size_y = len(grid_y)
-
-    # Initialize the histograms
-    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
-    total_weight = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
-    sum_bandwidth = np.zeros((grid_size_x,grid_size_y), dtype=np.float64)
-    
-    #Normalize the particle positions to the grid
-    x_pos = (x_pos - grid_x[0])/(grid_x[1]-grid_x[0])
-    y_pos = (y_pos - grid_y[0])/(grid_y[1]-grid_y[0])
-    
-    # Create a 2D histogram of particle positions
-    for i in numba.prange(len(x_pos)):
-        if np.isnan(x_pos[i]) or np.isnan(y_pos[i]):
-            continue
-        x = int(x_pos[i])
-        y = int(y_pos[i])
-        if x >= grid_size_x or y >= grid_size_y or x < 0 or y < 0: #check if the particle is outside the grid
-            continue
-        total_weight[y, x] += weights[i] #This is just the mass in each cell
-        particle_count[y, x] += 1
-        sum_bandwidth[y, x] += bandwidths[i]*weights[i] #weighted sum of bandwidths
-    
-    #print(np.shape(particle_count))
-
-    return particle_count, total_weight, sum_bandwidth 
+#############################################################################################################
 
 def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
     '''
@@ -527,13 +441,14 @@ def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=N
 
     return total_weight, particle_count, cell_bandwidth
 
+#############################################################################################################
+
 def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
     """
     Generates Gaussian kernels and their bandwidths. The function generates a kernel with support
     equal to the bandwidth multiplied by the ratio and the ratio sets the "resolution" of the 
     gaussian bandwidth family, i.e. ratio = 1/3 means that one kernel will be created for 0.33, 0.66, 1.0 etc.
     The kernels are stretched in the x-direction by the stretch factor.
-
 
     Parameters:
     num_kernels (int): The number of kernels to generate.
@@ -565,15 +480,49 @@ def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
 
     return gaussian_kernels, bandwidths_h#, kernel_origin
 
-##############################
-### ONGOING OPTIMIZASATION ###
-##############################
+#############################################################################################################
+
 
 @jit(nopython=True, parallel=True)
 def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwidths, 
                     gaussian_kernels, illegal_cells, gridsize_x, gridsize_y):
     
-    """Numba-optimized kernel processing"""
+    """
+    Project kernel density estimation onto a 2D grid with optimized memory layout and Numba acceleration.
+    Handles illegal/blocked cells by redistributing their density contribution to surrounding legal cells.
+    Uses pre-computed Gaussian kernels for efficiency and variable bandwidth selection based on pilot estimate.
+    
+    Parameters
+    ----------
+    grid_x : array-like
+        X-coordinates of the grid points
+    grid_y : array-like
+        Y-coordinates of the grid points
+    kde_pilot : ndarray
+        Pilot kernel density estimate on the grid
+    gaussian_kernels : list of ndarrays
+        Pre-computed Gaussian kernels for different bandwidths
+    kernel_bandwidths : ndarray
+        Bandwidths corresponding to pre-computed kernels
+    cell_bandwidths : ndarray
+        Bandwidth values for each cell in the grid
+    illegal_cells : ndarray, optional
+        Boolean mask of illegal/blocked cells (True = blocked)
+        
+    Returns
+    -------
+    ndarray
+        Updated kernel density estimate with illegal cell handling
+        
+    Notes
+    -----
+    - Uses contiguous memory layout for performance
+    - Handles illegal cells by redistributing their weights
+    - Optimized with Numba for parallel processing
+    - Only processes non-zero pilot KDE values
+    - Kernel selection based on closest available bandwidth
+    - Memory efficient by processing only required grid cells
+    """
     
     n_u = np.zeros((gridsize_x, gridsize_y))
     
@@ -592,18 +541,36 @@ def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwi
         j_max = min(j + kernel_size + 1, gridsize_y)
         
         # Handle illegal cells
-        illegal_window = illegal_cells[i_min:i_max, j_min:j_max]
-        if np.any(illegal_window):
-            illegal_sum = 0.0
-            for ii in range(i_max - i_min):
-                for jj in range(j_max - j_min):
-                    if illegal_window[ii, jj]:
-                        illegal_sum += kernel[ii, jj]
-                        kernel[ii, jj] = 0
-            weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum)
-        else:
-            weighted_kernel = kernel * kde_pilot[i, j]
+        illegal_window = illegal_cells.copy()[i_min:i_max, j_min:j_max]
+
+        # ## Find blocked cells... ## #
+
+        # Define adaptation grid
+        x0, y0 = i, j
+        xi = np.arange(i_min, i_max)
+        yj = np.arange(j_min, j_max)
+        
+        legal_cells = ~illegal_cells.copy()
+        illegal_sum = 0
+
+        if np.any(illegal_window):# and illegal_sum > 0:
+            shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, legal_cells)
+            #print(shadowed_cells)
             
+            for cell_idx in range(len(shadowed_cells)):
+                shadow_i = shadowed_cells[cell_idx][0] - i_min #convert to adaptation grid
+                shadow_j = shadowed_cells[cell_idx][1] - j_min
+                #print(shadow_i, shadow_j)
+                if (0 <= shadow_i < illegal_window.shape[0] and 
+                    0 <= shadow_j < illegal_window.shape[1]):
+                    illegal_window[shadow_i, shadow_j] = True
+                    illegal_sum += kde_pilot[i,j]*kernel[shadow_i, shadow_j]                       
+                    kernel[shadow_i, shadow_j] = 0 #setting the kernel to zero in the shadowed cells
+
+        weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum) #adding the shadowed cell weight to the non-zero cells
+        #else:
+        #    weighted_kernel = kernel * kde_pilot[i,j]
+
         # Add contribution
         n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
             max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
@@ -612,9 +579,43 @@ def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwi
     
     return n_u
 
-def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels, 
+def grid_proj_kde(grid_x, 
+                  grid_y, 
+                  kde_pilot, 
+                  gaussian_kernels, 
                   kernel_bandwidths, cell_bandwidths, illegal_cells=None):
-    """Optimized version of grid_proj_kde"""
+    """
+    Project kernel density estimation onto a 2D grid with optimized memory layout and Numba acceleration.
+    
+    Parameters
+    ----------
+    grid_x : array-like
+        X-coordinates of the grid points
+    grid_y : array-like
+        Y-coordinates of the grid points
+    kde_pilot : ndarray
+        Pilot kernel density estimate on the grid
+    gaussian_kernels : list of ndarrays
+        Pre-computed Gaussian kernels for different bandwidths
+    kernel_bandwidths : ndarray
+        Bandwidths corresponding to pre-computed kernels
+    cell_bandwidths : ndarray
+        Bandwidth values for each cell in the grid
+    illegal_cells : ndarray, optional
+        Boolean mask of illegal/blocked cells (True = blocked)
+        
+    Returns
+    -------
+    ndarray
+        Updated kernel density estimate with illegal cell handling
+        
+    Notes
+    -----
+    - Uses contiguous memory layout for performance
+    - Handles illegal cells by redistributing their weights
+    - Optimized with Numba for parallel processing
+    - Only processes non-zero pilot KDE values
+    """
     
     # Initialize illegal cells if None
     if illegal_cells is None:
@@ -642,163 +643,7 @@ def grid_proj_kde(grid_x, grid_y, kde_pilot, gaussian_kernels,
     
     return n_u
 
-##############################
-### ONGOING OPTIMIZASATION ###
-##############################
-
-#Function to calculate the grid projected kernel density estimator
-def grid_proj_kde_deprec(grid_x, 
-                  grid_y, 
-                  kde_pilot, 
-                  gaussian_kernels, 
-                  kernel_bandwidths, 
-                  cell_bandwidths,
-                  illegal_cells = None):
-    """
-    Projects a kernel density estimate (KDE) onto a grid using Gaussian kernels.
-
-    Parameters:
-    grid_x (np.array): Array of grid cell boundaries in the x-direction.
-    grid_y (np.array): Array of grid cell boundaries in the y-direction.
-    kde_pilot (np.array): The pilot KDE values on the grid.
-    gaussian_kernels (list): List of Gaussian kernel matrices.
-    kernel_bandwidths (np.array): Array of bandwidths associated with each Gaussian kernel.
-    cell_bandwidths (np.array): Array of bandwidths of the particles.
-    illegal_cells = array of size grid_x,grid_y with True/False values for illegal cells
-
-    Returns:
-    np.array: The resulting KDE projected onto the grid.
-
-    Notes:
-    - This function only works with a simple histogram estimator as the pilot KDE.
-    - The function assumes that the Gaussian kernels are symmetric around their center.
-    - The grid size is determined by the lengths of grid_x and grid_y.
-    - The function iterates over non-zero values in the pilot KDE and applies the corresponding Gaussian kernel.
-    - The appropriate Gaussian kernel is selected based on the bandwidth of each particle.
-    - The resulting KDE is accumulated in the output grid n_u.
-    - Uses the reflection method to handle boundary conditions.
-    """
-    # ONLY WORKS WITH SIMPLE HISTOGRAM ESTIMATOR ESTIMATE AS PILOT KDE!!!
-
-    if illegal_cells is None:
-        illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=bool)
-
-    # Get the grid size
-    gridsize_x = len(grid_x)
-    gridsize_y = len(grid_y)
-
-    n_u = np.zeros((gridsize_x, gridsize_y))
-
-    # Get the indices of non-zero kde_pilot values
-    non_zero_indices = np.argwhere(kde_pilot > 0)
-   
-    # Find the closest kernel indices for each particle bandwidth
-    # kernel_indices = np.argmin(np.abs(kernel_bandwidths[:, np.newaxis] - cell_bandwidths[tuple(non_zero_indices.T)]), axis=0)
-    
-    for idx in non_zero_indices:
-        i, j = idx
-        # Get the appropriate kernel for the current particle bandwidth
-        # find the right kernel index
-        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j])) #Can be vectorized
-        # kernel_index = kernel_indices[i * grid_size + j]
-        kernel = gaussian_kernels[kernel_index]
-        kernel_size = len(kernel) // 2  # Because it's symmetric around the center.
-
-        # Define the window boundaries
-        i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, gridsize_x)
-        j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, gridsize_y)
-
-        #Check if there are illegal cells in the kernel area and run reflect_kernel_contribution if there are
-        #if np.any(illegal_cells[i_min:i_max, j_min:j_max]):
-
-        #Handle illegal cells
-        if np.any(np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])):
-            illegal_indices = np.argwhere(illegal_cells[i_min:i_max, j_min:j_max])
-            #Sum contribution for all illegal cells in the kernel
-            illegal_kernel_sum = np.sum(kernel[illegal_indices[:,0],illegal_indices[:,1]])
-            #set them to zero
-            kernel[illegal_indices[:,0],illegal_indices[:,1]] = 0
-            #calculat the weighted kernel sum
-            weighted_kernel = kernel*(kde_pilot[i,j]+illegal_kernel_sum)
-        else:
-            weighted_kernel = kernel * kde_pilot[i, j]
-
-        # Add the contribution to the result matrix
-        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
-        ]
-
-    return n_u
-
-def kernel_matrix_2d_NOFLAT(x,y,x_grid,y_grid,bw,weights,ker_size_frac=4,bw_cutoff=2):
-    ''' 
-    Creates a kernel matrices for a 2d gaussian kernel with bandwidth bw and a cutoff at 
-    2*bw for all datapoints and sums them onto grid x_grid,ygrid. The kernel matrices are 
-    created by binning the kernel values (the 2d gaussian) are created with a grid with
-    adaptive resolution such that the kernel resolution fits within the x_grid/y_grid grid resolution. 
-    Normalizes with the sum of the kernel values (l2norm). Assumes uniform x_grid/y_grid resolution.
-    Input: 
-    x: x-coordinates of the datapoints
-    y: y-coordinates of the datapoints
-    x_grid: x-coordinates of the grid
-    y_grid: y-coordinates of the grid
-    bw: bandwidth of the kernel (vector of length n with the bandwidth for each datapoint)
-    weights: weights for each datapoint
-    ker_size_frac: the fraction of the grid size of the underlying grid that the kernel grid should be
-    bw_cutoff: the cutoff for the kernel in standard deviations
-
-    Output:
-    GRID_active: a 3d matrix with the kernel values for each datapoint
-    '''
-
-    #desired fractional difference between kernel grid size and grid size
-    ker_size_frac = 4 #1/3 of the grid size of underlying grid
-    bw_cutoff = 2 #cutoff for the kernel in standard deviations
-
-    #calculate the grid resolution
-    dxy_grid = x_grid[1]-x_grid[0]
-
-    #create a grid for z values
-    GRID_active = np.zeros((len(x_grid),len(y_grid)))
-
-    for i in range(len(x)):
-        #calculate the kernel for each datapoint
-        #kernel_matrix[i,:] = gaussian_kernel_2d(grid_points[0]-x[i],grid_points[1]-y[i],bw=bw)
-        #create a matrix for the kernel that makes sure the kernel resolution fits
-        #within the grid resolution (adaptive kernel size). ker_size is the number of points in each direction
-        #in the kernel. Can also add in weight of kernel here to save time, but let's do that later if needed.
-        ker_size = int(np.ceil((bw_cutoff*2*bw[i]*ker_size_frac)/dxy_grid))
-        a = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
-        b = np.linspace(-bw_cutoff*bw[i],bw_cutoff*bw[i],ker_size)
-        #create the 2d coordinate matrix
-        a = a.reshape(-1,1)
-        b = b.reshape(1,-1)
-        #kernel_matrix[i,:] = #gaussian_kernel_2d_sym(a,b,bw=1, norm='l2norm')
-        kernel_matrix = ((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2)))/np.sum(((1/(2*np.pi*bw[i]**2))*np.exp(-0.5*((a/bw[i])**2+(b/bw[i])**2))))
-        #add the kernel_matrix values by binning them into the grid using digitize
-        #get the indices of the grid points that are closest to the datapoints
-        lx = a+x[i]
-        ly = b+y[i]
-        #get the indices of the grid points that are closest to the datapoints
-        ix = np.digitize(lx,x_grid)
-        iy = np.digitize(ly,y_grid)
-
-        #if any values in ix or iy is outside the grid, remove the kernel entirely and skip to next iteration
-        if np.any(ix >= len(x_grid)) or np.any(iy >= len(y_grid)) or np.any(ix < 0) or np.any(iy < 0):
-            continue
-
-        #add the kernel values to the grid
-        GRID_active[ix,iy] += kernel_matrix*weights[i]
-
-    return GRID_active
-
-from matplotlib.colors import LogNorm
-from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
-import matplotlib.patches as patches
-from matplotlib.ticker import FuncFormatter
+#############################################################################################################
 
 # Cache features for reuse
 _CACHED_FEATURES = {}
@@ -1207,17 +1052,6 @@ def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
         pickle.dump([ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix], f)
     return None
 
-
-@jit(nopython=True)
-def histogram_variance_numba(binned_data, bins): #here, suggest to multiply with (M-1)/M to get unbiased estimate
-    if np.sum(binned_data) == 0:
-        return 0.0
-    hist, bin_edges = np.histogram(binned_data, bins=bins)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    mean = np.sum(hist * bin_centers) / np.sum(hist) #Weighted mean position
-    variance = np.sum(hist * (bin_centers - mean) ** 2) / np.sum(hist)
-    return variance
-
 @jit(nopython=True)
 def histogram_std(binned_data, effective_samples=None, bin_size=1):
     '''Calculate the simple variance of the binned data
@@ -1256,7 +1090,7 @@ def histogram_std(binned_data, effective_samples=None, bin_size=1):
     mu_y = np.sum(binned_data * Y) / sum_data
     
     #Sheppards correction term
-    sheppard = (2/12)*bin_size*bin_size #weighted data
+    sheppard = (1/12)*bin_size*bin_size #weighted data
 
     #variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
 
@@ -1267,61 +1101,35 @@ def histogram_std(binned_data, effective_samples=None, bin_size=1):
  
     return np.sqrt(variance)
 
-
-def histogram_variance(binned_data, bin_size=1):
-    '''
-    Calculate the simple variance of the binned data using ...
-    '''
-    #check that there's data in the binned data
-    if np.sum(binned_data) == 0:
-        return 0
-    #get the central value of all bins
-    grid_size = len(binned_data)
-    #Central point of all grid cells
-    X = np.arange(0,grid_size*bin_size,bin_size) #I think this doesnt work.. 
-    Y = np.arange(0,grid_size*bin_size,bin_size)
-    #Calculate the average position in the binned data
-    mu_x = np.sum(binned_data*X)/np.sum(binned_data)
-    mu_y = np.sum(binned_data*Y)/np.sum(binned_data)
-    #Calculate the variance
-    var_y = np.sum(binned_data*(X-mu_x)**2)/np.sum(binned_data)
-    var_x = np.sum(binned_data*(Y-mu_y)**2)/np.sum(binned_data)
-    #Calculate the covariance
-    cov_xy = np.sum(binned_data*(X-mu_x)*(Y-mu_y))/np.sum(binned_data)
-    #Calculate the total variance
-    variance_data = var_x+var_y+2*cov_xy*0
-    #https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
-    #Sheppards correction
-    variance_data = variance_data - 1/12*(3*bin_size**2)
-    return variance_data
-
-def window_sum(data):
-    # Filter out zero values
-    non_zero_data = data[data != 0]
-    return np.sum(non_zero_data)
-
-@jit(nopython=True)
-def calculate_autocorrelation_numba(data):
-    num_rows, num_cols = data.shape
-    max_lag = min(num_rows, num_cols) - 1
-    
-    autocorr_rows = np.zeros(max_lag)
-    autocorr_cols = np.zeros(max_lag)
-    
-    row_denominators = np.array([1 / (num_cols - k) for k in range(1, max_lag + 1)])
-    col_denominators = np.array([1 / (num_rows - k) for k in range(1, max_lag + 1)])
-    
-    for k in range(1, max_lag + 1):
-        autocorr_rows[k - 1] = np.mean([row_denominators[k - 1] * np.sum(data[row, :num_cols - k] * data[row, k:]) for row in range(num_rows)])
-    
-    for k in range(1, max_lag + 1):
-        autocorr_cols[k - 1] = np.mean([col_denominators[k - 1] * np.sum(data[:num_rows - k, col] * data[k:, col]) for col in range(num_cols)])
-    
-    return autocorr_rows, autocorr_cols
-
 @jit(nopython=True)
 def calculate_autocorrelation(data, bin_size=1):
-    '''Calculate autocorrelation for rows and columns'''
+    """
+    Calculate spatial autocorrelation along rows and columns of 2D data.
+
+    Computes the autocorrelation function separately for rows and columns of a 2D array,
+    using a vectorized implementation optimized with Numba. The autocorrelation is normalized
+    by the number of points and includes protection against zero division.
+
+    Parameters
+    ----------
+    data : ndarray
+        2D input array for which to calculate autocorrelation
+
+    Returns
+    -------
+    autocorr_rows : ndarray
+        1D array containing autocorrelation values for row-wise shifts
+    autocorr_cols : ndarray
+        1D array containing autocorrelation values for column-wise shifts
+
+    Notes
+    -----
+    - Uses Numba JIT compilation
+    - Handles edge cases (small arrays, zero values)
+    - Maximum lag is determined by smallest dimension
+    - Includes epsilon protection against zero division
+    - Returns single zero value arrays if input is too small
+    """
     num_rows, num_cols = data.shape
     max_lag = min(num_rows, num_cols) - 1
 
@@ -1391,29 +1199,7 @@ def get_integral_length_scale(histogram_prebinned, window_size):
 
     return integral_length_scale_matrix
 
-#Reflect kernel density at predefined boundaries
-def reflect_with_shadow(x, y, xi, yj, legal_grid):
-    """
-    Helper function to reflect (xi, yj) back to a legal position
-    across the barrier while respecting the shadow.
-    """
-    x_reflect, y_reflect = xi, yj
-
-    # Reflect along x-axis if needed
-    while not legal_grid[x_reflect, yj] and x_reflect != x:
-        x_reflect += np.sign(x - xi)  # Step towards the particle
-
-    # Reflect along y-axis if needed
-    while not legal_grid[xi, y_reflect] and y_reflect != y:
-        y_reflect += np.sign(y - yj)  # Step towards the particle
-    
-    # Check final reflection position legality
-    if legal_grid[x_reflect, y_reflect]:
-        return x_reflect, y_reflect
-    else:
-        return None, None  # No valid reflection found
-
-#Make a bresenham line
+@jit(nopython=True)
 def bresenham(x0, y0, x1, y1): 
     """
     Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
@@ -1448,25 +1234,42 @@ def bresenham(x0, y0, x1, y1):
 
     return points
 
-#Identify shadowed cells
+@jit(nopython=True)
 def identify_shadowed_cells(x0, y0, xi, yj, legal_grid):
     """
-    Identify shadowed cells in the legal grid.
-
-    Input: 
-    x0: x-coordinate of the kernel origin grid cell (for grid projected)
-    y0: y-coordinate of the kernel origin grid cell (for grid projected)
-    xi: x-coordinates of the kernel
-    yj: y-coordinates of the kernel
-    legal_grid: 2D boolean array with legal cells (true means legal)
+    Identify shadowed cells by tracing from edges inward.
+    Cells start as potentially shadowed and are marked free 
+    if they have line of sight to kernel center.
     """
-    shadowed_cells = []
-    for i in xi:
-        for j in yj:
-            cells = bresenham(x0, y0, i, j)
-            for cell in cells:
+    grid_size = legal_grid.shape[0]
+    # Start with all cells potentially shadowed
+    shadowed = np.ones((grid_size, grid_size), dtype=np.bool_)
+    
+    # Trace from edges
+    for edge_x in [0, grid_size-1]:
+        for y in range(grid_size):
+            los_cells = bresenham(x0,y0,edge_x, y)
+            # Mark cells as free until hitting illegal cell
+            for cell in los_cells:
                 if not legal_grid[cell[0], cell[1]]:
-                    shadowed_cells.append((i,j))
+                    break
+                shadowed[cell[0], cell[1]] = False
+                
+    for edge_y in [0, grid_size-1]:
+        for x in range(grid_size):
+            los_cells = bresenham(x0, y0, x, edge_y)
+            for cell in los_cells:
+                if not legal_grid[cell[0], cell[1]]:
+                    break
+                shadowed[cell[0], cell[1]] = False
+    
+    # Convert to list format
+    shadowed_cells = []
+    for i in range(len(xi)):
+        for j in range(len(yj)):
+            if shadowed[xi[i], yj[j]]:
+                shadowed_cells.append((xi[i], yj[j]))
+                
     return shadowed_cells
 
 def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
@@ -1555,30 +1358,6 @@ def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
     
     except Exception as e:
         raise RuntimeError(f"Error processing bathymetry data: {str(e)}")
-
-@jit(nopython=True)
-def _process_window_statistics(data_subset, subset_counts, pad_size, window_size, 
-                             stats_threshold, silverman_coeff, silverman_exponent, dxy_grid):
-    """Compute statistics for a single window"""
-    if np.sum(subset_counts) < stats_threshold:
-        std = window_size/2
-        n_eff = np.sum(data_subset)/window_size
-        integral_length_scale = window_size
-    else:
-        # Assuming histogram_std is available to Numba
-        std = histogram_std(data_subset, None, 1)
-        # Assuming calculate_autocorrelation is available to Numba
-        autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
-        autocorr = (autocorr_rows + autocorr_cols) / 2
-        if autocorr.any():
-            non_zero_idx = np.where(autocorr != 0)[0][0]
-            integral_length_scale = np.sum(autocorr) / autocorr[non_zero_idx]
-        else:
-            integral_length_scale = 0.000001
-        n_eff = np.sum(data_subset) / integral_length_scale
-    
-    h = np.sqrt((silverman_coeff * n_eff**(-silverman_exponent)) * std) * dxy_grid
-    return std, n_eff, integral_length_scale, h
 
 @jit(nopython=True, parallel=True)
 def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_padded,
@@ -1682,69 +1461,6 @@ def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_pad
     
     return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
 
-@jit(nopython=True, parallel=True)
-def compute_adaptive_bandwidths_old(preGRID_active_padded, preGRID_active_counts_padded,
-                              window_size, pad_size, stats_threshold,
-                              silverman_coeff, silverman_exponent, dxy_grid):
-    """Compute adaptive bandwidths for all windows"""
-    shape = preGRID_active_padded.shape
-    std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size))
-    N_eff = np.zeros_like(std_estimate)
-    h_matrix_adaptive = np.zeros_like(std_estimate)
-    integral_length_scale_matrix = np.zeros_like(std_estimate)
-    
-    for row in prange(pad_size, shape[0]-pad_size):
-        for col in range(pad_size, shape[1]-pad_size):
-            if preGRID_active_counts_padded[row, col] > 0:
-                data_subset = preGRID_active_padded[row-pad_size:row+pad_size+1,
-                                                  col-pad_size:col+pad_size+1]
-                subset_counts = preGRID_active_counts_padded[row-pad_size:row+pad_size+1,
-                                                           col-pad_size:col+pad_size+1]
-                
-                if data_subset[pad_size,pad_size] == 0:
-                    continue
-                
-                data_subset = (data_subset/np.sum(data_subset))*subset_counts
-                
-                row_idx = row - pad_size
-                col_idx = col - pad_size
-                
-                std, n_eff, ils, h = _process_window_statistics(
-                    data_subset, subset_counts, pad_size, window_size,
-                    stats_threshold, silverman_coeff, silverman_exponent, dxy_grid
-                )
-                
-                std_estimate[row_idx, col_idx] = std
-                N_eff[row_idx, col_idx] = n_eff
-                integral_length_scale_matrix[row_idx, col_idx] = ils
-                h_matrix_adaptive[row_idx, col_idx] = h
-    
-    return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
-
-
-def load_variable(args):
-    """Helper function to load a single variable"""
-    var_name, variable = args
-    return var_name, variable[:]
-
-def load_netcdf_optimized(datapath):
-    """Optimized loading of NetCDF data"""
-    # Open dataset with memory mapping
-    ODdata = nc.Dataset(datapath, 'r', mmap=True)
-    print('Loading all data into memory from nc file...')
-    
-    # Initialize dictionary
-    particles_all_data = {}
-    
-    # Load variables with progress bar
-    for var_name in tqdm(ODdata.variables, desc="Loading variables"):
-        particles_all_data[var_name] = ODdata.variables[var_name][:].copy()
-    
-    # Add UTM coordinates
-    particles_all_data = add_utm(particles_all_data)
-    print('Data loaded from nc file.')
-    
-    return particles_all_data
 
 def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_z):
     """Find nearest grid cell for a given coordinate"""
@@ -1782,9 +1498,22 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 #   GRID = pickle.load(f)
 
 # With vertical diffusion
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
 # Without vertical diffusion
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
+# Z-level dataset with vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited_vdiff.nc'
+# Z-level dataset without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited.nc'
+# Sigma-level dataset with vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'
+# Sigma-level dataset without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'
+# Sigma-level dataset with vertical diffusion in the whole water column
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
+
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
 n_particles = first_timestep_lon = ODdata.variables['lon'][:, 0].copy()
@@ -1816,7 +1545,7 @@ if manual_border == True:
     maxlon = 21
     minlat = 68.5
     maxlat = 72
-    maxdepth = 15*20
+    maxdepth = 50*60
 else:
     for i in range(0,ODdata.variables['lon'].shape[1]):
         #get max and min unmasked lat/lon values
@@ -2062,7 +1791,7 @@ for i in range(len(bin_x)):
     for j in range(len(bin_y)):
         for k in range(len(bin_z)):
             if bin_z_bath_test[k] > np.abs(interpolated_bathymetry[j, i]):
-                illegal_cells[i, j, k] = 1
+                illegal_cells[i, j, k] = 0.1
 # Plotting
 if plotting == True:
     # Plot the illegal cell matrices in a 3x3 grid
@@ -2241,8 +1970,10 @@ if run_all == True:
             particles['weight'][:,0] = particles['weight'][:,1]
             particles['age'][:,1][np.where(particles['weight'][:,1].mask == False)] = 0
             particles['age'][:,0] = particles['age'][:,1]
-            
-            
+
+        #set all nan values in aprticles['z'] to the deepest grid
+        particles['z'][np.isnan(particles['z'])] = -(np.max(bin_z)-1)
+        
         end_time = time.time()
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
@@ -2471,13 +2202,20 @@ if run_all == True:
         truly_active = np.where((particles['z'][:,1].mask == False) & 
                             (particles['weight'][:,1].mask == False))[0]
 
-        # Get ages and depths for only unmasked active particles
         ages = particles['age'][truly_active, 1].astype(int)
         ages[ages >= lifespan] = lifespan - 1
         depths = np.abs(particles['z'][truly_active, 1].astype(int))
         weights = particles['weight'][truly_active, 1]
-
+        # Get ages and depths for only unmasked active particles
+        #valid_mask_lifetime = (ages < particle_lifespan_matrix.shape[0]) & (depths < particle_lifespan_matrix.shape[1])
+        #give warning if data is outside the matrix
+        #if not valid_mask_lifetime.all():
+        #    num_outside = np.sum(np.logical_not(valid_mask_lifetime))
+        #    print('Warning: Data outside the matrix. N=',num_outside)
         # Store MOx and weight
+        #if np.any(valid_mask_lifetime):
+        #    particle_lifespan_matrix[ages[valid_mask_lifetime], depths[valid_mask_lifetime], 0] += weights[valid_mask_lifetime]
+        #    particle_lifespan_matrix[ages[valid_mask_lifetime], depths[valid_mask_lifetime], 1] += weights[valid_mask_lifetime] * R_ox * 3600
         np.add.at(particle_lifespan_matrix[:, :, 0], (ages, depths), weights)
         np.add.at(particle_lifespan_matrix[:, :, 1], (ages, depths), weights * R_ox * 3600)
 
@@ -2574,15 +2312,8 @@ if run_all == True:
             #CALCULATE THE KERNEL DENSITY ESTIMATE#
             #-------------------------------------#
 
-            if kde_all == True or i==0: #dont bother with the kde if there are no particles in the depth layer
+            if (kde_all and i < 10) or i == 0:  # Perform KDE for first 10 layers or layer 0
                 #print('Doing kde for depth layer',i)
-                ### THIS IS THE OLD WAY OF DOING IT ###            
-                #ols_GRID_active = kernel_matrix_2d_NOFLAT(parts_active_z[0],
-                                            #parts_active_z[1],
-                                            #bin_x,
-                                            #bin_y,
-                                            #parts_active_z[5],
-                                            #parts_active_z[4])
 
                 ###################
                 ### preGRIDding ###
@@ -2815,12 +2546,12 @@ print(f"Full calculation time was: {total_computation_time}")
 #----------------------#
 
 #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
-    pickle.dump(GRID, f)
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
+#    pickle.dump(GRID, f)
     #create a sparse matrix first
 #load the GRID file
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
-    GRID = pickle.load(f)
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
+#    GRID = pickle.load(f)
 
 #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
 GRID_atm_sparse = GRID_atm_flux
@@ -3192,31 +2923,6 @@ plt.tight_layout()
 #save figure
 plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss_no_vdiff.png')
 
-#find the dominant periods in the total_atm_flux dataset
-#use the periodogram
-from scipy.signal import periodogram
-f, Pxx = periodogram(total_atm_flux,1/3600,window='hann',nfft=1024)
-plt.plot(f,Pxx)
-plt.xlabel('Frequency [Hz]')
-plt.ylabel('Power spectral density [mol$^2$ hr]')
-plt.xlim([0,0.00009])
-#plot a vertical line at the semidiurnal and diurnal frequency
-f_semi = 1/(12.42*3600)
-f_semi_idx = np.where(np.abs(f-f_semi) == np.min(np.abs(f-f_semi)))[0]
-Pxx_semi = Pxx[f_semi_idx]
-plt.plot(f_semi,Pxx_semi,'ro')
-f_diurnal = 1/(24*3600)
-f_diurnal_idx = np.where(np.abs(f-f_diurnal) == np.min(np.abs(f-f_diurnal)))[0]
-Pxx_diurnal = Pxx[f_diurnal_idx]
-plt.plot(f_diurnal,Pxx_diurnal,'bo')
-#plot grid
-plt.grid()
-
-#find tidal frequency in the periodogram
-f_tidal = 1/(12.42*3600)
-f_tidal_idx = np.where(np.abs(f-f_tidal) == np.min(np.abs(f-f_tidal)))[0]
-Pxx_tidal = Pxx[f_tidal_idx]
-plt.plot(f_tidal,Pxx_tidal,'ro')
 
 #Check what's going on in the top layer, i.e. we need to loop through 
 #GRID and sum all the top layers
@@ -3645,6 +3351,16 @@ concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
 #set plotting style to default
 plt.style.use('default')
 
+# Calculate the fraction of molecules at each depth level using the particle_lifespan_matrix[:,:,0] data
+
+mole_fraction_z = np.zeros_like(particle_lifespan_matrix[:,:,0])
+
+for i in range(particle_lifespan_matrix.shape[0]):
+    for j in range(particle_lifespan_matrix.shape[1]):
+        mole_fraction_z[i,j] = particle_lifespan_matrix[i,j,0]/np.sum(particle_lifespan_matrix[i,:,0])
+
+
+
 from scipy.ndimage import gaussian_filter1d
 #Create depth vector
 depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
@@ -3660,7 +3376,8 @@ week4 = 671
 
 # Define profiles for each time point
 time_points = [hour12, day1, week1, week2, week3, week4]
-profiles = [particle_lifespan_matrix[time, :, 0] for time in time_points]
+profiles = [mole_fraction_z[time, :] for time in time_points]
+profiles = profiles*100
 
 # Apply Gaussian smoothing to each profile
 smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
@@ -3678,8 +3395,9 @@ for i, ax in enumerate(axs.flat):
     ax.plot(smoothed_profiles[i], depth_vector)
     ax.plot(profiles[i], depth_vector, linestyle='--')
     ax.set_title(titles[i])
-    ax.set_xlabel('Concentration')
-    ax.set_ylabel('Depth')
+    ax.set_xlabel('Distibution of methane molecules [%]', fontsize=14)
+    ax.set_ylabel('Depth [m]', fontsize=14)
+    ax.set_ylim([0,400])  # Limit the y-axis to 250 m depth
     ax.invert_yaxis()  # Flip the y-axis
 
 # Adjust layout
@@ -3688,62 +3406,90 @@ plt.show()
 
 
 # Define time points
-day1 = 23
-day7 = 24*7-1
-day14 = 24*14-1
+day1 = 0
+day7 = 24*3
+day14 = 24*7
 day28 = 24*28-1
+time_series = [day1,  # First day in hours
+    day7,  # Week in hours
+    day14, # Two weeks in hours
+    day28  # Four weeks in hours
+]
 
 # Define profiles for each time point
 time_points = [day1, day7, day14, day28]
-profiles = [particle_lifespan_matrix[time, :, 0] for time in time_points]
+profiles = [mole_fraction_z[time,:] for time in time_points]
 
 # Apply Gaussian smoothing to each profile
-smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
+smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]*100
+
+#calculate maximum value for the x axis
+maxval = np.max([np.max(smoothed_profiles) for smooth_profiles in smoothed_profiles])
 
 # Create a 1x3 plot
 fig, axs = plt.subplots(2, 2, figsize=(10,10))
 
-# Titles for each subplot
-titles = ['Methane molecule distribution after 1 day', 'Methane molecule distribution after 7 days', 'Methane molecule distribution after 14 days', 'Methane molecule distribution 28 days later']
-
 # Plot each smoothed profile
 for i, ax in enumerate(axs.flat):
     ax.plot(smoothed_profiles[i], depth_vector)
-    ax.set_title(titles[i])
-    ax.set_xlabel('Methane [mol]')
-    ax.set_ylabel('Depth')
+    if ax == axs[1, 0] or ax == axs[1, 1]:
+        ax.set_xlabel('Methane distribution [%]', fontsize=14)
+    if ax == axs[0, 0] or ax == axs[1, 0]:
+        ax.set_ylabel('Depth [m]', fontsize=14)
+    ax.set_ylim([0, 250])  # Limit the x-axis to 0.5e-5 mol
     ax.invert_yaxis()  # Flip the y-axis
+    ax.set_xlim([0, maxval])  # Limit the x-axis to 0.5e-5 mol
+    # Add text box inside plot
+    time_text = 'After {:.0f} days'.format(time_series[i]/24)
+    ax.text(0.95, 0.95, time_text,
+        transform=ax.transAxes,  # Use axes coordinates (0-1)
+        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'),
+        horizontalalignment='right',
+        verticalalignment='top',
+        fontsize=14)
 
 # Adjust layout
+    #add hlines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
+    #for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
+    #    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
+# Remove the title line
+# ax.set_title('Methane distribution at t = {:.1f} hours'.format(time_series[i]))
+
+
 plt.tight_layout()
 plt.show()
 
-# make a pcolor plot that illustrates the same thing (including the whole timeseries)
 
 # Create a pcolor plot for the entire time series
 fig, ax = plt.subplots(figsize=(10, 6))
 
 # Define the entire time series
-time_series = np.arange(particle_lifespan_matrix.shape[0])
+time_series = np.arange(particle_lifespan_matrix.shape[0])/24
 
 #define levels
-levels = np.linspace(np.nanmin(particle_lifespan_matrix[:, :, 0]),np.nanmax(particle_lifespan_matrix[:, :, 0])/5,100)
+levels = np.linspace(np.nanmin(mole_fraction_z),np.nanmax(mole_fraction_z),100)
 
 # Create the pcolor plot
-c = ax.pcolor(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, shading='auto', cmap='rocket_r',vmin=np.nanmin(particle_lifespan_matrix[:, :, 0]),vmax=np.nanmax(particle_lifespan_matrix[:, :, 0])/5) 
+c = ax.pcolor(time_series, depth_vector, mole_fraction_z.T, shading='auto', cmap='rocket_r',vmin=np.nanmin(mole_fraction_z),vmax=np.nanmax(mole_fraction_z))
 
 #plot some contours too
-contour = ax.contour(time_series, depth_vector, particle_lifespan_matrix[:, :, 0].T, levels=levels[::2], colors='black', linewidths=0.1, zorder=1, alpha=0.5)
+contour = ax.contour(time_series, depth_vector, mole_fraction_z.T, levels=levels[::5], colors='black', linewidths=0.2, zorder=1, alpha=0.5)
 
 # Add colorbar
 cbar = fig.colorbar(c, ax=ax)
-cbar.set_label('Methane [mol]')
+cbar.set_label('Methane distribution [%]', fontsize=14)
 
 # Customize plot
-ax.set_title('Vertical position of released methane molecules over time after release')
-ax.set_xlabel('Time [hours]')
-ax.set_ylabel('Depth')
+#ax.set_title('Position of released methane molecules over time after release',fontsize=14)
+ax.set_xlabel('Time [days]', fontsize=14)
+ax.set_ylabel('Depth', fontsize=14)
 ax.invert_yaxis()  # Flip the y-axis
+#plot vertical dashed lines 
+
+
+#plot horizontal lines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
+#for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
+#    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
 
 ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
 
@@ -3830,16 +3576,12 @@ for kkk in range(1, time_steps_full-1):
     # Clean up
     del timestep_sum
 
-
 GRID_vert_total_sum = np.nansum(GRID_vert_total[twentiethofmay:time_steps,:,:],axis=0)*3600
 levels = np.linspace(np.nanmin(np.nanmin(GRID_vert_total_sum)),np.nanmax(np.nanmax(GRID_vert_total_sum)),1000)
 levels = levels[:]
 release_point = [14.279600,68.918600]
 #flip the lon_vector right/left
 #extent_limits = [100:200,100:200]
-
-
-
 
 plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
                     lon=lon_mesh,

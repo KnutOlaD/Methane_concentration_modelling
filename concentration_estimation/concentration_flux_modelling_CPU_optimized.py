@@ -27,7 +27,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-import numba
 from numpy.ma import masked_invalid
 import imageio
 import matplotlib.gridspec as gridspec
@@ -43,6 +42,10 @@ from scipy.spatial import cKDTree
 from matplotlib.colors import LogNorm
 from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
 from matplotlib.ticker import FuncFormatter
+#set path to the folder containing the akd_estimator.py file
+import sys
+sys.path.append(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\akd_estimator')
+import akd_estimator as akd
 
 ############################
 ###DEFINE SOM COOL COLORS###
@@ -1512,7 +1515,9 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 # Sigma-level dataset with vertical diffusion in the whole water column
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
 
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
@@ -1878,6 +1883,8 @@ depth_bins_lifespan = np.arange(0,np.max(bin_z)+dz_grid/2,dz_grid/2)
 particle_lifespan_matrix = np.zeros((lifespan,len(depth_bins_lifespan),3))
 particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
 
+lost_particles_due_to_nandepth = 0
+
 if run_all == True:
 
     #Start looping through.
@@ -1972,8 +1979,14 @@ if run_all == True:
             particles['age'][:,0] = particles['age'][:,1]
 
         #set all nan values in aprticles['z'] to the deepest grid
+        lost_particles_due_to_nandepth += len(particles['z'][np.isnan(particles['z'])])
         particles['z'][np.isnan(particles['z'])] = -(np.max(bin_z)-1)
+        print({'Particles in seafloor: '+str(lost_particles_due_to_nandepth)})
         
+        
+        #give warning if there are nans in particles['z']
+
+
         end_time = time.time()
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
@@ -3358,6 +3371,11 @@ mole_fraction_z = np.zeros_like(particle_lifespan_matrix[:,:,0])
 for i in range(particle_lifespan_matrix.shape[0]):
     for j in range(particle_lifespan_matrix.shape[1]):
         mole_fraction_z[i,j] = particle_lifespan_matrix[i,j,0]/np.sum(particle_lifespan_matrix[i,:,0])
+
+
+#save the particle_lifespan_matrix using pickle
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\OpenDrift\\particle_lifespan_matrix_30s_fb02.pickle', 'wb') as f:
+    pickle.dump(particle_lifespan_matrix, f)
 
 
 

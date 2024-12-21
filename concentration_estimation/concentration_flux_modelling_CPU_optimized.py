@@ -33,10 +33,9 @@ import matplotlib.gridspec as gridspec
 from scipy.ndimage import gaussian_filter
 import seaborn as sns
 import time
-from numba import jit, prange
 import numpy.ma as ma
 from pyproj import Proj, Transformer
-import  xarray as xr
+import xarray as xr
 import gc
 from scipy.spatial import cKDTree
 from matplotlib.colors import LogNorm
@@ -122,8 +121,8 @@ run_full = True
 #KDE dimensionality
 kde_dim = 2
 #Silvermans coefficients
-silverman_coeff = (4/(kde_dim+2))**(1/(kde_dim+4))
-silverman_exponent = 1/(kde_dim+4)
+silverman_coeff = (4/(kde_dim+2))**(1/(kde_dim+4)) #NOT USED ANYMORE
+silverman_exponent = 1/(kde_dim+4) #NOT USED ANYMORE
 #Set bandwidth estimator preference
 h_adaptive = 'Local_Silverman' #alternatives here are 'Local_Silverman', 'Time_dep' and 'No_KDE'
 #Get new bathymetry or not?
@@ -381,270 +380,6 @@ def calc_mox_consumption(C_o,R_ox):
     CH4_consumption = R_ox * C_o
 
     return CH4_consumption
-
-#############################################################################################################
-
-def histogram_estimator(x_pos, y_pos, grid_x, grid_y, bandwidths=None, weights=None):
-    '''
-    Input:
-    x_pos (np.array): x-coordinates of the particles
-    y_pos (np.array): y-coordinates of the particles
-    grid_x (np.array): grid cell boundaries in the x-direction
-    grid_y (np.array): grid cell boundaries in the y-direction
-    bandwidths (np.array): bandwidths of the particles
-    weights (np.array): weights of the particles
-
-    Output:
-    particle_count: np.array of shape (grid_size, grid_size)
-    total_weight: np.array of shape (grid_size, grid_size)
-    average_bandwidth: np.array of shape (grid_size, grid_size)
-    '''
-
-    # Get size of grid in x and y direction
-    grid_size_x = len(grid_x)
-    grid_size_y = len(grid_y)
-
-    # Initialize the histograms
-    particle_count = np.zeros((grid_size_x, grid_size_y), dtype=np.int32)
-    total_weight = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
-    cell_bandwidth = np.zeros((grid_size_x, grid_size_y), dtype=np.float64)
-    
-    # Normalize the particle positions to the grid
-    grid_x0 = grid_x[0]
-    grid_y0 = grid_y[0]
-    grid_x1 = grid_x[1]
-    grid_y1 = grid_y[1]
-    x_pos = (x_pos - grid_x0) / (grid_x1 - grid_x0)
-    y_pos = (y_pos - grid_y0) / (grid_y1 - grid_y0)
-    
-    # Filter out NaN values
-    valid_mask = ~np.isnan(x_pos) & ~np.isnan(y_pos)
-    x_pos = x_pos[valid_mask]
-    y_pos = y_pos[valid_mask]
-    weights = weights[valid_mask]
-    bandwidths = bandwidths[valid_mask]
-    
-    # Convert positions to integer grid indices
-    x_indices = x_pos.astype(np.int32)
-    y_indices = y_pos.astype(np.int32)
-    
-    # Boundary check
-    valid_mask = (x_indices >= 0) & (x_indices < grid_size_x) & (y_indices >= 0) & (y_indices < grid_size_y)
-    x_indices = x_indices[valid_mask]
-    y_indices = y_indices[valid_mask]
-    weights = weights[valid_mask]
-    bandwidths = bandwidths[valid_mask]
-    
-    # Accumulate weights and counts
-    np.add.at(total_weight, (x_indices, y_indices), weights) #This is just the mass in each cell
-    np.add.at(particle_count, (x_indices, y_indices), 1)
-    np.add.at(cell_bandwidth, (x_indices, y_indices), bandwidths * weights)
-
-    cell_bandwidth = np.divide(cell_bandwidth, total_weight, out=np.zeros_like(cell_bandwidth), where=total_weight!=0)
-
-    return total_weight, particle_count, cell_bandwidth
-
-#############################################################################################################
-
-def generate_gaussian_kernels(num_kernels, ratio, stretch=1):
-    """
-    Generates Gaussian kernels and their bandwidths. The function generates a kernel with support
-    equal to the bandwidth multiplied by the ratio and the ratio sets the "resolution" of the 
-    gaussian bandwidth family, i.e. ratio = 1/3 means that one kernel will be created for 0.33, 0.66, 1.0 etc.
-    The kernels are stretched in the x-direction by the stretch factor.
-
-    Parameters:
-    num_kernels (int): The number of kernels to generate.
-    ratio (float): The ratio between the kernel bandwidth and integration support.
-    stretch (float): The stretch factor of the kernels. Defined as the ratio between the bandwidth in the x and y directions.
-
-    Returns:
-    gaussian_kernels (list): List of Gaussian kernels.
-    bandwidths_h (np.array): Array of bandwidths associated with each kernel.
-    kernel_origin (list): List of kernel origins.
-    """
-
-    gaussian_kernels = [np.array([[1]])]
-    bandwidths_h = np.zeros(num_kernels)
-    #kernel_origin = [np.array([0, 0])]
-
-    for i in range(1, num_kernels):
-        a = np.arange(-i, i + 1, 1).reshape(-1, 1)
-        b = np.arange(-i, i + 1, 1).reshape(1, -1)
-        h = (i * ratio) #+ ratio * len(a) #multiply with 2 here, since it goes in all directions (i.e. the 11 kernel is 22 wide etc.). 
-        #impose stretch and calculate the kernel
-        h_a = h*stretch
-        h_b = h
-        kernel_matrix = ((1 / (2 * np.pi * h_a * h_b)) * np.exp(-0.5 * ((a / h_a) ** 2 + (b / h_b) ** 2)))
-        #append the kernel matrix and normalize (to make sure the sum of the kernel is 1)
-        gaussian_kernels.append(kernel_matrix / np.sum(kernel_matrix))
-        bandwidths_h[i] = h
-        #kernel_origin.append(np.array([0, 0]))
-
-    return gaussian_kernels, bandwidths_h#, kernel_origin
-
-#############################################################################################################
-
-
-@jit(nopython=True, parallel=True)
-def _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths, kernel_bandwidths, 
-                    gaussian_kernels, illegal_cells, gridsize_x, gridsize_y):
-    
-    """
-    Project kernel density estimation onto a 2D grid with optimized memory layout and Numba acceleration.
-    Handles illegal/blocked cells by redistributing their density contribution to surrounding legal cells.
-    Uses pre-computed Gaussian kernels for efficiency and variable bandwidth selection based on pilot estimate.
-    
-    Parameters
-    ----------
-    grid_x : array-like
-        X-coordinates of the grid points
-    grid_y : array-like
-        Y-coordinates of the grid points
-    kde_pilot : ndarray
-        Pilot kernel density estimate on the grid
-    gaussian_kernels : list of ndarrays
-        Pre-computed Gaussian kernels for different bandwidths
-    kernel_bandwidths : ndarray
-        Bandwidths corresponding to pre-computed kernels
-    cell_bandwidths : ndarray
-        Bandwidth values for each cell in the grid
-    illegal_cells : ndarray, optional
-        Boolean mask of illegal/blocked cells (True = blocked)
-        
-    Returns
-    -------
-    ndarray
-        Updated kernel density estimate with illegal cell handling
-        
-    Notes
-    -----
-    - Uses contiguous memory layout for performance
-    - Handles illegal cells by redistributing their weights
-    - Optimized with Numba for parallel processing
-    - Only processes non-zero pilot KDE values
-    - Kernel selection based on closest available bandwidth
-    - Memory efficient by processing only required grid cells
-    """
-    
-    n_u = np.zeros((gridsize_x, gridsize_y))
-    
-    for idx in prange(len(non_zero_indices)):
-        i, j = non_zero_indices[idx]
-        
-        # Get kernel index and kernel
-        kernel_index = np.argmin(np.abs(kernel_bandwidths - cell_bandwidths[i, j]))
-        kernel = gaussian_kernels[kernel_index].copy()  # Need copy for numba
-        kernel_size = len(kernel) // 2
-        
-        # Window boundaries
-        i_min = max(i - kernel_size, 0)
-        i_max = min(i + kernel_size + 1, gridsize_x)
-        j_min = max(j - kernel_size, 0)
-        j_max = min(j + kernel_size + 1, gridsize_y)
-        
-        # Handle illegal cells
-        illegal_window = illegal_cells.copy()[i_min:i_max, j_min:j_max]
-
-        # ## Find blocked cells... ## #
-
-        # Define adaptation grid
-        x0, y0 = i, j
-        xi = np.arange(i_min, i_max)
-        yj = np.arange(j_min, j_max)
-        
-        legal_cells = ~illegal_cells.copy()
-        illegal_sum = 0
-
-        if np.any(illegal_window):# and illegal_sum > 0:
-            shadowed_cells = identify_shadowed_cells(x0, y0, xi, yj, legal_cells)
-            #print(shadowed_cells)
-            
-            for cell_idx in range(len(shadowed_cells)):
-                shadow_i = shadowed_cells[cell_idx][0] - i_min #convert to adaptation grid
-                shadow_j = shadowed_cells[cell_idx][1] - j_min
-                #print(shadow_i, shadow_j)
-                if (0 <= shadow_i < illegal_window.shape[0] and 
-                    0 <= shadow_j < illegal_window.shape[1]):
-                    illegal_window[shadow_i, shadow_j] = True
-                    illegal_sum += kde_pilot[i,j]*kernel[shadow_i, shadow_j]                       
-                    kernel[shadow_i, shadow_j] = 0 #setting the kernel to zero in the shadowed cells
-
-        weighted_kernel = kernel * (kde_pilot[i,j] + illegal_sum) #adding the shadowed cell weight to the non-zero cells
-        #else:
-        #    weighted_kernel = kernel * kde_pilot[i,j]
-
-        # Add contribution
-        n_u[i_min:i_max, j_min:j_max] += weighted_kernel[
-            max(0, kernel_size - i):kernel_size + min(gridsize_x - i, kernel_size + 1),
-            max(0, kernel_size - j):kernel_size + min(gridsize_y - j, kernel_size + 1)
-        ]
-    
-    return n_u
-
-def grid_proj_kde(grid_x, 
-                  grid_y, 
-                  kde_pilot, 
-                  gaussian_kernels, 
-                  kernel_bandwidths, cell_bandwidths, illegal_cells=None):
-    """
-    Project kernel density estimation onto a 2D grid with optimized memory layout and Numba acceleration.
-    
-    Parameters
-    ----------
-    grid_x : array-like
-        X-coordinates of the grid points
-    grid_y : array-like
-        Y-coordinates of the grid points
-    kde_pilot : ndarray
-        Pilot kernel density estimate on the grid
-    gaussian_kernels : list of ndarrays
-        Pre-computed Gaussian kernels for different bandwidths
-    kernel_bandwidths : ndarray
-        Bandwidths corresponding to pre-computed kernels
-    cell_bandwidths : ndarray
-        Bandwidth values for each cell in the grid
-    illegal_cells : ndarray, optional
-        Boolean mask of illegal/blocked cells (True = blocked)
-        
-    Returns
-    -------
-    ndarray
-        Updated kernel density estimate with illegal cell handling
-        
-    Notes
-    -----
-    - Uses contiguous memory layout for performance
-    - Handles illegal cells by redistributing their weights
-    - Optimized with Numba for parallel processing
-    - Only processes non-zero pilot KDE values
-    """
-    
-    # Initialize illegal cells if None
-    if illegal_cells is None:
-        illegal_cells = np.zeros((len(grid_x), len(grid_y)), dtype=np.bool_)
-    
-    # Get grid sizes
-    gridsize_x, gridsize_y = len(grid_x), len(grid_y)
-    
-    # Convert gaussian_kernels to homogeneous float64 arrays
-    gaussian_kernels = [np.ascontiguousarray(kernel, dtype=np.float64) for kernel in gaussian_kernels]
-    
-    # Pre-compute non-zero indices
-    non_zero_indices = np.array(np.where(kde_pilot > 0)).T
-    
-    # Convert inputs to contiguous arrays with consistent dtypes
-    kde_pilot = np.ascontiguousarray(kde_pilot, dtype=np.float64)
-    cell_bandwidths = np.ascontiguousarray(cell_bandwidths, dtype=np.float64)
-    kernel_bandwidths = np.ascontiguousarray(kernel_bandwidths, dtype=np.float64)
-    illegal_cells = np.ascontiguousarray(illegal_cells, dtype=np.bool_)
-    
-    # Process kernels using numba-optimized function
-    n_u = _process_kernels(non_zero_indices, kde_pilot, cell_bandwidths,
-                          kernel_bandwidths, gaussian_kernels, illegal_cells,
-                          gridsize_x, gridsize_y)
-    
-    return n_u
 
 #############################################################################################################
 
@@ -1055,226 +790,6 @@ def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
         pickle.dump([ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix], f)
     return None
 
-@jit(nopython=True)
-def histogram_std(binned_data, effective_samples=None, bin_size=1):
-    '''Calculate the simple variance of the binned data
-    using normal Bessel correction for unweighted samples adding Sheppards correction for weighted samples
-    calculates standard deviation for weigthed data assuming reliability weights and 
-    applying Bessels correction accordingly. Checks this automatically by comparing the sum of the binned data
-    with the effective samples.
-
-    Input:
-    binned_data: np.array
-        The binned data
-    effective_samples: float
-        The number of effective samples
-    bin_size: float
-        The size of the bins
-
-    Output:
-    float: The standard deviation of the binned data
-    '''
-
-    # Check that there's data in the binned data
-    if np.sum(binned_data) == 0:
-        return 0
-    #Calculate the effective number of particles using Kish's formula. (for weighted data)
-    if effective_samples == None:
-        effective_samples = np.sum(binned_data)**2/np.sum(binned_data**2) #This is Kish's formula
-    # Ensure effective_samples is larger than 1
-    effective_samples = max(effective_samples, 1.00001)
-
-    grid_size = len(binned_data)
-    X = np.arange(0, grid_size * bin_size, bin_size)
-    Y = np.arange(0, grid_size * bin_size, bin_size)
-    
-    sum_data = np.sum(binned_data)
-    mu_x = np.sum(binned_data * X) / sum_data
-    mu_y = np.sum(binned_data * Y) / sum_data
-    
-    #Sheppards correction term
-    sheppard = (1/12)*bin_size*bin_size #weighted data
-
-    #variance = (np.sum(binned_data*((X-mu_x)**2+(Y-mu_y)**2))/(sum_data-1))-2/12*bin_size*bin_size
-
-    #Do Bessel correction for weighted binned data using Kish's formula and add Sheppards correction
-    variance = (np.sum(binned_data * ((X - mu_x)**2 + (Y - mu_y)**2)) / sum_data) * \
-            (1/(1 - 1/effective_samples)) - sheppard #Sheppards correction
-    #sheppards: https://towardsdatascience.com/on-the-statistical-analysis-of-rounded-or-binned-data-e24147a12fa0
- 
-    return np.sqrt(variance)
-
-@jit(nopython=True)
-def calculate_autocorrelation(data, bin_size=1):
-    """
-    Calculate spatial autocorrelation along rows and columns of 2D data.
-
-    Computes the autocorrelation function separately for rows and columns of a 2D array,
-    using a vectorized implementation optimized with Numba. The autocorrelation is normalized
-    by the number of points and includes protection against zero division.
-
-    Parameters
-    ----------
-    data : ndarray
-        2D input array for which to calculate autocorrelation
-
-    Returns
-    -------
-    autocorr_rows : ndarray
-        1D array containing autocorrelation values for row-wise shifts
-    autocorr_cols : ndarray
-        1D array containing autocorrelation values for column-wise shifts
-
-    Notes
-    -----
-    - Uses Numba JIT compilation
-    - Handles edge cases (small arrays, zero values)
-    - Maximum lag is determined by smallest dimension
-    - Includes epsilon protection against zero division
-    - Returns single zero value arrays if input is too small
-    """
-    num_rows, num_cols = data.shape
-    max_lag = min(num_rows, num_cols) - 1
-
-    # Ensure we have enough data points
-    if num_rows < 2 or num_cols < 2:
-        return np.array([0.0]), np.array([0.0])
-    
-    autocorr_rows = np.zeros(max_lag)
-    autocorr_cols = np.zeros(max_lag)
-    
-    # Precompute denominators
-    #row_denominators = 1.0 / np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
-    #col_denominators = 1.0 / np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
-
-    # Protect against zero division in denominators
-    row_range = np.arange(num_cols - 1, num_cols - max_lag - 1, -1)
-    col_range = np.arange(num_rows - 1, num_rows - max_lag - 1, -1)
-    
-    # Add small epsilon to prevent division by zero
-    row_denominators = 1.0 / np.maximum(row_range, 1e-10)
-    col_denominators = 1.0 / np.maximum(col_range, 1e-10)
-    
-    # Vectorized autocorrelation calculation
-    for k in range(1, max_lag + 1):
-        row_sum = 0.0
-        col_sum = 0.0
-        
-        for i in range(num_rows):
-            row_sum += np.sum(data[i, :num_cols-k] * data[i, k:])
-        for j in range(num_cols):
-            col_sum += np.sum(data[:num_rows-k, j] * data[k:, j])
-            
-        autocorr_rows[k-1] = row_sum * row_denominators[k-1] / max(num_rows, 1e-10)
-        autocorr_cols[k-1] = col_sum * col_denominators[k-1] / max(num_cols, 1e-10)
-    
-    return autocorr_rows, autocorr_cols
-
-def get_integral_length_scale(histogram_prebinned, window_size):
-    '''
-    Processes the histogram_prebinned data to calculate the integral length scale
-    for all non-zero elements using a specified window size.
-    
-    Input:
-    histogram_prebinned: 2D matrix with histogram data
-    window_size: Size of the window to use for the calculations
-    
-    Output:
-    integral_length_scale_matrix: 2D matrix with the integral length scale values
-    '''
-    rows, cols = histogram_prebinned.shape
-    integral_length_scale_matrix = np.zeros_like(histogram_prebinned, dtype=float)
-
-    #find all non-zero indices in histogram_prebinned
-    non_zero_indices = np.argwhere(histogram_prebinned > 0)
-
-    #pad histogram_prebinned to avoid edge effects
-    histogram_prebinned_padded = np.pad(histogram_prebinned, window_size // 2, mode='reflect')
-
-    for idx in non_zero_indices:
-        i, j = idx
-        window = histogram_prebinned_padded[i:i + window_size, j:j + window_size]
-        if np.any(window != 0):
-            autocorr_rows, autocorr_cols = calculate_autocorrelation(window)
-            autocorr = (autocorr_rows + autocorr_cols) / 2
-            integral_length_scale = np.sum(autocorr) / autocorr[0]
-            integral_length_scale_matrix[i, j] = integral_length_scale
-
-    return integral_length_scale_matrix
-
-@jit(nopython=True)
-def bresenham(x0, y0, x1, y1): 
-    """
-    Bresenham's Line Algorithm to generate points between (x0, y0) and (x1, y1)
-
-    Intput:
-    x0: x-coordinate of the starting point
-    y0: y-coordinate of the starting point
-    x1: x-coordinate of the ending point
-    y1: y-coordinate of the ending point
-
-    Output:
-    points: List of points between (x0, y0) and (x1, y1)
-    """
-    points = []
-    dx = abs(x1 - x0)
-    dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1 # Step direction for x
-    sy = 1 if y0 < y1 else -1 # Step direction for y
-    err = dx - dy
-
-    while True:
-        points.append((x0, y0))
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = err * 2
-        if e2 > -dy:
-            err -= dy
-            x0 += sx
-        if e2 < dx:
-            err += dx
-            y0 += sy
-
-    return points
-
-@jit(nopython=True)
-def identify_shadowed_cells(x0, y0, xi, yj, legal_grid):
-    """
-    Identify shadowed cells by tracing from edges inward.
-    Cells start as potentially shadowed and are marked free 
-    if they have line of sight to kernel center.
-    """
-    grid_size = legal_grid.shape[0]
-    # Start with all cells potentially shadowed
-    shadowed = np.ones((grid_size, grid_size), dtype=np.bool_)
-    
-    # Trace from edges
-    for edge_x in [0, grid_size-1]:
-        for y in range(grid_size):
-            los_cells = bresenham(x0,y0,edge_x, y)
-            # Mark cells as free until hitting illegal cell
-            for cell in los_cells:
-                if not legal_grid[cell[0], cell[1]]:
-                    break
-                shadowed[cell[0], cell[1]] = False
-                
-    for edge_y in [0, grid_size-1]:
-        for x in range(grid_size):
-            los_cells = bresenham(x0, y0, x, edge_y)
-            for cell in los_cells:
-                if not legal_grid[cell[0], cell[1]]:
-                    break
-                shadowed[cell[0], cell[1]] = False
-    
-    # Convert to list format
-    shadowed_cells = []
-    for i in range(len(xi)):
-        for j in range(len(yj)):
-            if shadowed[xi[i], yj[j]]:
-                shadowed_cells.append((xi[i], yj[j]))
-                
-    return shadowed_cells
-
 def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
     """
     Process bathymetry data and return bathymetry values with corresponding lon/lat grids.
@@ -1362,133 +877,6 @@ def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
     except Exception as e:
         raise RuntimeError(f"Error processing bathymetry data: {str(e)}")
 
-@jit(nopython=True, parallel=True)
-def compute_adaptive_bandwidths(preGRID_active_padded, preGRID_active_counts_padded,
-                              window_size, pad_size, stats_threshold,
-                              silverman_coeff, silverman_exponent, dxy_grid):
-    """
-    Compute adaptive bandwidths for all windows with integrated statistics processing
-    
-    Parameters:
-    -----------
-    preGRID_active_padded : np.ndarray
-        Padded grid of active particles
-    preGRID_active_counts_padded : np.ndarray
-        Padded grid of particle counts
-    window_size : int
-        Size of the processing window
-    pad_size : int
-        Size of padding around the grid
-    stats_threshold : float
-        Threshold for statistical calculations
-    silverman_coeff : float
-        Coefficient for Silverman's rule
-    silverman_exponent : float
-        Exponent for Silverman's rule
-    dxy_grid : float
-        Grid spacing
-    """
-        
-    # Type and shape checking
-    shape = preGRID_active_padded.shape
-    std_estimate = np.zeros((shape[0]-2*pad_size, shape[1]-2*pad_size), dtype=np.float64)
-    N_eff = np.zeros_like(std_estimate)
-    h_matrix_adaptive = np.zeros_like(std_estimate)
-    integral_length_scale_matrix = np.zeros_like(std_estimate)
-    
-    # Main processing loop
-    for row in prange(pad_size, shape[0]-pad_size):
-        for col in range(pad_size, shape[1]-pad_size):
-            if preGRID_active_counts_padded[row, col] > 0:
-                # Extract data subset
-                data_subset = preGRID_active_padded[
-                    row-pad_size:row+pad_size+1,
-                    col-pad_size:col+pad_size+1
-                ]
-                subset_counts = preGRID_active_counts_padded[
-                    row-pad_size:row+pad_size+1,
-                    col-pad_size:col+pad_size+1
-                ]
-                
-                # Skip if center cell is empty
-                if data_subset[pad_size,pad_size] == 0:
-                    continue
-                
-                # Protect against zero division in normalization
-                total_sum = np.sum(data_subset)
-                if total_sum > 0:
-                    data_subset = (data_subset/total_sum)*subset_counts
-                else:
-                    continue
-                
-                row_idx = row - pad_size
-                col_idx = col - pad_size
-                
-                # Process statistics with zero protection
-                total_counts = np.sum(subset_counts)
-                if total_counts < stats_threshold:
-                    std = window_size/2
-                    n_eff = np.sum(data_subset)/max(window_size, 1e-10)
-                    integral_length_scale = window_size
-                else:
-                    std = max(histogram_std(data_subset, None, 1), 1e-10)
-                    
-                    autocorr_rows, autocorr_cols = calculate_autocorrelation(data_subset)
-                    autocorr = (autocorr_rows + autocorr_cols) / 2
-                    
-                    if autocorr.any():
-                        non_zero_idx = np.where(autocorr != 0)[0]
-                        if len(non_zero_idx) > 0:
-                            denominator = autocorr[non_zero_idx[0]]
-                            if denominator < 1e-10:
-                                denominator = 1e-10
-                            integral_length_scale = np.sum(autocorr) / denominator
-                        else:
-                            integral_length_scale = 1e-10
-                    else:
-                        integral_length_scale = 1e-10
-                    
-                    denominator = integral_length_scale
-                    if denominator < 1e-10:
-                        denominator = 1e-10
-                    n_eff = np.sum(data_subset) / denominator
-                
-                # Calculate bandwidth with protection
-                h = np.sqrt((silverman_coeff * max(n_eff, 1e-10)**(-silverman_exponent)) * std) * dxy_grid #Square root because of 2D grid??
-                
-                # Store results
-                std_estimate[row_idx, col_idx] = std
-                N_eff[row_idx, col_idx] = n_eff
-                integral_length_scale_matrix[row_idx, col_idx] = integral_length_scale
-                h_matrix_adaptive[row_idx, col_idx] = h
-    
-    return std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive
-
-
-def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_z):
-    """Find nearest grid cell for a given coordinate"""
-    
-    # Handle depth first using digitize
-    depth_idx = np.digitize(depth_cwc, bin_z) - 1
-    
-    # Reshape mesh coordinates into (n_points, 2) array
-    points = np.column_stack((lon_mesh.flatten(), lat_mesh.flatten()))
-    
-    # Build KDTree
-    tree = cKDTree(points)
-    
-    # Find nearest neighbor
-    distance, index = tree.query([lon_cwc, lat_cwc])
-    
-    # Convert flat index back to 2D indices
-    lat_idx = index // lon_mesh.shape[1]
-    lon_idx = index % lon_mesh.shape[1]
-    
-    # Optional: Print distance to nearest cell
-    print(f"Distance to nearest cell: {distance:.2f} degrees")
-    
-    return lon_idx, lat_idx, depth_idx
-
 
 #################################
 ########## INITIATION ###########
@@ -1517,7 +905,9 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0 
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.nc'
 
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
@@ -1622,7 +1012,7 @@ else:
 ###### GENERATE GAUSSIAN KERNELS ######
 print('Generating gaussian kernels...')
 #generate gaussian kernels
-gaussian_kernels, gaussian_bandwidths_h = generate_gaussian_kernels(20, 1/3, stretch=1)
+gaussian_kernels, gaussian_bandwidths_h = akd.generate_gaussian_kernels(20, 1/3, stretch=1)
 #Get the bandwidth in real distances (this is easy since the grid is uniform)
 gaussian_bandwidths_h = gaussian_bandwidths_h*(bin_x[1]-bin_x[0])
 print('done.')
@@ -2339,14 +1729,14 @@ if run_all == True:
                 #Time the kde step
                 start_time = time.time()
                 #pre-kernel density estimate using the histogram estimator
-                preGRID_active,preGRID_active_counts,preGRID_active_bw = histogram_estimator(parts_active_z[0],
+                preGRID_active,preGRID_active_counts,preGRID_active_bw = akd.histogram_estimator(parts_active_z[0],
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
                                                     parts_active_z[5],
                                                     parts_active_z[4])
 
-                preGRID_vert,preGRID_vert_counts,preGRID_vert_bw = histogram_estimator(parts_active_z[0],
+                preGRID_vert,preGRID_vert_counts,preGRID_vert_bw = akd.histogram_estimator(parts_active_z[0],
                                                     parts_active_z[1],
                                                     bin_x,
                                                     bin_y,
@@ -2368,7 +1758,7 @@ if run_all == True:
                 #######################################
 
                 if h_adaptive == 'Time_dep':
-                    GRID_active = grid_proj_kde(bin_x,
+                    GRID_active = akd.grid_proj_kde(bin_x,
                                                 bin_y,
                                                 preGRID_active,
                                                 gaussian_kernels,
@@ -2389,7 +1779,7 @@ if run_all == True:
                     start_time = time.time()
                     
                     # Compute integral length scale
-                    autocorr_rows, autocorr_cols = calculate_autocorrelation(preGRID_active_counts)
+                    autocorr_rows, autocorr_cols = akd.calculate_autocorrelation(preGRID_active_counts)
                     autocorr = (autocorr_rows + autocorr_cols) / 2
                     
                     if autocorr.any() > 0:
@@ -2410,10 +1800,9 @@ if run_all == True:
                     preGRID_active_counts_padded = np.pad(preGRID_active_counts, pad_size, mode='reflect')
                     
                     # Compute statistics and bandwidths
-                    std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive = compute_adaptive_bandwidths(
+                    std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive = akd.compute_adaptive_bandwidths(
                         preGRID_active_padded, preGRID_active_counts_padded,
-                        window_size, pad_size, (window_size**2)/2,
-                        silverman_coeff, silverman_exponent, dxy_grid
+                        window_size, pad_size, (window_size**2)/2, grid_cell_size=dxy_grid
                     )
 
                     # Get summary statistics if the matrix is not empty
@@ -2431,7 +1820,7 @@ if run_all == True:
                     h_estimate_vector[kkk] = time_to_estimate_h
 
                     #Do the KDE using the grid_proj_kde function
-                    GRID_active = grid_proj_kde(bin_x,
+                    GRID_active = akd.grid_proj_kde(bin_x,
                                                 bin_y,
                                                 preGRID_active,
                                                 gaussian_kernels,
@@ -2439,7 +1828,7 @@ if run_all == True:
                                                 h_matrix_adaptive, #because it's symmetric
                                                 illegal_cells = illegal_cells[:,:,i])
                     
-                    GRID_active_verttrans = grid_proj_kde(bin_x,
+                    GRID_active_verttrans = akd.grid_proj_kde(bin_x,
                                                 bin_y,
                                                 preGRID_vert,
                                                 gaussian_kernels,
@@ -3063,7 +2452,7 @@ lat_cwc = 69.5
 depth_cwc = 90
 
 # Find the correct cell
-lon_cwc_idx, lat_cwc_idx, depth_cwc_idx = find_nearest_grid_cell(
+lon_cwc_idx, lat_cwc_idx, depth_cwc_idx = akd.find_nearest_grid_cell(
     lon_cwc=lon_cwc ,
     lat_cwc=lat_cwc, 
     depth_cwc=depth_cwc,
@@ -3186,7 +2575,7 @@ x_end, y_end = utm.from_latlon(lat_end, lon_end,force_zone_number=33)[:2]
 
 #Normalize the modeling UTM grid such that the grid cell length is 1
 
-lon_start_idx, lat_start_idx, depth_start_idx = find_nearest_grid_cell(
+lon_start_idx, lat_start_idx, depth_start_idx = akd.find_nearest_grid_cell(
     lon_cwc=lon_start ,
     lat_cwc=lat_start, 
     depth_cwc=0,
@@ -3195,7 +2584,7 @@ lon_start_idx, lat_start_idx, depth_start_idx = find_nearest_grid_cell(
     bin_z=bin_z
 )
 
-lon_end_idx, lat_end_idx, depth_end_idx = find_nearest_grid_cell(
+lon_end_idx, lat_end_idx, depth_end_idx = akd.find_nearest_grid_cell(
     lon_cwc=lon_end ,
     lat_cwc=lat_end, 
     depth_cwc=0,
@@ -3205,7 +2594,7 @@ lon_end_idx, lat_end_idx, depth_end_idx = find_nearest_grid_cell(
 )
 
 # Use Bresenham's line algorithm to find all cells along the cross section
-gridlist = bresenham(lon_start_idx, lat_start_idx, lon_end_idx, lat_end_idx)
+gridlist = akd.bresenham(lon_start_idx, lat_start_idx, lon_end_idx, lat_end_idx)
 gridlist = np.array(gridlist)
 
 #get the lon/lat coordinates of the cross section using lon_mesh and lat_mesh
@@ -3377,9 +2766,6 @@ for i in range(particle_lifespan_matrix.shape[0]):
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\OpenDrift\\particle_lifespan_matrix_30s_fb02.pickle', 'wb') as f:
     pickle.dump(particle_lifespan_matrix, f)
 
-
-
-from scipy.ndimage import gaussian_filter1d
 #Create depth vector
 depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
 

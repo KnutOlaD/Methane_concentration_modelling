@@ -1802,7 +1802,7 @@ if run_all == True:
                     # Compute statistics and bandwidths
                     std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive = akd.compute_adaptive_bandwidths(
                         preGRID_active_padded, preGRID_active_counts_padded,
-                        window_size, pad_size, (window_size**2)/2, grid_cell_size=dxy_grid
+                        window_size, (window_size**2)/2, grid_cell_size=dxy_grid
                     )
 
                     # Get summary statistics if the matrix is not empty

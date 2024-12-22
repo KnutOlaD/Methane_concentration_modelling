@@ -63,6 +63,10 @@ use_all_depth_layers = False
 ### CONSTANTS ###
 #max kernel bandwidth
 max_ker_bw = 7000 #Used to be 8000
+#max adaptation window size
+max_adaptation_window = 5000
+#set resolution for the gaussian kernels (how many steps in bandwdith as a factor of the cell size)
+gaussian_kernel_resolution = 0.5 # 2 kernel bandwitdhs per cell size
 #atmospheric background concentration
 #atmospheric_conc = ((44.64*2)/1000000) #mol/m3 #1911.8 ± 0.6 ppb #44.64 #From Helge
 #atmospheric_conc = (3.3e-09)*1000 #mol/m3 #ASSUMING SATURATION CONCENTRATION EVERYWHERE. 
@@ -529,36 +533,17 @@ def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
         raise RuntimeError(f"Error processing bathymetry data: {str(e)}")
 
 
-#################################
-########## INITIATION ###########
-#################################
+# =============================================================================
+# INITIATION
+# =============================================================================
 
 #if __name__ == '__main__':
 
-#Just load the grid object to make it faster
-#with open('grid_object.pickle', 'rb') as f:
-#   GRID = pickle.load(f)
+# ---------------------------------------------------------------------
+# LOAD AND USE FIRST TIMESTEP TO DEFINE THE GRID AND PARTICLE VARIABLES
+# ---------------------------------------------------------------------
 
-# With vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
-# Without vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
-# Z-level dataset with vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited_vdiff.nc'
-# Z-level dataset without vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited.nc'
-# Sigma-level dataset with vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'
-# Sigma-level dataset without vertical diffusion
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'
-# Sigma-level dataset with vertical diffusion in the whole water column
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
-# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
-# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
-# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0 
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.nc'
+#... or define grid manually... 
 
 ODdata = nc.Dataset(datapath, 'r', mmap=True)
 #number of particles
@@ -582,10 +567,10 @@ particles['z'][:,1] = ODdata.variables['z'][:, 1].copy()
 particles['time'][1] = ODdata.variables['time'][1].copy()
 #add utm
 particles = add_utm(particles)
-    
-#unmasked_first_timestep_lon = first_timestep_lon[~first_timestep_lon.mask]
-#set limits for grid manually since we dont know how this will evolv
-#loop over all timesteps to check the limits of the grid or define boundaries manually
+
+
+
+
 if manual_border == True:
     minlon = 12.5
     maxlon = 21
@@ -622,7 +607,12 @@ minUTMxmaxUTMy = utm.from_latlon(minlat, maxlon, force_zone_number=zone_number, 
 maxUTMxminUTMy = utm.from_latlon(maxlat, minlon, force_zone_number=zone_number, force_zone_letter='W')
 maxUTMxmaxUTMy = utm.from_latlon(maxlat, maxlon, force_zone_number=zone_number, force_zone_letter='W')
 
-###### SET UP GRIDS FOR THE MODEL ######
+
+# ---------------------------------------------------------------------
+# PREDEFINE VARIABLES AND CREATE GRID
+# ---------------------------------------------------------------------
+
+
 print('Creating the output grid...')
 #MODEELING OUTPUT GRID
 bin_x,bin_y,bin_z,bin_time = create_grid(np.ma.filled(np.array(particles['timefull']),np.nan),
@@ -655,21 +645,24 @@ bin_x_mesh,bin_y_mesh = np.meshgrid(bin_x,bin_y)
 lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh.T,bin_y_mesh.T,zone_number=33,zone_letter='W')
 
 #Create datetime vector from bin_time
-if run_test == True: 
-    timedatetime = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-else:
-    timedatetime = pd.to_datetime(bin_time,unit='s')
+timedatetime = pd.to_datetime(bin_time,unit='s')
 
-###### GENERATE GAUSSIAN KERNELS ######
+# ---------------------------------------------------------------------
+# GENERATE GAUSSIAN KERNELS
+# ---------------------------------------------------------------------
+
 print('Generating gaussian kernels...')
+#Calculate how many kernels we need to span from 0 to the maximum bandwidth
+num_gaussian_kernels = int(np.ceil(max_ker_bw/gaussian_kernel_resolution))
 #generate gaussian kernels
-gaussian_kernels, gaussian_bandwidths_h = akd.generate_gaussian_kernels(20, 1/2, stretch=1)
+gaussian_kernels, gaussian_bandwidths_h = akd.generate_gaussian_kernels(num_gaussian_kernels, gaussian_kernel_resolution, stretch=1)
 #Get the bandwidth in real distances (this is easy since the grid is uniform)
 gaussian_bandwidths_h = gaussian_bandwidths_h*(bin_x[1]-bin_x[0])
 print('done.')
-############################
-###### FIRST TIMESTEP ######
-############################
+
+# ---------------------------------------------------------------------
+# FIRST TIMESTEP 
+# ---------------------------------------------------------------------
 
 #Get the last timestep (to get the size of the thing)
 bin_time_number = np.digitize(particles['time'][0],bin_time)
@@ -685,16 +678,16 @@ bin_x_number = np.digitize((x.compressed()),bin_x)
 bin_y_number = np.digitize((x.compressed()),bin_y)
 bin_z_number = np.digitize((x.compressed()),bin_z)
 
-##################################
-### CALCULATE GRID CELL VOLUME ###
-##################################
+# ---------------------------------------------------------------------
+# CALCULATE GRID CELL VOLUME 
+# ---------------------------------------------------------------------
 
 grid_resolution = [dxy_grid,dxy_grid,dz_grid] #in meters
 V_grid = grid_resolution[0]*grid_resolution[1]*grid_resolution[2]
 
-###############################################
-### LOAD AND/OR FIT WIND AND SST FIELD DATA ###
-###############################################
+# ---------------------------------------------------------------------
+# LOAD AND/OR FIT WIND AND SST FIELD DATA ###
+# ---------------------------------------------------------------------
 
 if fit_wind_data == True:
     fit_wind_sst_data(bin_x,bin_y,bin_time) #This functino saves the wind and sst fields in a pickle file
@@ -702,9 +695,9 @@ if fit_wind_data == True:
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
     ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
 
-#########################################################
-######### CALCULATE GAS TRANSFER VELOCITY FIELDS ########
-#########################################################
+# ---------------------------------------------------------------------
+# CALCULATE GAS TRANSFER VELOCITY FIELDS 
+# ---------------------------------------------------------------------
 
 #interpolate nans in the wind field and sst field
 ws_interp = np.ma.filled(ws_interp,np.nan)
@@ -737,9 +730,9 @@ else:#load the GRID_gt_vel
     with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'rb') as f:
         GRID_gt_vel = pickle.load(f)
 
-##########################################################################################
-### ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT, BANDWIDTH, AGE, AND VERTICAL TRANSPORT ###
-##########################################################################################
+# ---------------------------------------------------------------------
+# ADD DICTIONARY ENTRIES FOR PARTICLE WEIGHT, BANDWIDTH, AGE, AND VERTICAL TRANSPORT 
+# ---------------------------------------------------------------------
 
 ### Weight ###
 particles['weight'] = np.ma.zeros(particles['z'].shape)
@@ -762,9 +755,9 @@ particles['z_transport'] = np.ma.zeros(particles['z'].shape)
 #add mask
 particles['z_transport'].mask = particles['lon'].mask
 
-###################################################
-###### ADD DICTIONARY ENTRY FOR PARTICLE AGE ######
-###################################################
+# ---------------------------------------------------------------------
+# ADD DICTIONARY ENTRY FOR PARTICLE AGE 
+# ---------------------------------------------------------------------
 
 initial_age = 0
 particles['age'] = np.ma.zeros(particles['lon'].shape)
@@ -773,9 +766,9 @@ particles['age'].mask = particles['lon'].mask
 #and for total particles
 total_parts = np.zeros(len(bin_time))
 
-####################################################################################
-###### ADD VECTOR TO STORE INTEGRAL LENGTH SCALE AND OTHER STUFF OF THE FIELD ######
-####################################################################################
+# ---------------------------------------------------------------------
+# ADD VECTOR TO STORE INTEGRAL LENGTH SCALE AND OTHER STUFF OF THE FIELD
+# ---------------------------------------------------------------------
 
 integral_length_scale_full = np.zeros([len(bin_time),len(bin_z)])
 h_values_full = np.zeros([len(bin_time),len(bin_z)])
@@ -785,9 +778,9 @@ h_list = list()
 neff_list = list()
 std_list = list()
 
-######################################################################
-###### FIND ILLEGAL CELLS IN THE GRID USING THE BATHYMETRY DATA ######
-######################################################################
+# ---------------------------------------------------------------------
+# FIND ILLEGAL CELLS IN THE GRID USING THE BATHYMETRY DATA 
+# ---------------------------------------------------------------------
 print('Getting bathymetry and illegal cells')
 # Define projections and transformer
 polar_stereo_proj = Proj(proj="stere", lat_ts=75, lat_0=90, lon_0=-45, datum="WGS84")
@@ -842,17 +835,17 @@ if plotting == True:
 
 print('done.')
 
-#################################################################################
-########### CREATE MAP FOR PLOTTING OF COASTLINE WHERE BATHYMETRY > 0 ###########
-#################################################################################
+# ---------------------------------------------------------------------
+# CREATE MAP FOR PLOTTING OF COASTLINE WHERE BATHYMETRY > 0 
+# ---------------------------------------------------------------------
 
 # Create a map for plotting the coastline where bathymetry > 0
 coastline_map = np.zeros_like(interpolated_bathymetry)
 coastline_map[interpolated_bathymetry >= 0] = 1
 
-##################################################################################
-############## DEFINE MATRICES, VECTORS, ETC FOR THE MODELING LOOP ###############
-##################################################################################
+# ---------------------------------------------------------------------
+# DEFINE MATRICES, VECTORS, ETC FOR THE MODELING LOOP
+# ---------------------------------------------------------------------
 
 time_steps_full = len(ODdata.variables['time'])-50
 
@@ -902,16 +895,17 @@ particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
 
 lost_particles_due_to_nandepth = 0
 
-#############################################################################################
-################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
-#############################################################################################
+# =============================================================================
+# END INITIAL CONDITIONS 
+# =============================================================================
 
-#---------------------------------------------------#
+# =============================================================================
 #####################################################
 #####  MODEL THE CONCENTRATION AT EACH TIMESTEP #####
 ### AKA THIS IS WHERE THE ACTUAL MODELING HAPPENS ###
 #####################################################
-#---------------------------------------------------#
+# =============================================================================
+
 print('Starting to loop through all timesteps...')
 
 if run_all == True:
@@ -922,9 +916,9 @@ if run_all == True:
         start_time = time.time()        
         print(f"Time step {kkk}")
 
-        #------------------------------------------------------#
-        # LOADING PARTICLES INTO MEMORY (NOT MEMORY OPTIMIZED) #
-        #------------------------------------------------------#
+        # ------------------------------------------------------
+        # LOADING PARTICLES INTO MEMORY (NOT MEMORY OPTIMIZED) 
+        # ------------------------------------------------------
 
         if kkk==1:         
             ### Load all data into memory ###
@@ -968,9 +962,9 @@ if run_all == True:
                 print('Data saved to particles_all_data.h5')
                 # Load the data from the HDF5 file
 
-        #########################################################
-        ############### DATA LOADED INTO MEMORY #################
-        #########################################################
+        # ------------------------------------------------------
+        # LOAD PARTICLES INTO MEMORY 
+        # ------------------------------------------------------
         
         #-----------------------------#
         # START WITH THE CALCULATIONS #
@@ -1019,9 +1013,9 @@ if run_all == True:
         # Find active particles for later processing.. 
         active_particles = np.where(particles['z'][:,1].mask == False)[0]
 
-        #--------------------------------------------------------------------------------#
-        # Count mass that left due to particles dying of old age and redistribute weight #
-        #--------------------------------------------------------------------------------#
+        # --------------------------------------------------------------------------------
+        # Count mass that left due to particles dying of old age and redistribute weight 
+        # --------------------------------------------------------------------------------
 
         # set a trigger for this because this is quite slow
         if redistribute_lost_mass == True:
@@ -1084,9 +1078,9 @@ if run_all == True:
             particles_mass_died[kkk] = 0
             particle_mass_redistributed[kkk]=0
 
-        #------------------------------------------#
-        # DEACTIVATE PARTICLES OUTSIDE OF THE GRID #
-        #------------------------------------------#
+        # ------------------------------------------
+        # DEACTIVATE PARTICLES OUTSIDE OF THE GRID 
+        # ------------------------------------------
         #Boundaries.
         max_x = np.max(bin_x)
         min_x = np.min(bin_x)
@@ -1158,11 +1152,11 @@ if run_all == True:
                 particles[field][particles_that_left, 1].mask = True
         
         print(f"{particles_mass_out[kkk]} moles lost due to {len(outside_leaving)} particles leaving.")
-        print(f"{particles_mass_back[kkk]} moles gained due to {len(outside_coming_in)} particles re-entering.")
+        #print(f"{particles_mass_back[kkk]} moles gained due to {len(outside_coming_in)} particles re-entering.")
 
-        #--------------------------------------#
-        #MODIFY PARTICLE WEIGHTS AND BANDWIDTHS#
-        #--------------------------------------#
+        # --------------------------------------
+        # MODIFY PARTICLE WEIGHTS AND BANDWIDTHS
+        # --------------------------------------
 
         #Unmask particles that were masked in the previous timestep and do some binning
         bin_z_number = np.digitize(
@@ -1221,7 +1215,7 @@ if run_all == True:
             ##### ADRESS PROBLEMATIC VALUES #####
             particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
             #add the bandwidth of the particle to the current timestep
-            if np.isnan(age_constant) == False
+            if np.isnan(age_constant) == False:
                 particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
             #limit the bandwidth to a maximum value
             particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
@@ -1231,7 +1225,7 @@ if run_all == True:
         particles['age'][:,0] = particles['age'][:,1]
 
         # -------------------------------------------------------------------------------------- #
-        ########## STORE STATS OF PARTICLES TO GET INFO ABOUT HOW METHANE IS DISTRIBUTED #########
+        # STORE STATS OF PARTICLES TO GET INFO ABOUT HOW METHANE IS DISTRIBUTED 
         # ---------------------------------------------------------------------------------------#
 
         # First get only unmasked active particles
@@ -1263,9 +1257,9 @@ if run_all == True:
                     (ages[surface_mask], depths[surface_mask]),
                     particleweighing[surface_indices] * total_atm_flux[kkk-1])        
 
-        #--------------------------------------------------#
-        #FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID#
-        #--------------------------------------------------#
+        # --------------------------------------------------
+        # FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID
+        # --------------------------------------------------
         
         #.... And create a sorted matrix for all the active particles according to
         #which depth layer they are currently located in. 
@@ -1289,9 +1283,9 @@ if run_all == True:
         #keep track of number of particles
         total_parts[kkk] = len(parts_active[0])
 
-        #-----------------------------------#
-        #INITIATE FOR LOOP OVER DEPTH LAYERS#
-        #-----------------------------------#
+        # -----------------------------------
+        # INITIATE FOR LOOP OVER DEPTH LAYERS
+        # -----------------------------------
 
         #add one right hand side limit to change_indices
         change_indices = np.append(change_indices,len(bin_z_number))
@@ -1304,9 +1298,9 @@ if run_all == True:
 
         for i in range(0,len(change_indices)-1): #This essentially loops over all particles (does it???)
             
-            #-----------------------------------------------------------#
-            #DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER#
-            #-----------------------------------------------------------#
+            # -----------------------------------------------------------
+            # DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER
+            # -----------------------------------------------------------
 
             #Define GRID_active by creating a zero matrix of same size as the grid
             GRID_active = np.zeros((len(bin_x),len(bin_y)))
@@ -1320,9 +1314,9 @@ if run_all == True:
                             parts_active[5][change_indices[i]:change_indices[i+1]+1],
                             parts_active[6][change_indices[i]:change_indices[i+1]+1]]
 
-            #-----------------------------------------------------#
-            #CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER#
-            #-----------------------------------------------------#
+            # -----------------------------------------------------
+            # CALCULATE THE CONCENTRATION FIELD IN THE ACTIVE LAYER
+            # -----------------------------------------------------
 
             #Set any particle that has left the model domain to have zero weight and location
             #at the model boundary
@@ -1344,16 +1338,16 @@ if run_all == True:
             for jj in range(len(parts_active_z)):
                 parts_active_z[jj] = parts_active_z[jj][mask]
 
-            #-------------------------------------#
-            #CALCULATE THE KERNEL DENSITY ESTIMATE#
-            #-------------------------------------#
+            # -------------------------------------
+            # CALCULATE THE KERNEL DENSITY ESTIMATE
+            # -------------------------------------
 
             if (kde_all and i < 10) or i == 0:  # Perform KDE for first 10 layers or layer 0
                 #print('Doing kde for depth layer',i)
 
-                ###################
-                ### preGRIDding ###
-                ###################
+                # ------------------------------
+                # preGRIDding 
+                # ------------------------------
             
                 #Stop and go out of the if if there are no particles in the depth layer
                 if len(parts_active_z[0]) == 0:
@@ -1376,9 +1370,9 @@ if run_all == True:
                                                     parts_active_z[5],
                                                     parts_active_z[6])
                 
-                ###########################
-                ### Using no KDE at all ###
-                ###########################
+                # ------------------------------
+                # Using no KDE at all 
+                # ------------------------------
 
                 if h_adaptive == 'No_KDE':
                     GRID_active = preGRID_active
@@ -1386,9 +1380,9 @@ if run_all == True:
                     elapsed_time = end_time - start_time
                 
                 
-                #######################################
-                ### Using time dependent bandwidths ###
-                #######################################
+                # ------------------------------
+                # Using time dependent bandwidths 
+                # ------------------------------
 
                 if h_adaptive == 'Time_dep':
                     GRID_active = akd.grid_proj_kde(bin_x,
@@ -1404,9 +1398,9 @@ if run_all == True:
                     #store the time it took to calculate the kde 
                     kde_time_vector[kkk] = elapsed_time
    
-                ##############################################
-                ### Using local Silverman AKA Adaptive KDE ###
-                ##############################################
+                # -------------------------------------------------
+                # Using local Silverman AKA Adaptive KDE 
+                # -------------------------------------------------
                 
                 if h_adaptive == 'Local_Silverman' and preGRID_active.any():
                     start_time = time.time()
@@ -1417,12 +1411,12 @@ if run_all == True:
                     
                     if autocorr.any() > 0:
                         integral_length_scale_full[kkk, i] = (np.sum(autocorr) / autocorr[np.argwhere(autocorr != 0)[0]])
-                        window_size = int(integral_length_scale_full[kkk, i])
+                        window_size = max(max_adaptation_window,int(integral_length_scale_full[kkk, i]))
                     else:
                         integral_length_scale_full[kkk,i] = 0
                         window_size = 7
                     
-                    window_size = np.clip(window_size, 7, 15)
+                    window_size = np.clip(window_size, 7, int(max_adaptation_window/dxygrid))
                     if window_size % 2 == 0:
                         window_size += 1
                     
@@ -1434,8 +1428,11 @@ if run_all == True:
                     
                     # Compute statistics and bandwidths
                     std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive = akd.compute_adaptive_bandwidths(
-                        preGRID_active_padded, preGRID_active_counts_padded,
-                        window_size, (window_size**2)/2, grid_cell_size=dxy_grid
+                        preGRID_active_padded, 
+                        preGRID_active_counts_padded,
+                        window_size, 
+                        (window_size**2)/4,  #Every fourth cell must contain data. 
+                        grid_cell_size=dxy_grid
                     )
 
                     # Get summary statistics if the matrix is not empty
@@ -1495,9 +1492,9 @@ if run_all == True:
                 #Get concentration
                 GRID_active = GRID_active/V_grid
 
-                #############################################
-                ####### ASSIGN VALUES TO SPARSE GRIDS #######
-                #############################################
+                #-------------------------------------------------
+                # ASSIGN VALUES TO SPARSE GRIDS
+                #-------------------------------------------------
 
                 # Make explicit copies to avoid values affecting each other
                 grid_copy = GRID_active.copy()
@@ -1520,9 +1517,9 @@ if run_all == True:
                 #integral_length_scale_windows[kkk][i] = csr_matrix(integral_length_scale_matrix)
                 #standard_deviations_windows[kkk][i] = csr_matrix(std_estimate)
 
-                #-------------------------------#
-                #CALCULATE ATMOSPHERIC FLUX/LOSS#
-                #-------------------------------#
+                # -------------------------------
+                # CALCULATE ATMOSPHERIC FLUX/LOSS
+                # -------------------------------
 
                 # dxy_grid**2
                 if i == 0:
@@ -1572,9 +1569,9 @@ total_computation_time = end_time_whole_script-start_time_whole_script
 
 print(f"Full calculation time was: {total_computation_time}")
 
-#----------------------#
-#PICKLE FILES FOR LATER#
-#----------------------#
+# ----------------------
+# PICKLE FILES FOR LATER
+# ----------------------
 
 #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
@@ -1638,6 +1635,8 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
     f.write('Grid cell volume: '+str(V_grid)+' m³\n')
     f.write('\nKERNEL SETTINGS\n')
     f.write('Bandwidth estimator: '+str(h_adaptive)+'\n')
+    f.write('Gaussian kernel set resolution (num kernels/grid cell length): '+str(gaussian_kernel_resolution)+'\n')
+    f.write('Max adaptation window: '+str(max_adaptation_window)+'\n')
     f.write('Initial bandwidth: '+str(initial_bandwidth)+' m\n')
     f.write('Age constant: '+str(age_constant)+'\n')
     f.write('Max kernel bandwidth: '+str(max_ker_bw)+' m\n')
@@ -2024,10 +2023,7 @@ if plot_wind_field == True:
     #convert bin_x_mesh and bin_y_mesh to lon/la
     lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
     #datetimevector
-    if run_test == True:
-        times = pd.to_datetime(bin_time,unit='s')-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-    else:
-        times = pd.to_datetime(bin_time,unit='s')
+    times = pd.to_datetime(bin_time,unit='s')
 
     images_wind = []
     images_sst = []

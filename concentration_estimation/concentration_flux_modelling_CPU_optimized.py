@@ -16,42 +16,25 @@ TO DO
 
 import numpy as np
 import matplotlib.pyplot as plt
-import datetime as dt
 import netCDF4 as nc
 import utm
-from scipy.sparse import coo_matrix as coo_matrix
 from scipy.sparse import csr_matrix as csr_matrix
 import pickle
 from scipy.interpolate import griddata
 import pandas as pd
-import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-from numpy.ma import masked_invalid
 import imageio
-import matplotlib.gridspec as gridspec
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter1d
 import seaborn as sns
 import time
-import numpy.ma as ma
 from pyproj import Proj, Transformer
 import xarray as xr
-import gc
 from scipy.spatial import cKDTree
-from matplotlib.colors import LogNorm
-from matplotlib.ticker import MaxNLocator#, ScalarFormatter, LogLocator
-from matplotlib.ticker import FuncFormatter
+import geographic_plotter as gp
 #set path to the folder containing the akd_estimator.py file
 import sys
 sys.path.append(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\akd_estimator')
 import akd_estimator as akd
-
-############################
-###DEFINE SOM COOL COLORS###
-############################
-
-color_1 = '#7e1e9c'
-color_2 = '#014d4e'
 
 ###############   
 ###SET RULES###
@@ -60,16 +43,21 @@ color_2 = '#014d4e'
 plotting = False
 #Set plotting style
 plt.style.use('dark_background') 
+#plot wind data
+plot_wind_field = False
+#plot gas transfer velocity
+plot_gt_vel = False
+#Define some colors
+color_1 = '#7e1e9c'
+color_2 = '#014d4e'
+
+
 #fit wind data
 fit_wind_data = False
 #fit gas transfer velocityz
 fit_gt_vel = False
 #set path for wind model pickle file
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'
-#plot wind data
-plot_wind_field = False
-#plot gas transfer velocity
-plot_gt_vel = False
 #Use all depth layers
 use_all_depth_layers = False
 ### CONSTANTS ###
@@ -92,9 +80,9 @@ dz_grid = 50. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
-age_constant = 10 #m per hour, see figure.
+age_constant = np.nan #m per hour, see figure.
 #Initial bandwidth
-initial_bandwidth = 50 #m
+initial_bandwidth = 0 #m 
 #set colormap
 #colromap = 'magma'
 colormap = sns.color_palette("rocket", as_cmap=True)
@@ -110,32 +98,50 @@ weights_full_sim = sum_sb_release_hr/num_seed #mol/hr
 total_seabed_release = num_seed*weights_full_sim*(30*24) #Old value: 20833 #Whats the unit here?
 #only for top layer trigger
 kde_all = False
+#Define time period of interest
+twentiethofmay = 720 #Test period starts on May 20th
+time_steps = 1495 #Test period ends on June 20th
+#limit for redistribution of particle weight.
+redistribution_limit = 5000 #meters
 #Weight full sim - think this is wrong
 #weights_full_sim = 0.16236 #mol/hr #Since we're now releasing only 500 particles per hour (and not 2000)
 #I think this might be mmol? 81.18
 #Set manual border for grid
 manual_border = True
-#what am I doing now?
-run_test = False
-run_full = True
-#KDE dimensionality
-kde_dim = 2
-#Silvermans coefficients
-silverman_coeff = (4/(kde_dim+2))**(1/(kde_dim+4)) #NOT USED ANYMORE
-silverman_exponent = 1/(kde_dim+4) #NOT USED ANYMORE
 #Set bandwidth estimator preference
 h_adaptive = 'Local_Silverman' #alternatives here are 'Local_Silverman', 'Time_dep' and 'No_KDE'
 #Get new bathymetry or not?
 get_new_bathymetry = False
+#redistribute mass?
+redistribute_lost_mass = True
+
+### PATHS DO DATA ###
+# With vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
+# Without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'#real dataset
+# Z-level dataset with vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited_vdiff.nc'
+# Z-level dataset without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_zlevel_unlimited.nc'
+# Sigma-level dataset with vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'
+# Sigma-level dataset without vertical diffusion
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited.nc'
+# Sigma-level dataset with vertical diffusion in the whole water column
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
+# Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0 
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.nc'
+
+
 #How should data be loaded/created
 load_from_nc_file = True
 load_from_hdf5 = False #Fix this later if needed
 create_new_datafile = False
-#redistribute mass???
-redistribute_lost_mass = True
-#Define time period of interest
-twentiethofmay = 720
-time_steps = 1495
 
 #create a list of lists containing the horizontal fields at each depth and time step as sparse matrices
 GRID = []
@@ -229,10 +235,6 @@ def create_grid(time,
         bin_y = np.arange(UTM_y_min-grid_resolution,
                           UTM_y_max+grid_resolution,
                           grid_resolution)
-
-        #Create a horizontal matrix with sizes bin_x and bin_y containing only zeroes
-        #This is the matrix that will be filled with the horizontal fields
-        H_0 = np.zeros((bin_x.shape[0],bin_y.shape[0]))
 
         ### CREATE VERTICAL GRID ###
         #Define the bin edges using the grid resolution and min/max values
@@ -383,358 +385,7 @@ def calc_mox_consumption(C_o,R_ox):
 
 #############################################################################################################
 
-# Cache features for reuse
-_CACHED_FEATURES = {}
-
-def plot_2d_data_map_loop(data, lon, lat, projection, levels, timepassed,
-                         colormap, title, unit, **kwargs):
-
-    """
-    Creates a map visualization with contours, colorbar, and time progression.
-
-    Parameters
-    ----------
-    data : np.ndarray
-        2D array containing the data to plot
-    lon : np.ndarray
-        1D or 2D array of longitude coordinates
-    lat : np.ndarray
-        1D or 2D array of latitude coordinates
-    projection : cartopy.crs
-        Map projection to use
-    levels : np.ndarray
-        Contour levels for the plot
-    timepassed : list
-        [current_time, total_time] for progress bar
-    colormap : str or matplotlib.colors.Colormap
-        Colormap for the contour plot
-    title : str
-        Plot title
-    unit : str
-        Units for colorbar label
-    **kwargs : dict
-        Optional parameters:
-            savefile_path : str
-                Path to save the figure
-            show : bool
-                Whether to display the plot
-            adj_lon : list [float, float]
-                [min, max] longitude adjustments
-            adj_lat : list [float, float]
-                [min, max] latitude adjustments
-            bar_position : list [float, float, float, float]
-                [x, y, width, height] for progress bar
-            dpi : int
-                DPI for saved figure (default: 150)
-            log_scale : bool
-                Use logarithmic color scale (default: False)
-            figuresize : list [float, float]
-                Figure dimensions in inches (default: [14, 10])
-            plot_model_domain : bool or list
-                If True: automatically plot domain boundaries from data extent
-                If list: [min_lon, max_lon, min_lat, max_lat, linewidth, color]
-            contoursettings : list
-                [stride, color, linewidth, decimal_places, fontsize]
-                - stride: int, use every nth level for contour lines
-                - color: str, contour line color
-                - linewidth: float, contour line width
-                - decimal_places: int or str, format for contour labels
-                - fontsize: int, size of contour labels
-            maxnumticks : int
-                Maximum number of colorbar ticks (default: 10)
-            decimal_places : int
-                Number of decimal places for colorbar labels (default: 2)
-            plot_extent : list
-                [lon_min, lon_max, lat_min, lat_max] to limit plot region
-            starttimestring : str
-                Start time label (default: 'May 20, 2021')
-            endtimestring : str
-                End time label (default: 'May 20, 2021')
-            plot_sect_line : list 
-                List of grid points (2d list) for cross section line
-            poi : dict
-                Point of interest with keys:
-                - 'lon': longitude
-                - 'lat': latitude
-                - 'color': marker color (default 'red')
-                - 'size': marker size (default 6)
-                - 'label': text label (optional)
-                - 'edgecolor': edge color (default 'black')
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        The created figure object
-    """
-
-    # Cache transform
-    #transform = ccrs.PlateCarree() #the correct transform for lambert conformal
-    # data transform
-    data_transform = ccrs.PlateCarree() #the correct transform for lambert conformal
-
-    # Input validation
-    if not isinstance(data, np.ndarray) or data.ndim != 2:
-        raise ValueError("Data must be 2D numpy array")
-    
-    # Clear previous plots and collect garbage
-    plt.close('all')
-    gc.collect()
-
-    # Cache common values and pre-compute bounds
-    if np.shape(lon) != np.shape(data):
-        lon, lat = np.meshgrid(lon, lat)
-    
-    lon_bounds = np.min(lon), np.max(lon)
-    lat_bounds = np.min(lat), np.max(lat)
-    
-    # Pre-calculate map extent with adjustments
-    # Override extent if custom extent provided
-    if plot_extent := kwargs.get('plot_extent', None):
-        extent = plot_extent
-    else:  
-        adj_lon = kwargs.get('adj_lon', [0, 0])
-        adj_lat = kwargs.get('adj_lat', [0, 0])
-        extent = [
-            lon_bounds[0] + adj_lon[0],
-            lon_bounds[1] + adj_lon[1],
-            lat_bounds[0] + adj_lat[0],
-            lat_bounds[1] + adj_lat[1]
-        ]
-    
-    # Setup figure
-    figsize = kwargs.get('figuresize', [14, 10])
-    fig = plt.figure(figsize=figsize)
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
-    ax = fig.add_subplot(gs[0], projection=projection)
-    
-    # Process data for log scale
-    log_scale = kwargs.get('log_scale', False)
-    if log_scale:
-        data = np.ma.masked_invalid(data)
-        positive_levels = levels[levels > 0]
-        if len(positive_levels) > 0:
-            min_level = np.min(positive_levels)
-            max_level = np.max(levels)
-            num_levels = len(levels)
-            levels = np.logspace(np.log10(min_level), np.log10(max_level), num_levels)
-            norm = LogNorm(vmin=min_level, vmax=max_level)
-            masked_data = np.ma.masked_less_equal(data, 0)
-        else:
-            log_scale = False
-            norm = None
-            
-    # Optimize contour plotting
-    contourf_kwargs = {
-        'transform': data_transform,
-        'zorder': 0,
-        'levels': levels,
-        'cmap': colormap
-    }
-    
-    contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1, None, None])
-
-    try:
-        if log_scale == True:
-            contourf_kwargs.update({'norm': norm, 'extend': 'both'})
-            contourf = ax.contourf(lon, lat, masked_data, **contourf_kwargs)
-            
-            # Add contour lines if contoursettings is provided
-            if 'contoursettings' in kwargs:
-                contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1, None, None])
-                contour = ax.contour(lon, lat, masked_data,
-                                levels=levels[::contoursettings[0]],
-                                colors=contoursettings[1],
-                                linewidths=contoursettings[2],
-                                transform=data_transform,
-                                norm=norm)
-
-            
-        else:
-            contourf_kwargs['extend'] = 'max'
-            contourf = ax.contourf(lon, lat, data, **contourf_kwargs)
-            
-            # Add contour lines
-            if 'contoursettings' in kwargs:
-                contoursettings = kwargs.get('contoursettings', [2, '0.8', 0.1, None, None])
-                contour = ax.contour(lon, lat, data,
-                            levels=levels[::contoursettings[0]],
-                            colors=contoursettings[1],
-                            linewidths=contoursettings[2],
-                            transform=data_transform)
-        # Add inline labels if requested
-        if len(contoursettings) > 3 and contoursettings[3] is not None:
-            # Handle both string format and decimal places
-            if isinstance(contoursettings[3], str):
-                fmt = contoursettings[3]
-            else:
-                fmt = f"%.{contoursettings[3]}f"
-            ax.clabel(contour, inline=True, fontsize=contoursettings[4], fmt=fmt)
-
-    except ValueError as e:
-        raise ValueError(f"Contour plotting failed: {str(e)}")
-    
-    maxnumticks = kwargs.get('maxnumticks', 10)
-    decimal_places = kwargs.get('decimal_places', 2)
-
-    # Optimize colorbar section
-    cbar = plt.colorbar(contourf, ax=ax)
-    cbar.set_label(unit, fontsize=16, labelpad=10)
-
-    # Set ticks based on scale
-    if log_scale:
-        # For log scale
-        log_ticks = np.logspace(np.log10(levels[0]), np.log10(levels[-1]), maxnumticks)
-        cbar.set_ticks(log_ticks)
-        # Log norm is already set in contourf creation
-    else:
-        # For linear scale
-        cbar.locator = MaxNLocator(nbins=min(maxnumticks, 6), prune='both', steps=[1, 2, 5, 10])
-        linear_ticks = np.linspace(np.min(levels), np.max(levels), maxnumticks)
-        cbar.set_ticks(linear_ticks)
-
-    # Format tick labels
-    with plt.style.context({'text.usetex': False}):
-        def fmt(x, p):
-            if log_scale:
-                if abs(x) < 1e-3 or abs(x) > 1e3:
-                    return f"{x:.{decimal_places}e}"
-                return f"{x:.{decimal_places}f}"
-            return f"{x:.{decimal_places}f}"
-        
-        cbar.formatter = FuncFormatter(fmt)
-
-    cbar.update_ticks()
-
-    # Add features with caching
-    def get_cached_feature(name):
-        if name not in _CACHED_FEATURES:
-            _CACHED_FEATURES[name] = getattr(cfeature, name)
-        return _CACHED_FEATURES[name]
-    
-    ax.set_title(title, fontsize=16)
-    ax.add_feature(get_cached_feature('LAND'), facecolor='0.2', zorder=2)
-    ax.add_feature(get_cached_feature('COASTLINE'), zorder=3, color='0.5', linewidth=0.5)
-    
-    ax.set_extent(extent)
-    
-    #set the edgecolor parameter to the inverse color of the facecolor
-
-    if poi := kwargs.get('poi'):  # Get poi with default None
-        # Plot point
-        ax.scatter(poi['lon'], 
-                poi['lat'],
-                poi.get('size', 6),
-                color=poi.get('color', 'red'),
-                edgecolors = poi.get('edgecolor', 'black'),
-                label=poi.get('label', None),  # Add label parameter
-                transform=data_transform,
-                linewidths = 0.04*poi.get('size', 6),
-                zorder=10)
-        
-        # Add label if provided
-        #if 'label' in poi:
-        #    ax.text(poi['lon']+0.1, 
-        #            poi['lat']-0.05,
-        #            poi['label'],
-        #            color=poi.get('color', 'red'),
-        #            fontsize=12,
-        #            transform=data_transform,
-        #            zorder=10)
-        
-        if poi.get('label'):
-            ax.legend(prop={'size': 12})
-
-    # Custom markers (cached transform)
-    ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=data_transform)
-    ax.text(19.0553, 69.58006, 'Tromsø', transform=data_transform, color='white', fontsize=12)
-    
-    # Efficient gridlines
-    gl = ax.gridlines(crs=data_transform, draw_labels=True, linewidth=0.5, 
-                    color='grey', alpha=0.5, linestyle='--')
-    gl.top_labels = False      # No labels on top
-    gl.right_labels = False    # No labels on right
-    gl.left_labels = True      # Labels on left
-    gl.bottom_labels = True    # Labels on bottom
-    gl.xlabel_style = {'size': 12}
-    gl.ylabel_style = {'size': 12}
-    
-    # Progress bar
-    if kwargs.get('plot_progress_bar', True):
-        pos = ax.get_position()
-        # Adjust bar position to align with plot edges
-        bar_position = kwargs.get('bar_position', [pos.x0, 0.12, pos.width, 0.03])
-        
-        ax2 = plt.subplot(gs[1])
-        ax2.set_position([bar_position[0], bar_position[1], 
-                        bar_position[2], bar_position[3]])
-        
-        # Ensure progress bar starts at left edge
-        ax2.fill_between([0, timepassed[0]], [0, 0], [1, 1], 
-                        color='grey')
-        ax2.set_yticks([])
-        
-        # Align tick marks with bar edges
-        ax2.set_xticks([0, timepassed[1]])
-        ax2.set_xlim(0, timepassed[1])  # Force alignment
-        
-        ax2.set_xticklabels([
-            kwargs.get('starttimestring', 'May 20, 2021'),
-            kwargs.get('endtimestring', 'May 20, 2021')
-        ], fontsize=16)
-    
-    #Plot model domain...
-    plot_model_domain = kwargs.get('plot_model_domain', False)
-    if plot_model_domain:
-        if isinstance(plot_model_domain, bool):
-            # Get boundary points from meshgrid
-            left_edge = np.column_stack((lon[:,0], lat[:,0]))     # Western boundary
-            right_edge = np.column_stack((lon[:,-1], lat[:,-1]))  # Eastern boundary
-            bottom_edge = np.column_stack((lon[0,:], lat[0,:]))   # Southern boundary
-            top_edge = np.column_stack((lon[-1,:], lat[-1,:]))    # Northern boundary
-            
-            # Combine edges with explicit ordering to avoid diagonals
-            boundary = np.vstack([
-                bottom_edge,        # South
-                right_edge[1:],     # East (skip first point)
-                top_edge[::-1],     # North (reversed)
-                left_edge[::-1][1:] # West (reversed, skip first point)
-            ])
-            
-            # Plot boundary
-            ax.plot(boundary[:,0], boundary[:,1],
-                    color='0.8',
-                    linewidth=0.5,
-                    transform=data_transform,
-                    linestyle='--',
-                    label='Model Domain')
-            
-    plot_sect_line = kwargs.get('plot_sect_line', None)
-
-    #Plot a line along the grid points in plot_sect_line
-    if plot_sect_line is not None and len(plot_sect_line) > 0:
-    # Plot points using PlateCarree (these are fixed locations)
-        for i in range(len(plot_sect_line)-1):
-            #print(f"Processing cross section with {len(plot_sect_line)} points")
-            x, y = plot_sect_line[i]
-            ax.plot(x, y, 
-                    marker='o', 
-                    color='grey',
-                    markersize=4, 
-                    transform=data_transform,
-                    zorder=10)
-
-        # Save/show
-    if savefile_path := kwargs.get('savefile_path', False):
-        plt.savefig(savefile_path, 
-                   dpi=kwargs.get('dpi', 150),
-                   transparent=False,
-                   bbox_inches='tight')
-    if kwargs.get('show', False):
-        plt.show()
-    
-    return fig
-
-def fit_wind_sst_data(bin_x,bin_y,bin_time,run_test=False):
+def fit_wind_sst_data(bin_x,bin_y,bin_time):
     '''
     loads and fits wind and sea surface temperature data onto model grid given by bin_x, bin_y and bin_time.
     '''
@@ -1012,7 +663,7 @@ else:
 ###### GENERATE GAUSSIAN KERNELS ######
 print('Generating gaussian kernels...')
 #generate gaussian kernels
-gaussian_kernels, gaussian_bandwidths_h = akd.generate_gaussian_kernels(20, 1/3, stretch=1)
+gaussian_kernels, gaussian_bandwidths_h = akd.generate_gaussian_kernels(20, 1/2, stretch=1)
 #Get the bandwidth in real distances (this is easy since the grid is uniform)
 gaussian_bandwidths_h = gaussian_bandwidths_h*(bin_x[1]-bin_x[0])
 print('done.')
@@ -1111,21 +762,6 @@ particles['z_transport'] = np.ma.zeros(particles['z'].shape)
 #add mask
 particles['z_transport'].mask = particles['lon'].mask
 
-#-----------------------------------------#
-#CREATE A MATRIX FOR REMOVING THE DIAGONAL#
-#-----------------------------------------#
-
-#For test run only. This is to remove the diagonal and the artifact area
-if run_test == True: 
-    diag_rm_mat = np.ones(np.shape(GRID[0][0][:,:]))   
-    #remove diagonal and artifact area..... 
-    diag_thr = 0.4
-    #GRID_atm_flux_mm_m2 = np.flip(GRID_atm_flux_mm_m2,axis=1)
-    for i in range(0,len(diag_rm_mat)):
-        for j in range(0,len(diag_rm_mat[i])):
-            if i < int(j*diag_thr):
-                diag_rm_mat[i][j] = 0
-
 ###################################################
 ###### ADD DICTIONARY ENTRY FOR PARTICLE AGE ######
 ###################################################
@@ -1214,21 +850,12 @@ print('done.')
 coastline_map = np.zeros_like(interpolated_bathymetry)
 coastline_map[interpolated_bathymetry >= 0] = 1
 
-#############################################################################################
-################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
-#############################################################################################
-
-#---------------------------------------------------#
-#####################################################
-#####  MODEL THE CONCENTRATION AT EACH TIMESTEP #####
-### AKA THIS IS WHERE THE ACTUAL MODELING HAPPENS ###
-#####################################################
-#---------------------------------------------------#
-print('Starting to loop through all timesteps...')
+##################################################################################
+############## DEFINE MATRICES, VECTORS, ETC FOR THE MODELING LOOP ###############
+##################################################################################
 
 time_steps_full = len(ODdata.variables['time'])-50
 
-#age_vector = np.zeros(len(particles['z']), dtype=bool) #This vector is True if the particle has an age.. 
 
 kde_time_vector = np.zeros(time_steps_full-1)
 h_estimate_vector = np.zeros(time_steps_full-1)
@@ -1275,6 +902,18 @@ particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
 
 lost_particles_due_to_nandepth = 0
 
+#############################################################################################
+################### END INITIAL CONDITIONS ### END INITIAL CONDITIONS #######################
+#############################################################################################
+
+#---------------------------------------------------#
+#####################################################
+#####  MODEL THE CONCENTRATION AT EACH TIMESTEP #####
+### AKA THIS IS WHERE THE ACTUAL MODELING HAPPENS ###
+#####################################################
+#---------------------------------------------------#
+print('Starting to loop through all timesteps...')
+
 if run_all == True:
 
     #Start looping through.
@@ -1289,7 +928,7 @@ if run_all == True:
 
         if kkk==1:         
             ### Load all data into memory ###
-            if load_from_nc_file == True:
+            if load_from_nc_file == False:
                 #import multiprocessing as mp
                 #from tqdm import tqdm
                 #particles_all_data = load_netcdf_optimized(datapath)
@@ -1373,10 +1012,6 @@ if run_all == True:
         particles['z'][np.isnan(particles['z'])] = -(np.max(bin_z)-1)
         print({'Particles in seafloor: '+str(lost_particles_due_to_nandepth)})
         
-        
-        #give warning if there are nans in particles['z']
-
-
         end_time = time.time()
         elapsed_time = end_time - start_time
         #print(f"Data loading: {elapsed_time:.6f} seconds")
@@ -1402,9 +1037,6 @@ if run_all == True:
             particles_that_died = deactivated_indices[~np.isin(deactivated_indices, outside_grid)]
 
             ### Redistribute weights of particles that died to nearby particles ###
-
-            #limit for redistribution
-            redistribution_limit = 4000 #meters
 
             if deactivated_indices.size > 0:
                 particles_mass_died[kkk] = np.sum(particles['weight'][particles_that_died,0])
@@ -1589,7 +1221,8 @@ if run_all == True:
             ##### ADRESS PROBLEMATIC VALUES #####
             particles['weight'][already_active,1][particles['weight'][already_active,1]<0] = 0
             #add the bandwidth of the particle to the current timestep
-            particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
+            if np.isnan(age_constant) == False
+                particles['bw'][already_active,1] = particles['bw'][already_active,1] + age_constant
             #limit the bandwidth to a maximum value
             particles['bw'][already_active,1][particles['bw'][already_active,1]>max_ker_bw] = max_ker_bw
 
@@ -1939,10 +1572,6 @@ total_computation_time = end_time_whole_script-start_time_whole_script
 
 print(f"Full calculation time was: {total_computation_time}")
 
-#if plotting == True:
-    #create a gif from the images
-#    imageio.mimsave(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\concentration\create_gif\concentration.gif', images_conc, duration=0.5)
-
 #----------------------#
 #PICKLE FILES FOR LATER#
 #----------------------#
@@ -1999,23 +1628,38 @@ with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\
     pickle.dump(GRID_vtrans, f)
 
 
-#save a short textfile with the settings
+#save a short textfile with the settings etc..
 with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
-    f.write('Settings for the test run\n')
+    f.write('Model run summary\n')
     f.write('--------------------------------\n')
-    f.write('Number of particles: '+str(...)+'\n')
-    f.write('Number of timesteps: '+str(744)+'\n')
-    f.write('Grid horizontal resolution: '+str(dxy_grid)+'\n')
-    f.write('Grid vertical resolution: '+str(dz_grid)+'\n')
-    f.write('Grid cell volume: '+str(V_grid)+'\n')
-    f.write('Initial bandwidth: '+str(initial_bandwidth)+'\n')
+    f.write('GRID SETTINGS\n')
+    f.write('Grid horizontal resolution: '+str(dxy_grid)+' m\n')
+    f.write('Grid vertical resolution: '+str(dz_grid)+' m\n')
+    f.write('Grid cell volume: '+str(V_grid)+' m³\n')
+    f.write('\nKERNEL SETTINGS\n')
+    f.write('Bandwidth estimator: '+str(h_adaptive)+'\n')
+    f.write('Initial bandwidth: '+str(initial_bandwidth)+' m\n')
     f.write('Age constant: '+str(age_constant)+'\n')
-    f.write('Max kernel bandwidth: '+str(max_ker_bw)+'\n')
-    f.write('Run test: '+str(run_test)+'\n')
-    f.write('Run full: '+str(run_full)+'\n')
-    f.write('Use all depth layers: '+str(use_all_depth_layers)+'\n')
-    f.write('Atmospheric background concentration: '+str(atmospheric_conc)+'\n')
-    f.write('Background ocean concentration: '+str(background_ocean_conc)+'\n')
+    f.write('Max kernel bandwidth: '+str(max_ker_bw)+' m\n')
+    f.write('\nBUDGET AND PROCESS COEFFICIENTS\n')
+    f.write('Atmospheric background: '+str(atmospheric_conc)+' mol/m³\n')
+    f.write('Ocean background: '+str(background_ocean_conc)+' mol/m³\n')
+    f.write('Oswald solubility coefficient: '+str(oswald_solu_coeff)+'\n')
+    f.write('Oxidation rate (R_ox): '+str(R_ox)+' s⁻¹\n')
+    f.write('Total seabed release: '+str(total_seabed_release)+' mol\n')
+    f.write('\nPARTICLE SETTINGS\n')
+    f.write('Number of seed particles: '+str(num_seed)+'\n')
+    f.write('Initial particle weight: '+str(weights_full_sim)+' mol/hr\n')
+    f.write('Redistribute lost mass: '+str(redistribute_lost_mass)+'\n')
+    f.write('Redistribution limit: '+str(redistribution_limit)+' m\n')
+    f.write('\nTIME SETTINGS AND COMPUTATION TIME\n')
+    f.write('Start timestep: '+str(twentiethofmay)+'\n')
+    f.write('End timestep: '+str(time_steps)+'\n')
+    f.write('Total computation time: '+str(total_computation_time)+' s\n')
+    f.write('\nOXIDATION SETTINGS\n')
+    f.write('\nDATA PATHS\n')
+    f.write('Data path: '+str(datapath)+'\n')
+    f.write('Wind model path: '+str(wind_model_path)+'\n')
     f.write('--------------------------------\n')
 
 ######################################################################################################
@@ -2088,7 +1732,7 @@ time_steps = 1495
 do = False
 if do == True:
     for i in range(twentiethofmay,time_steps,1):
-        fig = plot_2d_data_map_loop(data=GRID_generic[i, :, :].T,
+        fig = gp.plot_2d_data_on_map(data=GRID_generic[i, :, :].T,
                                     lon=lon_mesh,
                                      lat=lat_mesh,
                                     projection=projection,
@@ -2135,7 +1779,7 @@ if plot_atm == True:
     levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
 
     for i in range(twentiethofmay,time_steps,2):
-        fig = plot_2d_data_map_loop(data=GRID_gt_vel[i, :, :],
+        fig = gp.plot_2d_data_on_map(data=GRID_gt_vel[i, :, :],
                                     lon=lon_vec,
                                     lat=lat_vec,
                                     projection=projection,
@@ -2172,7 +1816,7 @@ levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax
 levels = levels[:]
 #flip the lon_vector right/left
 
-plot_2d_data_map_loop(data=GRID_atm_flux_sum.T,
+gp.plot_2d_data_on_map(data=GRID_atm_flux_sum.T,
                     lon=lon_mesh,
                     lat=lat_mesh,
                     projection=projection,
@@ -2343,7 +1987,7 @@ if plot_all == True:
         #skip timestep if GRID_top_sum only has zeros.. 
         #if np.sum(GRID_top_sum) == 0:
         #    continue
-        fig = plot_2d_data_map_loop(data = GRID_top_sum,
+        fig = gp.plot_2d_data_on_map(data = GRID_top_sum,
                                 lon = lon_mesh[0,:],
                                 lat = lat_mesh[:,0],
                                 projection = projection,
@@ -2389,7 +2033,7 @@ if plot_wind_field == True:
     images_sst = []
 
     for i in range(time_steps):
-        fig = plot_2d_data_map_loop(ws_interp[i,:,:],lon_mesh,
+        fig = gp.plot_2d_data_on_map(ws_interp[i,:,:],lon_mesh,
                         lat_mesh,projection,levels_w,[i,time_steps],
                         colormap,'Wind speed, '+str(times[i])[:10],
                         'm s$^{-1}$',
@@ -2400,7 +2044,7 @@ if plot_wind_field == True:
         plt.close(fig)
 
         #SST PLOT
-        fig = plot_2d_data_map_loop(sst_interp[i,:,:]-273.15,lon_mesh,
+        fig = gp.plot_2d_data_on_map(sst_interp[i,:,:]-273.15,lon_mesh,
                         lat_mesh,projection,levels_sst,[i,time_steps],
                         colormap,'Sea surface temperature, '+str(times[i])[:10],
                         '°C',savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst'+str(i)+'.png',
@@ -2421,7 +2065,7 @@ if plot_gt_vel == True:
     #craete gif image list
     images_gt_vel = []
     for i in range(0,len(bin_time)):
-        fig = plot_2d_data_map_loop(GRID_gt_vel[i,:,:],
+        fig = gp.plot_2d_data_on_map(GRID_gt_vel[i,:,:],
                                     lon_mesh,
                                     lat_mesh,
                                     projection,
@@ -2529,7 +2173,7 @@ for i in range(5):
     layer_data = GRID[timestep][i].toarray()  # Convert sparse to dense
     
     # Plot in corresponding subplot
-    fig = plot_2d_data_map_loop(
+    fig = gp.plot_2d_data_on_map(
         data=layer_data.T,
         lon=lon_mesh,
         lat=lat_mesh,
@@ -2704,7 +2348,7 @@ levels_bath = [0,25,50,75,100,125,150,175,200,225,250,275,300,350,400,450,500,60
 
 colormap  = 'rocket_r'
 
-fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
+fig = gp.plot_2d_data_on_map(data=np.abs(interpolated_bathymetry),
                             lon=lon_mesh,
                                 lat=lat_mesh,
                             projection=projection,
@@ -2987,7 +2631,7 @@ release_point = [14.279600,68.918600]
 #flip the lon_vector right/left
 #extent_limits = [100:200,100:200]
 
-plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
+gp.plot_2d_data_on_map(data=GRID_vert_total_sum.T,
                     lon=lon_mesh,
                     lat=lat_mesh,
                     projection=projection,
@@ -3018,7 +2662,7 @@ plot_2d_data_map_loop(data=GRID_vert_total_sum.T,
 
 levels = np.linspace(np.nanmin(np.nanmin(interpolated_bathymetry)),np.nanmax(np.nanmax(interpolated_bathymetry)),100)
 
-fig = plot_2d_data_map_loop(data=np.abs(interpolated_bathymetry),
+fig = gp.plot_2d_data_on_map(data=np.abs(interpolated_bathymetry),
                             lon=lon_mesh,
                                 lat=lat_mesh,
                             projection=projection,

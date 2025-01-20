@@ -51,7 +51,8 @@ plot_gt_vel = False
 color_1 = '#7e1e9c'
 color_2 = '#014d4e'
 
-
+#save output?
+save_data_to_file = False
 #fit wind data
 fit_wind_data = False
 #fit gas transfer velocityz
@@ -80,7 +81,7 @@ oswald_solu_coeff = 0.28 #(for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0))
 #grid size
 dxy_grid = 800. #m
-dz_grid = 50. #m
+dz_grid = 25. #m
 #grid cell volume
 V_grid = dxy_grid*dxy_grid*dz_grid
 #age constant
@@ -114,6 +115,7 @@ redistribution_limit = 5000 #meters
 manual_border = True
 #Set bandwidth estimator preference
 h_adaptive = 'Local_Silverman' #alternatives here are 'Local_Silverman', 'Time_dep' and 'No_KDE'
+h_adaptive = 'No_KDE'
 #Get new bathymetry or not?
 get_new_bathymetry = False
 #redistribute mass?
@@ -137,9 +139,9 @@ redistribute_lost_mass = True
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0 
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.nc'
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.nc'
 
 
 #How should data be loaded/created
@@ -653,7 +655,7 @@ timedatetime = pd.to_datetime(bin_time,unit='s')
 
 print('Generating gaussian kernels...')
 #Calculate how many kernels we need to span from 0 to the maximum bandwidth
-num_gaussian_kernels = int(np.ceil(max_ker_bw/gaussian_kernel_resolution))
+num_gaussian_kernels = int(np.ceil((max_ker_bw/dxy_grid)/gaussian_kernel_resolution))
 #generate gaussian kernels
 gaussian_kernels, gaussian_bandwidths_h = akd.generate_gaussian_kernels(num_gaussian_kernels, gaussian_kernel_resolution, stretch=1)
 #Get the bandwidth in real distances (this is easy since the grid is uniform)
@@ -890,10 +892,19 @@ lifespan = 24*7*4 #4 weeks
 #set depth resulution to twice the grid resolution
 depth_bins_lifespan = np.arange(0,np.max(bin_z)+dz_grid/2,dz_grid/2)
 
-particle_lifespan_matrix = np.zeros((lifespan,len(depth_bins_lifespan),3))
-particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),3))
+particle_lifespan_matrix = np.zeros((lifespan,len(depth_bins_lifespan),4))
+particle_lifespan_matrix = np.zeros((lifespan,int(np.max(bin_z)+dz_grid),4))
 
 lost_particles_due_to_nandepth = 0
+
+###########################################################################
+######### DEFINE A COUPLE OF THINGS TO AVOID "NOT DEFINED" ERRORS #########
+###########################################################################
+
+h_matrix_adaptive = np.zeros(np.shape(GRID_active))
+std_estimate = np.zeros(np.shape(GRID_active))
+N_eff = np.zeros(np.shape(GRID_active))
+
 
 # =============================================================================
 # END INITIAL CONDITIONS 
@@ -922,7 +933,7 @@ if run_all == True:
 
         if kkk==1:         
             ### Load all data into memory ###
-            if load_from_nc_file == False:
+            if load_from_nc_file == True:
                 #import multiprocessing as mp
                 #from tqdm import tqdm
                 #particles_all_data = load_netcdf_optimized(datapath)
@@ -1236,26 +1247,25 @@ if run_all == True:
         ages[ages >= lifespan] = lifespan - 1
         depths = np.abs(particles['z'][truly_active, 1].astype(int))
         weights = particles['weight'][truly_active, 1]
+        #Create a particle_lifespan_matrix entry for atmospheric loss using the particleweighing matrix
+        atmospheric_loss = np.zeros(len(depths))
+        add_atm_loss_at_idx = np.where(np.isin(truly_active, already_active_surface))[0]
+        np.add.at(atmospheric_loss, add_atm_loss_at_idx, particleweighing*total_atm_flux[kkk-1])
+
         # Get ages and depths for only unmasked active particles
-        #valid_mask_lifetime = (ages < particle_lifespan_matrix.shape[0]) & (depths < particle_lifespan_matrix.shape[1])
-        #give warning if data is outside the matrix
-        #if not valid_mask_lifetime.all():
-        #    num_outside = np.sum(np.logical_not(valid_mask_lifetime))
-        #    print('Warning: Data outside the matrix. N=',num_outside)
-        # Store MOx and weight
-        #if np.any(valid_mask_lifetime):
-        #    particle_lifespan_matrix[ages[valid_mask_lifetime], depths[valid_mask_lifetime], 0] += weights[valid_mask_lifetime]
-        #    particle_lifespan_matrix[ages[valid_mask_lifetime], depths[valid_mask_lifetime], 1] += weights[valid_mask_lifetime] * R_ox * 3600
         np.add.at(particle_lifespan_matrix[:, :, 0], (ages, depths), weights)
         np.add.at(particle_lifespan_matrix[:, :, 1], (ages, depths), weights * R_ox * 3600)
+        np.add.at(particle_lifespan_matrix[:, :, 2], (ages, depths), atmospheric_loss) 
+        #the particle_lifespan_matrix[:,:,3] should include the number of active particles at a certain age and depth
+        #np.add.ad(particle_lifespan_matrix[:,:,3],(ages,depths),)
 
-        # Handle atmospheric flux - only for unmasked surface particles
-        surface_mask = np.isin(truly_active, already_active_surface)
-        if surface_mask.any():
-            surface_indices = np.searchsorted(already_active_surface, truly_active[surface_mask])
-            np.add.at(particle_lifespan_matrix[:, :, 2], 
-                    (ages[surface_mask], depths[surface_mask]),
-                    particleweighing[surface_indices] * total_atm_flux[kkk-1])        
+        ## Handle atmospheric flux - only for unmasked surface particles
+        #surface_mask = np.isin(truly_active, already_active_surface)
+        #if surface_mask.any():
+        #    surface_indices = np.searchsorted(already_active_surface, truly_active[surface_mask])
+        #    np.add.at(particle_lifespan_matrix[:, :, 2], 
+        #            (ages[surface_mask], depths[surface_mask]),
+        #            particleweighing[surface_indices] * total_atm_flux[kkk-1])        
 
         # --------------------------------------------------
         # FIGURE OUT WHERE PARTICLES ARE LOCATED IN THE GRID
@@ -1374,6 +1384,8 @@ if run_all == True:
                 # Using no KDE at all 
                 # ------------------------------
 
+                2+3+4
+
                 if h_adaptive == 'No_KDE':
                     GRID_active = preGRID_active
                     end_time = time.time()
@@ -1416,7 +1428,7 @@ if run_all == True:
                         integral_length_scale_full[kkk,i] = 0
                         window_size = 7
                     
-                    window_size = np.clip(window_size, 7, int(max_adaptation_window/dxygrid))
+                    window_size = np.clip(window_size, 7, int(max_adaptation_window/dxy_grid))
                     if window_size % 2 == 0:
                         window_size += 1
                     
@@ -1581,85 +1593,86 @@ print(f"Full calculation time was: {total_computation_time}")
 #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
 #    GRID = pickle.load(f)
 
-#GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
-GRID_atm_sparse = GRID_atm_flux
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'wb') as f:
-    pickle.dump(GRID_atm_sparse, f)
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
-    GRID_atm_flux = pickle.load(f)
-#GRID_mox_sparse = csr_matrix(GRID_mox)
-#GRID_mox_sparse = GRID_mox
-#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
-#    pickle.dump(GRID_mox_sparse, f)
-#and wind, sst, and gt_vel fields
-if fit_wind_data == True:
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\ws_interp.pickle', 'wb') as f:
-        pickle.dump(ws_interp, f)
-    with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\sst_interp.pickle', 'wb') as f:
-        pickle.dump(sst_interp, f)
-    with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'wb') as f:
-        pickle.dump(GRID_gt_vel, f)
-#and vectors for total values
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_atm_flux.pickle', 'wb') as f:
-    pickle.dump(total_atm_flux, f)
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_died.pickle', 'wb') as f:
-    pickle.dump(particles_mass_died, f)
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_out.pickle', 'wb') as f:
-    pickle.dump(particles_mass_out, f)
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mox_loss.pickle', 'wb') as f:
-    pickle.dump(particles_mox_loss, f)
-#and number of particles
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_parts.pickle', 'wb') as f:
-    pickle.dump(total_parts, f)
-#and the bandwidths
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_full.pickle', 'wb') as f:
-    pickle.dump(h_values_full, f)
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_std_full.pickle', 'wb') as f:
-    pickle.dump(h_values_std_full, f)
-#and the integral length scales
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\integral_length_scale_full.pickle', 'wb') as f:
-    pickle.dump(integral_length_scale_full, f)
-#and the time it took to estimate the bandwidths
-#Save the GRID_vtrans as well
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_vtrans.pickle', 'wb') as f:
-    pickle.dump(GRID_vtrans, f)
+if save_data_to_file == True:
+    #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
+    GRID_atm_sparse = GRID_atm_flux
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'wb') as f:
+        pickle.dump(GRID_atm_sparse, f)
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
+        GRID_atm_flux = pickle.load(f)
+    #GRID_mox_sparse = csr_matrix(GRID_mox)
+    #GRID_mox_sparse = GRID_mox
+    #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
+    #    pickle.dump(GRID_mox_sparse, f)
+    #and wind, sst, and gt_vel fields
+    if fit_wind_data == True:
+        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\ws_interp.pickle', 'wb') as f:
+            pickle.dump(ws_interp, f)
+        with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\sst_interp.pickle', 'wb') as f:
+            pickle.dump(sst_interp, f)
+        with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'wb') as f:
+            pickle.dump(GRID_gt_vel, f)
+    #and vectors for total values
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_atm_flux.pickle', 'wb') as f:
+        pickle.dump(total_atm_flux, f)
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_died.pickle', 'wb') as f:
+        pickle.dump(particles_mass_died, f)
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_out.pickle', 'wb') as f:
+        pickle.dump(particles_mass_out, f)
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mox_loss.pickle', 'wb') as f:
+        pickle.dump(particles_mox_loss, f)
+    #and number of particles
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_parts.pickle', 'wb') as f:
+        pickle.dump(total_parts, f)
+    #and the bandwidths
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_full.pickle', 'wb') as f:
+        pickle.dump(h_values_full, f)
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_std_full.pickle', 'wb') as f:
+        pickle.dump(h_values_std_full, f)
+    #and the integral length scales
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\integral_length_scale_full.pickle', 'wb') as f:
+        pickle.dump(integral_length_scale_full, f)
+    #and the time it took to estimate the bandwidths
+    #Save the GRID_vtrans as well
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_vtrans.pickle', 'wb') as f:
+        pickle.dump(GRID_vtrans, f)
 
 
-#save a short textfile with the settings etc..
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
-    f.write('Model run summary\n')
-    f.write('--------------------------------\n')
-    f.write('GRID SETTINGS\n')
-    f.write('Grid horizontal resolution: '+str(dxy_grid)+' m\n')
-    f.write('Grid vertical resolution: '+str(dz_grid)+' m\n')
-    f.write('Grid cell volume: '+str(V_grid)+' m³\n')
-    f.write('\nKERNEL SETTINGS\n')
-    f.write('Bandwidth estimator: '+str(h_adaptive)+'\n')
-    f.write('Gaussian kernel set resolution (num kernels/grid cell length): '+str(gaussian_kernel_resolution)+'\n')
-    f.write('Max adaptation window: '+str(max_adaptation_window)+'\n')
-    f.write('Initial bandwidth: '+str(initial_bandwidth)+' m\n')
-    f.write('Age constant: '+str(age_constant)+'\n')
-    f.write('Max kernel bandwidth: '+str(max_ker_bw)+' m\n')
-    f.write('\nBUDGET AND PROCESS COEFFICIENTS\n')
-    f.write('Atmospheric background: '+str(atmospheric_conc)+' mol/m³\n')
-    f.write('Ocean background: '+str(background_ocean_conc)+' mol/m³\n')
-    f.write('Oswald solubility coefficient: '+str(oswald_solu_coeff)+'\n')
-    f.write('Oxidation rate (R_ox): '+str(R_ox)+' s⁻¹\n')
-    f.write('Total seabed release: '+str(total_seabed_release)+' mol\n')
-    f.write('\nPARTICLE SETTINGS\n')
-    f.write('Number of seed particles: '+str(num_seed)+'\n')
-    f.write('Initial particle weight: '+str(weights_full_sim)+' mol/hr\n')
-    f.write('Redistribute lost mass: '+str(redistribute_lost_mass)+'\n')
-    f.write('Redistribution limit: '+str(redistribution_limit)+' m\n')
-    f.write('\nTIME SETTINGS AND COMPUTATION TIME\n')
-    f.write('Start timestep: '+str(twentiethofmay)+'\n')
-    f.write('End timestep: '+str(time_steps)+'\n')
-    f.write('Total computation time: '+str(total_computation_time)+' s\n')
-    f.write('\nOXIDATION SETTINGS\n')
-    f.write('\nDATA PATHS\n')
-    f.write('Data path: '+str(datapath)+'\n')
-    f.write('Wind model path: '+str(wind_model_path)+'\n')
-    f.write('--------------------------------\n')
+    #save a short textfile with the settings etc..
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
+        f.write('Model run summary\n')
+        f.write('--------------------------------\n')
+        f.write('GRID SETTINGS\n')
+        f.write('Grid horizontal resolution: '+str(dxy_grid)+' m\n')
+        f.write('Grid vertical resolution: '+str(dz_grid)+' m\n')
+        f.write('Grid cell volume: '+str(V_grid)+' m³\n')
+        f.write('\nKERNEL SETTINGS\n')
+        f.write('Bandwidth estimator: '+str(h_adaptive)+'\n')
+        f.write('Gaussian kernel set resolution (num kernels/grid cell length): '+str(gaussian_kernel_resolution)+'\n')
+        f.write('Max adaptation window: '+str(max_adaptation_window)+'\n')
+        f.write('Initial bandwidth: '+str(initial_bandwidth)+' m\n')
+        f.write('Age constant: '+str(age_constant)+'\n')
+        f.write('Max kernel bandwidth: '+str(max_ker_bw)+' m\n')
+        f.write('\nBUDGET AND PROCESS COEFFICIENTS\n')
+        f.write('Atmospheric background: '+str(atmospheric_conc)+' mol/m³\n')
+        f.write('Ocean background: '+str(background_ocean_conc)+' mol/m³\n')
+        f.write('Oswald solubility coefficient: '+str(oswald_solu_coeff)+'\n')
+        f.write('Oxidation rate (R_ox): '+str(R_ox)+' s⁻¹\n')
+        f.write('Total seabed release: '+str(total_seabed_release)+' mol\n')
+        f.write('\nPARTICLE SETTINGS\n')
+        f.write('Number of seed particles: '+str(num_seed)+'\n')
+        f.write('Initial particle weight: '+str(weights_full_sim)+' mol/hr\n')
+        f.write('Redistribute lost mass: '+str(redistribute_lost_mass)+'\n')
+        f.write('Redistribution limit: '+str(redistribution_limit)+' m\n')
+        f.write('\nTIME SETTINGS AND COMPUTATION TIME\n')
+        f.write('Start timestep: '+str(twentiethofmay)+'\n')
+        f.write('End timestep: '+str(time_steps)+'\n')
+        f.write('Total computation time: '+str(total_computation_time)+' s\n')
+        f.write('\nOXIDATION SETTINGS\n')
+        f.write('\nDATA PATHS\n')
+        f.write('Data path: '+str(datapath)+'\n')
+        f.write('Wind model path: '+str(wind_model_path)+'\n')
+        f.write('--------------------------------\n')
 
 ######################################################################################################
 #----------------------------------------------------------------------------------------------------#
@@ -2683,3 +2696,95 @@ fig = gp.plot_2d_data_on_map(data=np.abs(interpolated_bathymetry),
                             plot_sect_line = cross_section,
                             poi = poi,
                             plot_extent=[14, 18.2, 68.6, 70.4])
+
+
+
+############## PLOT THE FATE OF METHANE IN THE WATER COLUMN ##############
+
+# Calculate the fraction of molecules at each depth level using the particle_lifespan_matrix[:,:,0] data
+
+#total methane added at each timestep is sum_sb_release_hr
+
+#average methane lost to mox each timestep is the sum of particle_lifespan_matrix[:,:,2] along the depth dimension
+
+loss_atm = np.nansum(particle_lifespan_matrix[:,:,2],axis=1)#/np.nansum(particle_lifespan_matrix[:,:,0],axis=1)
+
+#make mox loss simple
+loss_mox = np.nansum(particle_lifespan_matrix[:,:,0],axis=1)*R_ox*3600
+
+#set plot style to default
+plt.style.use('default')
+
+plt.plot(loss_mox[:-2])
+
+loss_mox = loss_mox[:-2]
+loss_atm = loss_atm[:-2]
+meth_left = np.nansum(particle_lifespan_matrix[:-2,:,0],axis=1)
+
+#Calculate accumulated loss vectors
+loss_mox_acc = np.cumsum(loss_mox)
+loss_atm_acc = np.cumsum(loss_atm)
+
+# Calculate total methane at each timestep
+total_methane = meth_left + loss_mox_acc + loss_atm_acc
+
+# Calculate fractions
+frac_remain = meth_left / total_methane * 100
+frac_mox = loss_mox_acc / total_methane * 100
+frac_atm = loss_atm_acc / total_methane * 100
+#frac_atm is already in fraction
+#frac_atm = frac_atm * 100
+
+# 1. Stacked area plot with days
+plt.figure(figsize=(8, 6), dpi=150)
+days = np.arange(len(total_methane))/24  # Convert hours to days
+
+plt.fill_between(days, 0, frac_remain, 
+                 label='Remains in water column', 
+                 color='#069af3', alpha=0.7)
+plt.fill_between(days, frac_remain, frac_remain + frac_mox, 
+                 label='Lost to MOx', 
+                 color='#fe01b1', alpha=0.7)
+plt.fill_between(days, frac_remain + frac_mox, 100, 
+                 label='Lost to atmosphere', 
+                 color='#20f986', alpha=0.7)
+
+plt.ylabel('Fraction of total methane [%]', fontsize=14)
+plt.xlabel('Time [days]', fontsize=14)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.legend(loc='lower left', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.ylim(0, 100)
+plt.xlim(0, max(days))
+plt.show()
+
+# 2. Dual axis plot for losses
+fig, ax1 = plt.subplots(figsize=(8, 6),dpi=150)
+ax2 = ax1.twinx()
+
+# Plot atmospheric loss
+l1 = ax1.plot(days, frac_atm, color='#20f986', 
+              label='Lost to atmosphere', linewidth=2)
+ax1.set_xlabel('Time [days]', fontsize=14)
+ax1.set_ylabel('Fraction lost to atmosphere [%]', 
+               color='#20f986', fontsize=14)
+ax1.tick_params(axis='y', labelcolor='#20f986', labelsize=12)
+ax1.tick_params(axis='x', labelsize=12)
+
+# Plot MOx loss
+l2 = ax2.plot(days, frac_mox, color='#fe01b1', 
+              label='Lost to MOx', linewidth=2)
+ax2.set_ylabel('Fraction lost to MOx [%]', 
+               color='#fe01b1', fontsize=14)
+ax2.tick_params(axis='y', labelcolor='#fe01b1', labelsize=12)
+
+# Add combined legend
+lns = l1 + l2
+labs = [l.get_label() for l in lns]
+ax1.legend(lns, labs, loc='upper left', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.show()
+
+
+# calculate the accumulated

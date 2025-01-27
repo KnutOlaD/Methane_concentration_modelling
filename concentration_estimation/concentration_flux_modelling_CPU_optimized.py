@@ -30,10 +30,16 @@ import time
 from pyproj import Proj, Transformer
 import xarray as xr
 from scipy.spatial import cKDTree
-import geographic_plotter as gp
-#set path to the folder containing the akd_estimator.py file
 import sys
-sys.path.append(r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\akd_estimator')
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+#set path to the folder containing the akd_estimator.py file and geographic_plotter.py file
+akd_path = os.path.join(parent_dir,'akd_estimator')
+geo_path = os.path.join(current_dir,'geographic_plotter')
+sys.path.append(akd_path)
+sys.path.append(geo_path)
+import geographic_plotter as gp
 import akd_estimator as akd
 
 ###############   

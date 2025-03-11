@@ -54,6 +54,7 @@ colormap = 'magma'
 plotting = False #plotting?
 plot_gt_vel = False #plot gas transfer velocity
 plot_wind_data = False #plot wind data
+estimate_verttrans = False #estimate vertical transport?
 plt.style.use('dark_background') #plotting style
 
 ### TRIGGERS ###
@@ -61,7 +62,7 @@ save_data_to_file = False #save output?
 fit_wind_data = False #fit wind data
 fit_gt_vel = False #Do a new fit of gas transfer velocity
 wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'  #path to wind model
-kde_all = True #only do KDE for top layer trigger
+kde_all = False #only do KDE for top layer trigger
 manual_border = True #Set manual border for grid
 manual_border_corners = [12.5,21,68.5,72,50*60] #Manual limitations for the grid [minlon,maxlon,minlat,maxlat,maxdepth]
 get_new_bathymetry = False #Get new bathymetry or not?
@@ -70,11 +71,11 @@ h_adaptive = 'Local_Silverman' ##Set bandwidth estimator preference, alternative
 load_from_nc_file = True #Load data from netcdf file
 
 ### CONSTANTS ###
-max_ker_bw = 7000 #max kernel bandwidth in meters
-max_adaptation_window = 5000 #max adaptation window size in meters
+max_ker_bw = 10000 #max kernel bandwidth in meters
+max_adaptation_window = 10000 #max adaptation window size in meters
 gaussian_kernel_resolution = 1/3 # set resolution for the gaussian kernels (how many steps in bandwdith as a factor of the cell size)
 atmospheric_conc = 0 #Atmospheric background concentration. We assume equilibrium with the atmosphere
-background_ocean_conc = 0 #ocean background concentration, we assume equilibrium with the atmosphere
+background_ocean_conc = 0 #ocean background concentration, we    assume equilibrium with the atmosphere
 oswald_solu_coeff = 0.28 ##Oswald solubility coeffocient (for methane)
 projection = ccrs.LambertConformal(central_longitude=0.0, central_latitude=70.0, standard_parallels=(70.0, 70.0)) #Set projection
 dxy_grid = 800. #horizontal grid size in meters
@@ -90,6 +91,9 @@ twentiethofmay = 720 #Test period starts on May 20th
 time_steps = 1495 #Test period ends on June 20th
 redistribution_limit = 5000 #meters
 lifespan = 24*7*4 # particle lifespan in hours
+#For time dependent bandwidth
+initial_bandwidth = 0.0000000000001
+age_constant = 0.0000000000001
 
 ### PATHS DO DATA ###
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
@@ -392,7 +396,7 @@ def process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path):
             *np.meshgrid(x_coords, y_coords)
         )
         
-        # TODO: Verify if this +45 adjustment is needed for your region
+        # TODO: Verify if this +45 adjustment is needed
         lon_coords_mesh += 45
 
         # Create target grid in UTM coordinates
@@ -638,9 +642,10 @@ GRID_hs = np.zeros((len(bin_time),len(bin_x),len(bin_y))) #integrated h grid for
 GRID_stds = np.zeros((len(bin_time),len(bin_x),len(bin_y))) #integrated std grid for each timestep
 GRID_neff = np.zeros((len(bin_time),len(bin_x),len(bin_y))) #integrated neff grid for each timestep
 # Initialize the main 4-dimensional GRID as nested list with proper dimensions
-GRID = [[None for _ in range(num_layers)] for _ in range(num_timesteps)]
+time_steps_full = len(ODdata.variables['time'])-50 #number of timesteps, define this now to get correct length of vectors
+GRID = [[None for _ in range(len(bin_z))] for _ in range(time_steps_full)]
 # Initialize GRID for storing vertical transort in each grid cell
-GRID_vtrans = [[None for _ in range(num_layers)] for _ in range(num_timesteps)]
+GRID_vtrans = [[None for _ in range(len(bin_z))] for _ in range(time_steps_full)]
 integral_length_scale_windows = GRID #integral length scale grid
 standard_deviations_windows = GRID #standard deviation grid
 neff_windows = GRID #neff grid
@@ -683,7 +688,7 @@ N_eff = np.zeros(np.shape(GRID_active))
 
 
 # ---------------------------------------------------------------------
-# PROJECT AND/OR LODE WIND AND SST FIELD DATA (IF SELECTED) AND GET GAS TRANSFER VELOCITY FIELDS
+# PROJECT AND/OR LOAD WIND AND SST FIELD DATA (IF SELECTED) AND GET GAS TRANSFER VELOCITY FIELDS
 # ---------------------------------------------------------------------
 
 if fit_wind_data == True:
@@ -744,9 +749,8 @@ for kkk in range(1,time_steps_full-1):
     # ------------------------------------------------------
 
     # Add option here to use memory vs cpu optimized version?
-
     if kkk==1:         
-        ### Load all data into memory ###
+        ### Load all data into memory if first timestep ###
         if load_from_nc_file == True:
             #import multiprocessing as mp
             #from tqdm import tqdm
@@ -794,43 +798,31 @@ for kkk in range(1,time_steps_full-1):
         particles['age'][:,1][np.where(particles['weight'][:,1].mask == False)] = 0
         particles['age'][:,0] = particles['age'][:,1]
 
-    #set all nan values in aprticles['z'] to the deepest grid
+    #set all nan values in particles['z'] to the deepest layer - this is to solve a problem with a few particles being stuck in the seafloor when using sigma-layer parametrization.
     lost_particles_due_to_nandepth += len(particles['z'][np.isnan(particles['z'])])
     particles['z'][np.isnan(particles['z'])] = -(np.max(bin_z)-1)
     print({'Particles in seafloor: '+str(lost_particles_due_to_nandepth)})
     
-    # Take time for data loading... 
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    #print(f"Data loading: {elapsed_time:.6f} seconds")
-
     # Find active particles for later processing.. 
     active_particles = np.where(particles['z'][:,1].mask == False)[0]
 
-    # --------------------------------------------------------------------------------
-    # TAKE CARE OF DYING PARTICLES AND REDISTRIBUTE LOST MASS TO NEARBY PARTICLES
-    # --------------------------------------------------------------------------------
+    # -----------------------------
+    # TAKE CARE OF DYING PARTICLES 
+    # -----------------------------
 
-    #This adds a lot of computation time.
-
-    # set a trigger for this because this is quite slow
+    #This adds quite a bit of computation time...
     if redistribute_lost_mass == True:
 
         # Get deactivated indices safely
         deactivated_indices = np.where((particles['z'][:,1].mask == True) & 
                                     (particles['z'][:,0].mask == False))[0]
-
-        #make sure deactivated_indices is int
         deactivated_indices = deactivated_indices.astype(np.int64)
-
-        #remove all indices from the deactivated list to get the indices of particles that died (and not just left the grid)
+        #remove all outside_grid -indices from the deactivated list to get the indices of particles that died (and not just left the grid)
         particles_that_died = deactivated_indices[~np.isin(deactivated_indices, outside_grid)]
 
         ### Redistribute weights of particles that died to nearby particles ###
-
         if deactivated_indices.size > 0:
             particles_mass_died[kkk] = np.sum(particles['weight'][particles_that_died,0])
-            
             # Create KDTree for active particles
             active_positions = np.column_stack((
                 particles['UTM_x'][active_particles,1],
@@ -869,7 +861,7 @@ for kkk in range(1,time_steps_full-1):
             print(f"Redistributed {np.sum(dead_weights):.2f} moles of methane from {len(particles_that_died)} particles")
 
         else:
-            particles_mass_died[kkk] = 0
+            particles_mass_died[kkk] = 0 #store info..
     else:
         particles_mass_died[kkk] = 0
         particle_mass_redistributed[kkk]=0
@@ -1137,7 +1129,7 @@ for kkk in range(1,time_steps_full-1):
         # CALCULATE THE KERNEL DENSITY ESTIMATE
         # -------------------------------------
 
-        if (kde_all and i < 12) or i == 0:  # Perform KDE for first 10 layers or layer 0
+        if (kde_all and i < 12) or i == 0 or kkk>= 720:  # Perform KDE for first 10 layers or layer 0
             #print('Doing kde for depth layer',i)
 
             # ------------------------------
@@ -1169,7 +1161,6 @@ for kkk in range(1,time_steps_full-1):
             # Using no KDE at all 
             # ------------------------------
 
-            2+3+4
 
             if h_adaptive == 'No_KDE':
                 GRID_active = preGRID_active
@@ -1188,7 +1179,7 @@ for kkk in range(1,time_steps_full-1):
                                             gaussian_kernels,
                                             gaussian_bandwidths_h,
                                             preGRID_active_bw,
-                                            impermissible_cells=impermissible_cells[:,:,i],)
+                                            illegal_cells=impermissible_cells[:,:,i],)
                 end_time = time.time()
                 elapsed_time = end_time - start_time
                 print(f"KDE took {elapsed_time:.6f} seconds")
@@ -1253,15 +1244,15 @@ for kkk in range(1,time_steps_full-1):
                                             gaussian_kernels,
                                             gaussian_bandwidths_h,
                                             h_matrix_adaptive, #because it's symmetric
-                                            impermissible_cells = impermissible_cells[:,:,i])
-                
-                GRID_active_verttrans = akd.grid_proj_kde(bin_x,
+                                            illegal_cells = impermissible_cells[:,:,i])
+                if estimate_verttrans == True: 
+                    GRID_active_verttrans = akd.grid_proj_kde(bin_x,
                                             bin_y,
                                             preGRID_vert,
                                             gaussian_kernels,
                                             gaussian_bandwidths_h,
                                             h_matrix_adaptive, #because it's symmetric
-                                            impermissible_cells = impermissible_cells[:,:,i])
+                                            illegal_cells = impermissible_cells[:,:,i])
                 
 
                 end_time = time.time()
@@ -1295,18 +1286,18 @@ for kkk in range(1,time_steps_full-1):
 
             # Make explicit copies to avoid values affecting each other
             grid_copy = GRID_active.copy()
-            vtrans_copy = GRID_active.copy()
+            #vtrans_copy = GRID_active.copy()
 
             # Create sparse matrices from copies
             sparse_grid = csr_matrix(grid_copy)
-            sparse_vtrans = csr_matrix(vtrans_copy)
+            #sparse_vtrans = csr_matrix(vtrans_copy)
             
             GRID[kkk][i] = sparse_grid
-            GRID_vtrans[kkk][i] = sparse_vtrans
+            #GRID_vtrans[kkk][i] = sparse_vtrans
 
             # Cleanup
-            del grid_copy, vtrans_copy
-            del sparse_grid, sparse_vtrans
+            #del grid_copy, vtrans_copy
+            del sparse_grid#, sparse_vtrans
 
             #Other stuff that could be added... 
             #GRID_top[kkk,:,:] = GRID_copy
@@ -1371,12 +1362,12 @@ print(f"Full calculation time was: {total_computation_time}")
 # ----------------------
 
 #Save the GRID, GRID_atm_flux and GRID_mox, ETC to pickle files
-#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'wb') as f:
+#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\GRID.pickle', 'wb') as f:
 #    pickle.dump(GRID, f)
     #create a sparse matrix first
 #load the GRID file
-#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
-#    GRID = pickle.load(f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\data_02diff\\GRID.pickle', 'rb') as f:
+    GRID = pickle.load(f)
 
 if save_data_to_file == True:
     #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
@@ -1465,9 +1456,7 @@ if save_data_to_file == True:
 #----------------------------------------------------------------------------------------------------#
 ######################################################################################################
 
-#define plotting style set do default
-dark_mode = True
-#Set to dark mode
+# Define plotting style 
 dark_mode = True
 if dark_mode == True:
     plt.style.use('dark_background')
@@ -1475,726 +1464,461 @@ if dark_mode == True:
 else:
     plt.style.use('default')
     colormap = 'rocket_r'
-
-#Remove the first 
-
-#Get grid on lon/lat and limits for the figures. 
+#Get the lan/lot mesh for the grid 
 lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
-
+#And limits
 min_lon = np.min(lon_mesh)
 max_lon = np.max(lon_mesh)
 min_lat = np.min(lat_mesh)
 max_lat = np.max(lat_mesh)
-
-#-------------------------------#
-#PLOT THE ATMOSPHERIC FLUX FIELD#
-#-------------------------------#
-
-#load the GRID_atm_flux
-#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
-#    GRID_atm_flux = pickle.load(f)
-
-#################################################################################
-############ PLOTTING TIMESERIES OF DIFFUSIVE ATMOSPHERIC FLUX FIELD ############
-#################################################################################
-
-#Define seep site location
-poi={
-        'lon': 14.279600,
-        'lat': 68.918600,
-        'color': 'yellow',
-        'size': 24,
-        'label': 'Seep site',
-        'edgecolor': 'black'
-    }
-#OR ANY OTHER FIELD, REALLY, JUST CHANGE THE GRID VARIABLE...
-
-#Calculate atmospheric flux field per square meter per hour
-GRID_atm_flux_m2 = (GRID_atm_flux/(dxy_grid**2))#
-GRID_gt_vel = GRID_gt_vel #Here, just in cm/hr for convention. 
-
-
-GRID_generic = GRID_atm_flux_m2
-images_atm_rel = []
-levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
-#levels_atm = levels_atm[1:-1]
-levels_atm = levels_atm[:-50]*0.25
-
-#datetimevector for the progress bar
-times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
-
+#Date and timestep vectors
+times_totatm =  pd.to_datetime(bin_time,unit='s')
 twentiethofmay = 720
 time_steps = 1495
 
-do = False
-if do == True:
-    for i in range(twentiethofmay,time_steps,1):
-        fig = gp.plot_2d_data_on_map(data=GRID_generic[i, :, :].T,
-                                    lon=lon_mesh,
-                                     lat=lat_mesh,
-                                    projection=projection,
-                                    levels=levels_atm,
-                                    timepassed=[i-twentiethofmay, time_steps-twentiethofmay],
-                                    colormap=colormap,
-                                    title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i])[5:-3],
-                                    unit='mol m$^{-2}$ hr$^{-1}$',
-                                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
-                                    adj_lon = [1,-1],
-                                    adj_lat = [0,-0.5],
-                                    show=False,
-                                    dpi=90,
-                                    figuresize = [12,10],
-                                    log_scale = True,
-                                    starttimestring = '20 May 2018',
-                                    endtimestring = '21 June 2018',
-                                    maxnumticks = 10,
-                                    plot_progress_bar = True,
-                                    #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
-                                    contoursettings = [2,'0.8',0.1])
-        images_atm_rel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png'))
-        plt.close(fig)  # Close the figure to avoid displaying it
+#Some triggers
+plot_atm_flux = False
+plot_concentration = False
+create_video_layers = False
+create_gif_layers = False
+create_video_atm_flux = False
+create_gif_atm_flux = False
+plot_loss = False
+plot_cross_section = False
+plot_cross_section_location = False
+plot_lifetime_plots = False
 
-    #create gif
-    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux.gif', images_atm_rel, duration=0.5)
+# ------------------------------------------ #
+# PLOT SEVERAL DEPTH LAYERS OF CONCENTRATION #
+# ------------------------------------------ #
 
-#############################################################
-############ PLOTTING TIMESERIES OF GT_VEL FIELD ############
-#############################################################
+if plot_concentration == True:
 
-#load the GRID_gt_vel
-#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'rb') as f:
-#    GRID_gt_vel = pickle.load(f)
+    # ----------------------------
+    # DEFINE THE BATHYMETRY LINES
+    bathymetry_lines = gp.get_bathymetry_lines(impermissible_cells, lon_mesh, lat_mesh)
 
-plot_atm=False
-if plot_atm == True:
-    GRID_generic = GRID_gt_vel
-    images_atm_rel = []
-    #datetimevector for the progress bar
-    times = pd.to_datetime(bin_time,unit='s')#-pd.to_datetime('2020-01-01')+pd.to_datetime('2018-05-20')
+    # ----------------------
+    # MAKE ONE PLOT FOR AVERAGE CONCENTRATION FOR EACH LAYER 
 
-    images_gt_vel = []
-    levels_gt = np.linspace(np.nanmin(np.nanmin(GRID_gt_vel)),np.nanmax(np.nanmax(GRID_gt_vel)),20)
+    #Calculate the average for each layer
+    GRID_average = np.zeros([10,389,501])
+    for n in range(1485-720):
+        for k in range(10):
+            GRID_average[k,:,:] = GRID_average[k,:,:]+GRID[n+720][k].toarray()
+    GRID_average = GRID_average/len(range(1485-720)) #This is the time average for each layer
+    layers = [GRID_average[i] for i in range(9)] #This is the layers to plot
+    vmax = max(np.nanmax(layer) for layer in layers)*0.75 #Set upper limit
+    vmin = 0.01*vmax #set lower limit
+    levels = np.linspace(vmin, vmax, 100) #Define specific levels for the plot
+    titles = [f'{bin_z[i]:.0f}-{bin_z[i+1]:.0f}m {times_totatm[timestep-twentiethofmay]:%d.%b %H:%M}' 
+            for i in range(9)] #Define titles for each plot (if plotted many times)
+    depthstrings = [f'{bin_z[i]:.0f}-{bin_z[i+1]:.0f}m' for i in range(9)] #Depth strings for the subplots
+    timestrings = ['Time averaged concentration, May 20 - June 20'] #Time strings for the main title
+    #Define seep site location
+    poi={
+            'lon': 14.279600,
+            'lat': 68.918600,
+            'color': 'yellow',
+            'size': 24,
+            'label': 'Seep site',
+            'edgecolor': 'black'
+        }
+    timestep= 1000 #Set timestep just to avoid errors since the function demands a timestep
+    # PLOT!
+    fig = gp.plot_multiple_2d_data_on_map(
+        data_list=layers,
+        lon=lon_mesh,
+        lat=lat_mesh,
+        projection=projection,
+        levels=levels,
+        timepassed=[timestep-twentiethofmay,time_steps-twentiethofmay],
+        colormap=colormap,
+        titles=titles,
+        bathymetry_lines = bathymetry_lines,
+        unit='mol m$^{-3}$',
+        adj_lon = [2.7,-2.5],
+        depthstring = depthstrings,
+        timestring = timestrings,
+        figsize = (18,18),
+        nrows = 3,
+        ncols = 3,
+        adj_lat = [0.15,-1.2],
+        log_scale=True,
+        plot_progress_bar = False,
+        poi=poi
+    )
+    plt.show()
+    fig
 
-    for i in range(twentiethofmay,time_steps,2):
-        fig = gp.plot_2d_data_on_map(data=GRID_gt_vel[i, :, :],
-                                    lon=lon_vec,
-                                    lat=lat_vec,
-                                    projection=projection,
-                                    levels=levels_gt,
-                                    timepassed=[i-twentiethofmay, time_steps-twentiethofmay],
-                                    colormap=colormap,
-                                    title='Gas transfer velocity [cm hr$^{-1}$]' + str(times[i]),
-                                    unit='cm hr$^{-1}$',
-                                    savefile_path=r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\results\atmosphere\gt_vel_gif\gt_vel' + str(i) + '.png',
-                                    adj_lon = [1,-1],
-                                    adj_lat = [0,-0.7],
-                                    show=False,
-                                    dpi=90,
-                                    figuresize = [12,10],
-                                    log_scale = False,
-                                    starttimestring = '20 May 2018',
-                                    endtimestring = '20 June 2018',
-                                    poi=poi)
-        images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel' + str(i) + '.png'))
-        plt.close(fig)  # Close the figure to avoid displaying it
+    # -----------------------------
+    # CREATE ANIMATION FOR THE WHOLE TIMESERIES
 
-    #create gif
-    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\gt_vel_gif\\gt_vel.gif', images_gt_vel, duration=0.5)
+    if create_gif_layers == True or create_video_layers == True:
 
-###########################################################################
-############ PLOTTING 2D FIELD OF ACCUMULATED ATMOSPHERIC FLUX ############
-###########################################################################
+        foldername = 'C:\\Users\\'
+        images_layers = [] #empty list to store images
+        timestep_vector = np.arange(twentiethofmay,time_steps,1) #timestepvector
 
-GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofmay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
-total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
-percent_of_release = np.round((total_sum/(num_seed*mass_full_sim*(30*24)))*100,4) #why multiply with 100??? Because it's percantage dumb-ass
-GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol. THIS IS ALREADY IN MOLAR. But divide to get per square meter
-levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),100)
-levels = levels[:]
-#flip the lon_vector right/left
+        for timestep in timestep_vector:
+            print(timestep)
+            timestrings = [f'{times[timestep]:%d.%b %H:%M}']
+            GRID_tmp = GRID[timestep]
+            layers = [GRID_tmp[i].toarray() for i in range(9)]
+            fig = gp.plot_multiple_2d_data_on_map(
+                data_list=layers,
+                lon=lon_mesh,
+                lat=lat_mesh,
+                projection=projection,
+                levels=levels,
+                timepassed=[timestep-twentiethofmay,time_steps-twentiethofmay],
+                colormap=colormap,
+                titles=titles,
+                bathymetry_lines = bathymetry_lines,
+                unit='mol m$^{-3}$',
+                adj_lon = [2.7,-2.5],
+                depthstring = depthstrings,
+                timestring = timestrings,
+                figsize = (18,18),
+                nrows = 3,
+                ncols = 3,
+                adj_lat = [0.15,-1.2],
+                log_scale=True,
+                plot_progress_bar = False,
+                poi=poi
+            )
+            savefile_path=foldername+'layer'+str(timestep)+'.png'
+            fig.savefig(savefile_path,dpi=90,transparent=False,bbox_inches='tight')
+            plt.close(fig)  # Close the figure to avoid displaying it bv801
 
-gp.plot_2d_data_on_map(data=GRID_atm_flux_sum.T,
-                    lon=lon_mesh,
-                    lat=lat_mesh,
-                    projection=projection,
-                    levels=levels,
-                    timepassed=[1, time_steps],
-                    colormap=colormap,
-                    title='Total released methane = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',
-                    unit='mol m$^{-2}$',
-                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\atm_flux_sum.png',
-                    show=True,
-                    adj_lon = [0,0],
-                    adj_lat = [0,0],
-                    dpi=60,
-                    figuresize = [12,10],
-                    log_scale = True,
-                    plot_progress_bar = False,
-                    maxnumticks = 9,
-                    plot_model_domain = True,#[min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
-                    contoursettings = [4,'0.8',0.1],
-                    poi=poi)
+        #
+        if create_video_layers == True:
+            # Get and sort filenames numerically
+            filenames = sorted([f for f in os.listdir(foldername) if f.endswith('.png')], 
+                            key=lambda x: int(x.replace('layer', '').replace('.png', '')))
+            import cv2
+            # Load all images first
+            images_layers = []
+            for filename in filenames:
+                filepath = os.path.join(foldername, filename)
+                img = cv2.imread(filepath)
+                if img is not None:
+                    images_layers.append(img)
 
-#######################################################################
-############ PLOTTING TIMESERIES OF TOTAL ATMOSPHERIC FLUX ############
-#######################################################################
+            if len(images_layers) > 0:
+                # Get size from first image
+                size = (images_layers[0].shape[1], images_layers[0].shape[0])  # width, height
+                
+                # Create VideoWriter object
+                output_path = foldername+'layers.mp4'
+                fps = 8  # frames per second
+                out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
 
-color_3 = '#448ee4'
-color_4 = '#b66325'
+                # Write frames
+                for image in images_layers:
+                    out.write(image)  # No need to convert BGR since cv2.imread already returns BGR
 
-#set default matplotlib plotting style
-#plt.style.use('default')
-#Set plotting style
-plt.style.use('dark_background') 
-#get corresponding time vector
-times_totatm =  pd.to_datetime(bin_time,unit='s')
+                # Release the video writer
+                out.release()
+            else:
+                print("No images found in the specified directory")
 
-#calculate the average wind field at each timestep
-average_wind = np.nanmean(np.nanmean(ws_interp,axis=1),axis=1)
+        #create gif
+        if create_gif_layers == True:
 
-gridalpha = 0.4
+            for filename in filenames:
+                images_layers.append(imageio.imread(foldername+filename))
+                #create gif
 
-# For the 2x2 subplot figure:
-fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
-
-# Convert timestamps to numerical values
-numerical_times = pd.to_numeric((times_totatm))
-
-#find four evenly spaced ticks
-tick_indices = np.linspace(twentiethofmay, time_steps - 1, 4).astype(int)
-
-# Calculate tick positions (4 evenly spaced ticks)
-tick_positions = times_totatm[tick_indices]
-
-# Create tick labels using datetime formatting
-tick_labels = pd.to_datetime(tick_positions).strftime('%d.%b')
-
-linewidth_set = 2.5
-
-## Keep existing ax1 plot and add twin axis
-ax1.plot(times_totatm[twentiethofmay:time_steps], 
-         total_atm_flux[twentiethofmay:time_steps], 
-         color=color_1, 
-         linewidth=linewidth_set,
-         label='Atmospheric Flux')
-
-# Set labels
-ax1.set_ylabel('Atmospheric Flux [mol hr$^{-1}$]', color=color_1)
-
-ax1.grid(True, alpha=gridalpha)
-ax1.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
-
-# Style the twin axis
-ax1.tick_params(axis='y', labelcolor=color_1)
-
-# Create twin axis
-ax1_twin = ax1.twinx()
-
-# Plot wind data
-ax1_twin.plot(times_totatm[twentiethofmay:time_steps], 
-              average_wind[twentiethofmay:time_steps], 
-              color='grey', 
-              linewidth=linewidth_set,
-              linestyle='--',
-              label='Wind Speed')
-
-# Set labels
-ax1.set_ylabel('Atmospheric Flux [mol hr$^{-1}$]', color=color_1)
-ax1_twin.set_ylabel('Wind Speed [m s$^{-1}$]', color='grey')
-
-# Style the twin axis
-ax1_twin.tick_params(axis='y', labelcolor='black')
-ax1_twin.grid(False)  # Disable grid for twin axis
-
-# Add legends
-lines1, labels1 = ax1.get_legend_handles_labels()
-lines2, labels2 = ax1_twin.get_legend_handles_labels()
-ax1.legend(lines1 + lines2, labels1 + labels2, 
-          loc='upper center', fontsize=12)
-
-# Maintain existing formatting
-ax1_twin.set_xticks(tick_positions)
-ax1_twin.set_xticklabels(tick_labels, rotation=0, ha='center')
-
-#what is total mox????
-# Plot 2: Total MOx
-ax2.plot(times_totatm[twentiethofmay:time_steps], particles_mox_loss[twentiethofmay:time_steps], color=color_2, linewidth=linewidth_set)
-#ax2.set_title('Microbial Oxidation')
-#ax2.set_xlabel('Timestep')
-ax2.set_ylabel('mol hr$^{-1}$')
-ax2.grid(True, alpha=gridalpha)
-ax2.set_xticks(tick_positions)
-ax2.set_ylabel('Microbial oxidation [mol hr$^{-1}$]')
-ax2.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
-
-# Plot 3: Particles leaving domain
-ax3.plot(times_totatm[twentiethofmay:time_steps], particles_mass_out[twentiethofmay:time_steps], color=color_3, linewidth=linewidth_set)    
-#ax3.set_title('Particles leaving domain')
-#ax3.set_xlabel('Timestep')
-ax3.set_ylabel('Particles leaving domain [mol hr$^{-1}$]')
-ax3.grid(True, alpha=gridalpha)
-ax3.set_xticks(tick_positions)
-ax3.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
-
-# Plot 4: Particles dying
-ax4.plot(times_totatm[twentiethofmay:time_steps], particles_mass_died[twentiethofmay:time_steps]-particle_mass_redistributed[twentiethofmay:time_steps], color=color_4, linewidth=linewidth_set)   
-#ax4.plot(times_totatm[twentiethofmay:time_steps], particle_mass_redistributed[twentiethofmay:time_steps], color=color_4, linewidth=linewidth_set)
-#ax4.set_title('Particles dying [mol hr$^{-1}$]')
-ax4.set_ylabel('Particles dying [mol hr$^{-1}$]')
-#ax4.set_xlabel('Timestep')
-ax4.grid(True, alpha=gridalpha)
-ax4.set_xticks(tick_positions)
-ax4.set_xlim([times_totatm[twentiethofmay], times_totatm[time_steps-1]])
-
-for ax in [ax1, ax2, ax3, ax4]:
-    ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, rotation=0, ha='center')
-
-#change fontsizes
-for ax in [ax1, ax2, ax3, ax4]:
-    #set title fontsize
-    ax.title.set_fontsize(16)
-    #set label fontsize
-    ax.xaxis.label.set_fontsize(14)
-    ax.yaxis.label.set_fontsize(14)
-    #set tick fontsize
-    ax.xaxis.set_tick_params(labelsize=14)
-    ax.yaxis.set_tick_params(labelsize=14)
-
-plt.tight_layout()
-
-#save figure
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\manuscript\\figures_for_manuscript\\methane_loss_no_vdiff.png')
+            imageio.mimsave(foldername+'layers.gif', images_layers, duration=0.5)
 
 
-#Check what's going on in the top layer, i.e. we need to loop through 
-#GRID and sum all the top layers
-plot_all = False
-if plot_all == True:
+# ------------------------------- #
+# PLOT THE ATMOSPHERIC FLUX FIELD #
+# ------------------------------- #
 
-    images_field_test = []
-    for n in range(0, len(GRID), 10):
-        print(n)
-        #GRID_top_sum = np.sum((GRID[n][:].toarray()))
-        GRID_top_sum = GRID_mox[n,:,:]
-        levels = np.linspace(0, np.max(maxmed)+20**-5, 20)
-        levels = levels[:-10]
-        #plot an imshow in the figure
-        #plt.imshow(GRID[n][0].toarray())
-        #skip timestep if GRID_top_sum only has zeros.. 
-        #if np.sum(GRID_top_sum) == 0:
-        #    continue
-        fig = gp.plot_2d_data_on_map(data = GRID_top_sum,
-                                lon = lon_mesh[0,:],
-                                lat = lat_mesh[:,0],
-                                projection = projection,
-                                levels = levels,
-                                timepassed = [n,time_steps],
-                                colormap = colormap,
-                                title = 'concentration [mol]'+str(times[n]),
-                                unit = 'mol',
-                                savefile_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png',
-                                show = False,
-                                adj_lon = [0,0],
-                                adj_lat = [0,-2.5],
-                                bar_position = [0.315,0.12,0.49558,0.03],
-                                dpi = 90,
-                                log_scale = False)
-        images_field_test.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_full\\make_gif\\mox_field_test'+str(n)+'.png'))
-        plt.close(fig)
-    
+if plot_atm_flux == True:
 
-############################
-#######PLOTTING WIND########
-############################
+    #load the GRID_atm_flux
+    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
+        GRID_atm_flux = pickle.load(f)
+    foldername = 'C:\\Users\\'
 
-if plot_wind_field == True:
+    # -----------------------
+    # PLOT ACCUMULATED ATMOSPHERIC FLUX FIELD
+        
+    GRID_atm_flux_sum = np.nansum(GRID_atm_flux[twentiethofmay:time_steps,:,:],axis=0) ##Calculate the sum of all timesteps in GRID_atm_flux in moles
+    total_sum = np.nansum(np.nansum(GRID_atm_flux_sum))#total sum
+    percent_of_release = np.round((total_sum/(num_seed*mass_full_sim*(30*24)))*100,4) #why multiply with 100??? Because it's percantage dumb-ass
+    GRID_atm_flux_sum = GRID_atm_flux_sum/(dxy_grid**2)#/1000000 #convert to mol.Divide to get per square meter
+    levels = np.linspace(np.nanmin(np.nanmin(GRID_atm_flux_sum)),np.nanmax(np.nanmax(GRID_atm_flux_sum)),100)
 
-    #load the wind data
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
-        ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
+    gp.plot_2d_data_on_map(data=GRID_atm_flux_sum.T,
+                        lon=lon_mesh,
+                        lat=lat_mesh,
+                        projection=projection,
+                        levels=levels,
+                        timepassed=[1, time_steps],
+                        colormap=colormap,
+                        title='Total released methane = '+str(np.round(total_sum,2))+' mol, $\sim'+str(percent_of_release)+'\%$',
+                        unit='mol m$^{-2}$',
+                        savefile_path=foldername + 'atm_flux_sum.png',
+                        show=True,
+                        adj_lon = [0.,-1.8],
+                        adj_lat = [0.15,0.],
+                        dpi=60,
+                        figuresize = [12,10],
+                        log_scale = True,
+                        plot_progress_bar = False,
+                        maxnumticks = 9,
+                        plot_model_domain = True,#[min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                        contoursettings = [4,'0.8',0.1],
+                        poi=poi)
 
-    levels_w = np.arange(-1, 24, 2)
-    levels_sst = np.arange(np.round(np.nanmin(sst_interp))-1, np.round(np.nanmax(sst_interp))+1, 1)-273.15
-    levels_gt_vel = np.arange(0, 0.5, 0.05)
-    #do the same plot but just on lon lat coordinates
-    #convert bin_x_mesh and bin_y_mesh to lon/la
-    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
-    #datetimevector
-    times = pd.to_datetime(bin_time,unit='s')
+    # -----------------------
+    # PLOTTING TIMESERIES OF DIFFUSIVE ATMOSPHERIC FLUX FIELD
 
-    images_wind = []
-    images_sst = []
+    if create_video_atm_flux == True or create_gif_atm_flux == True:
+        
+        images_layers = [] #empty list to store images
+        timestep_vector = np.arange(twentiethofmay,time_steps,1) #timestepvector
 
-    for i in range(time_steps):
-        fig = gp.plot_2d_data_on_map(ws_interp[i,:,:],lon_mesh,
-                        lat_mesh,projection,levels_w,[i,time_steps],
-                        colormap,'Wind speed, '+str(times[i])[:10],
-                        'm s$^{-1}$',
-                        savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png',
-                        dpi=90)
-        #append to gif list
-        images_wind.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind'+str(i)+'.png'))
-        plt.close(fig)
+        #Calculate atmospheric flux field per square meter per hour
+        GRID_atm_flux_m2 = (GRID_atm_flux/(dxy_grid**2))#
 
-        #SST PLOT
-        fig = gp.plot_2d_data_on_map(sst_interp[i,:,:]-273.15,lon_mesh,
-                        lat_mesh,projection,levels_sst,[i,time_steps],
-                        colormap,'Sea surface temperature, '+str(times[i])[:10],
-                        '°C',savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst'+str(i)+'.png',
-                        dpi=90)
-        #append to gif list
-        images_sst.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst'+str(i)+'.png'))
+        GRID_generic = GRID_atm_flux_m2#Define the generic grid
+        images_atm_rel = [] #Define list to store images
+        levels_atm = np.linspace(np.nanmin(np.nanmin(GRID_generic)),np.nanmax(np.nanmax(GRID_generic)),100)
+        levels_atm = levels_atm[:-50]*0.29 #Levels for contour plot
 
-        plt.close(fig)
-    #create a gif
-    #imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\wind\\create_gif\\wind_field.gif', images_wind, duration=0.5)
-    #and for sst
-    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\sst\\create_gif\\sst_field.gif', images_sst, duration=0.5)
+        for i in range(twentiethofmay,time_steps,1):
+            fig = gp.plot_2d_data_on_map(data=GRID_generic[i, :, :].T,
+                                        lon=lon_mesh,
+                                        lat=lat_mesh,
+                                        projection=projection,
+                                        levels=levels_atm,
+                                        timepassed=[i-twentiethofmay, time_steps-twentiethofmay],
+                                        colormap=colormap,
+                                        title='Atmospheric flux [mol m$^{-2}$ hr$^{-1}$]' + str(times[i])[5:-3],
+                                        unit='mol m$^{-2}$ hr$^{-1}$',
+                                        adj_lon = [0.,-1.8],
+                                        adj_lat = [0.15,0.],
+                                        show=False,
+                                        dpi=90,
+                                        figuresize = [12,10],
+                                        log_scale = True,
+                                        starttimestring = '20 May 2018',
+                                        endtimestring = '21 June 2018',
+                                        maxnumticks = 10,
+                                        plot_progress_bar = True,
+                                        plot_model_domain = True,
+                                        #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                                        contoursettings = [2,'0.8',0.1],
+                                        poi=poi
+                                        )
+            savefile_path=foldername+'atm_flux'+str(timestep)+'.png'
+            fig.savefig(savefile_path,dpi=90,transparent=False,bbox_inches='tight')
+            plt.close(fig)  # Close the figure to avoid displaying it bv801
 
-if plot_gt_vel == True:
-    levels_gt = np.arange(np.round(np.nanmin(GRID_gt_vel)), np.round(np.nanmax(GRID_gt_vel))+0.2, 10)
-    #do the same plot but just on lon lat coordinates
-    lat_mesh,lon_mesh = utm.to_latlon(bin_x_mesh,bin_y_mesh,zone_number=33,zone_letter='W')
-    #craete gif image list
-    images_gt_vel = []
-    for i in range(0,len(bin_time)):
-        fig = gp.plot_2d_data_on_map(GRID_gt_vel[i,:,:],
-                                    lon_mesh,
-                                    lat_mesh,
-                                    projection,
-                                    levels_gt,
-                                    [i,len(bin_time)],
-                                    colormap,
-                                    'Gas transfer velocity'+str(times[i])[:10],
-                                    'm d$^{-1}$',
-                                    savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png',
-                                    show=False,
-                                    dpi=90)
-        images_gt_vel.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\create_gif\\gt_vel'+str(i)+'.png'))
-        #save figure
-        plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\gt_vel'+str(i)+'.png')
-        plt.close(fig)
+        #Create gif if trigger is True
+        if create_video_atm_flux == True:
+            # Get and sort filenames numerically
+            filenames = sorted([f for f in os.listdir(foldername) if f.endswith('.png')], 
+                            key=lambda x: int(x.replace('atm_flux', '').replace('.png', '')))
+            import cv2
+            # Load all images first
+            images_layers = []
+            for filename in filenames:
+                filepath = os.path.join(foldername, filename)
+                img = cv2.imread(filepath)
+                if img is not None:
+                    images_layers.append(img)
 
-    #create a gif
-    imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\model_grid\\gt_vel\\gt_vel.gif', images_gt_vel, duration=0.5)
+            if len(images_layers) > 0:
+                # Get size from first image
+                size = (images_layers[0].shape[1], images_layers[0].shape[0])  # width, height
+                
+                # Create VideoWriter object
+                output_path = foldername+'atm_flux.mp4'
+                fps = 8  # frames per second
+                out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
 
-#################################################################
-############   PLOTTING TIMESERIES FROM CWC LOCATION ############
-#################################################################
+                # Write frames
+                for image in images_layers:
+                    out.write(image)  # No need to convert BGR since cv2.imread already returns BGR
 
-dothis = False
-if dothis == True:
+                # Release the video writer
+                out.release()
+            else:
+                print("No images found in the specified directory")
+
+        #create gif
+        if create_gif_atm_flux == True:
+            for filename in filenames:
+                images_layers.append(imageio.imread(foldername+filename))
+            imageio.mimsave(foldername+'atm_flux.gif', images_layers, duration=0.5)
 
 
-    #CWC location
-    lon_cwc = 17
-    lat_cwc = 69.5
-    depth_cwc = 90
+    # ------------------- #
+    # PLOT LOSS VARIABLES #
+    # ------------------- #
 
-    # Find the correct cell
-    lon_cwc_idx, lat_cwc_idx, depth_cwc_idx = find_nearest_grid_cell(
-        lon_cwc=lon_cwc ,
-        lat_cwc=lat_cwc, 
-        depth_cwc=depth_cwc,
+    if plot_loss = True:
+
+        fig = gp.plot_loss_analysis(times_totatm, total_atm_flux, ws_interp,
+                        particles_mox_loss, particles_mass_out,
+                        particles_mass_died, particle_mass_redistributed,
+                        twentiethofmay, time_steps)
+
+        plt.savefig('methane_loss.png', dpi=300, bbox_inches='tight')
+
+# ---------------------------
+# MAKE A CROSS SECTION PLOT 
+
+if plot_cross_section == True:
+
+    # Define the cross section
+    lon_start = 14.3
+    lat_start = 69.3
+    lon_end = 14.8
+    lat_end = 68.9
+
+    timestep = 1000 # Timestep to plot
+
+    # Convert cross section coordinates to UTM
+    x_start, y_start = utm.from_latlon(lat_start, lon_start,force_zone_number=33)[:2]
+    x_end, y_end = utm.from_latlon(lat_end, lon_end,force_zone_number=33)[:2]
+
+    #Find the nearest cell center to the cross section start and end points
+    lon_start_idx, lat_start_idx, depth_start_idx = find_nearest_grid_cell(
+        lon_cwc=lon_start ,
+        lat_cwc=lat_start, 
+        depth_cwc=0,
         lon_mesh=lon_mesh,
         lat_mesh=lat_mesh,
         bin_z=bin_z
     )
+    lon_end_idx, lat_end_idx, depth_end_idx = find_nearest_grid_cell(
+        lon_cwc=lon_end ,
+        lat_cwc=lat_end, 
+        depth_cwc=0,
+        lon_mesh=lon_mesh,
+        lat_mesh=lat_mesh,
+        bin_z=bin_z
+    )
+    # Use Bresenham's line algorithm to find all cells along the cross section
+    gridlist = akd.bresenham(lon_start_idx, lat_start_idx, lon_end_idx, lat_end_idx)
+    gridlist = np.array(gridlist)
 
-    concentration_cwc = []
+    #get the lon/lat coordinates of the cross section using lon_mesh and lat_mesh
+    lonlat_gridlist = np.zeros((len(gridlist),2))
+    for i in range(len(gridlist)):
+        lonlat_gridlist[i,1],lonlat_gridlist[i,0] = lat_mesh[gridlist[i,1],gridlist[i,0]],lon_mesh[gridlist[i,1],gridlist[i,0]]
 
-    #loop over from twentieth of may to time_steps_full
-    for i in range(twentiethofmay,time_steps):
-        #check if it's not empty
-        if GRID[i][depth_cwc_idx] is not None and len(GRID[i]) :
-            concentration_cwc.append(GRID[i][depth_cwc_idx][lat_cwc_idx,lon_cwc_idx])
+    #Calculate the distance along the cross-section
+    distances = np.sqrt(np.diff(gridlist[:,0])**2 + np.diff(gridlist[:,1])**2)*0.8
 
-    # Plot time series at CWC location
-    plt.figure(figsize=(12, 6))  # Wider figure
+    #create a longitude list
+    lon_list = bin_x[gridlist[:,0]]
 
-    # Calculate tick positions (4 evenly spaced ticks)
-    tick_indices = np.linspace(twentiethofmay, time_steps, 4, dtype=int)
-    tick_positions = times_totatm[tick_indices]
+    # Pick the gridcells defined by gridlist at every depth layer at timestep timestep
+    concentration_cross_section = np.zeros((len(bin_z),len(gridlist)))*np.nan
+    for i in range(len(bin_z)):
+        #check if there's data before trying to convert to array
+        if GRID[timestep][i] is not None:
+            depth_layer = GRID[timestep][i].toarray()
+            for j in range(len(gridlist)):
+                concentration_cross_section[i,j] = depth_layer[gridlist[j,0],gridlist[j,1]]
 
-    # Create tick labels
-    tick_labels = pd.to_datetime(tick_positions).strftime('%d.%b')
+    #extract bathymetry for the same coordinates
+    bathymetry_cross_section = []
+    bathymetry_cross_section = interpolated_bathymetry[gridlist[:,1],gridlist[:,0]]
+    # Create meshgrid for plotting
+    lon_sect_mesh, depth_mesh = np.meshgrid(lon_list, bin_z)
+    #add a zero at the beginning of the distance array
+    distances = np.insert(distances,0,0)
+    distance_mesh,depth_mesh = np.meshgrid(np.cumsum(distances),bin_z)
+    #total distance
+    total_distances = np.cumsum(distances)
+    #get the lon/lat coordinates of the cross section
+    for i in range(len(gridlist)):
+        lonlat_gridlist[i,1],lonlat_gridlist[i,0] = utm.to_latlon(bin_x[gridlist[i,0]],bin_y[gridlist[i,1]],zone_number=33,zone_letter='W')
 
-    # Plot concentration
-    plt.plot(times_totatm[twentiethofmay:time_steps], 
-            concentration_cwc,
-            color=color_1,  # Use same color scheme
-            linewidth=2)
+    # Ensure concentration values are positive and non-zero
+    concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
+    # Replace NaNs with zeros
+    concentration_cross_section = np.nan_to_num(concentration_cross_section)
+    # Define levels
+    levels = np.linspace(np.nanmin(concentration_cross_section) * 1.1, np.nanmax(concentration_cross_section), 100)
 
-    # Style the plot
-    plt.title('Concentration time series at location', fontsize=16)
-    plt.ylabel('Concentration [mol m$^{-3}$]', fontsize=14)
-    plt.grid(True, alpha=0.3)
-
-    # Set x-ticks
-    plt.xticks(tick_positions, tick_labels, rotation=45)
-    plt.tick_params(axis='both', labelsize=12)
-
-    # Adjust layout to prevent label cutoff
-    plt.tight_layout()
-
-
-#################################################################
-############ PLOT ALL DEPTH LAYERS FOR TIMESTEP 1000 ############
-#################################################################
-
-#Grab the depth layers from the 
-
-if kde_all == True:
-
-    # Set up the figure
-    fig, axs = plt.subplots(2, 3, figsize=(18, 12))
-    axs = axs.flatten()  # Flatten for easier indexing
-
-    # Define timestep
-    timestep = 1000
-    i = 4
-
-    layer_0 = GRID[timestep][0].toarray()
-    layer_1 = GRID[timestep][1].toarray()
-    layer_2 = GRID[timestep][2].toarray()
-    layer_3 = GRID[timestep][3].toarray()
-    layer_4 = GRID[timestep][4].toarray()
-    #layer_5 = GRID[timestep][5].toarray()
-
-    # get a good level parameter
-    levels = np.linspace(np.nanmin(np.nanmin(layer_0)),np.nanmax(np.nanmax(layer_0)),100)
-
-
-    # Loop through depth layers
-    for i in range(5):
-        # Get data for this layer
-        layer_data = GRID[timestep][i].toarray()  # Convert sparse to dense
-        
-        # Plot in corresponding subplot
-        fig = gp.plot_2d_data_on_map(
-            data=layer_data.T,
-            lon=lon_mesh,
-            lat=lat_mesh,
-            projection=projection,
-            levels=levels,  # Adjust levels as needed
-            timepassed=[timestep-twentiethofmay, time_steps-twentiethofmay],
-            colormap=colormap,
-            title=f'Depth Layer {bin_z[i]:.0f}-{bin_z[i+1]:.0f}m on {times_totatm[timestep-twentiethofmay]:%d.%b %H:%M}',
-            unit='mol m$^{-3}$',
-            ax=axs[i],
-            show=False,
-            log_scale=True,
-            plot_progress_bar = False,
-            maxnumticks=5
-        )
-
-    # Remove the last (empty) subplot
-    axs[-1].remove()
-
-    # Adjust layout
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    # Plot concentration data
+    pcm = ax.contourf(distance_mesh, depth_mesh, concentration_cross_section, 
+                    shading='auto',
+                    cmap='rocket',
+                    levels=levels,
+                    extend='max')  # Extend colorbar to indicate values beyond specified levels
+    # Plot contour lines with fewer levels
+    contour = ax.contour(distance_mesh, depth_mesh, concentration_cross_section, levels=levels[::2], colors='white', linewidths=0.1, zorder=1, alpha=0.5)
+    #ax.clabel(contour, inline=True, fontsize=8)
+    # Plot bathymetry as black line
+    ax.plot(total_distances, -np.array(bathymetry_cross_section), 'k-', linewidth=2, zorder=3)
+    # Fill below bathymetry line
+    ax.fill_between(total_distances, -np.array(bathymetry_cross_section), 
+                    -np.ones(len(bathymetry_cross_section)) * np.min(bathymetry_cross_section),
+                    color='grey', zorder=2)
+    # Customize plot
+    ax.set_xlabel('Distance [km]')
+    ax.set_ylabel('Depth [m]')
+    ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
+    # Add colorbar with specified levels
+    cbar = plt.colorbar(pcm, ticks=levels[::8])
+    cbar.set_label('Concentration [mol/m³]')
+    # Invert y-axis for depth
+    ax.invert_yaxis()
+    # Limit the y-axis to 250 m depth
+    ax.set_ylim([225, 0])
     plt.tight_layout()
     plt.show()
 
-    # Save
-    plt.savefig('depth_layers_timestep_1000.png', dpi=150, bbox_inches='tight')
+# ------------------------------------
+# MAKE A MAP PLOT OF THE BATHYMETRY AND CROSS SECTION LOCATION
 
+if plot_cross_section_location == True:
 
-###############################################
-########## MAKE A CROSS SECTION PLOT ##########
-###############################################
+    cross_section = lonlat_gridlist
+    levels_bath = [0,25,50,75,100,125,150,175,200,225,250,275,300,350,400,450,500,600,700,800,900,1000]
 
-# Define the cross section
-lon_start = 14.3
-lat_start = 69.3
-lon_end = 14.8
-lat_end = 68.9
+    #levels for concentration data
+    fig = gp.plot_2d_data_on_map(data=np.abs(interpolated_bathymetry),
+                                lon=lon_mesh,
+                                    lat=lat_mesh,
+                                projection=projection,
+                                levels=levels_bath,
+                                timepassed = [0,1],
+                                colormap=colormap,
+                                title='Bathymetry',
+                                unit='Depth [m]',
+                                savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
+                                adj_lon = [1,-1],
+                                adj_lat = [0,-0.5],
+                                show=False,
+                                dpi=90,
+                                figuresize = [12,10],
+                                log_scale = False,
+                                starttimestring = '20 May 2018',
+                                endtimestring = '21 June 2018',
+                                maxnumticks = 10,
+                                plot_progress_bar = False,
+                                #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
+                                contoursettings = [2,'0.8',0.1],
+                                plot_sect_line = cross_section
+                                )
 
-timestep = 1000
-
-# Convert cross section coordinates to UTM
-x_start, y_start = utm.from_latlon(lat_start, lon_start,force_zone_number=33)[:2]
-x_end, y_end = utm.from_latlon(lat_end, lon_end,force_zone_number=33)[:2]
-
-#Normalize the modeling UTM grid such that the grid cell length is 1
-
-lon_start_idx, lat_start_idx, depth_start_idx = find_nearest_grid_cell(
-    lon_cwc=lon_start ,
-    lat_cwc=lat_start, 
-    depth_cwc=0,
-    lon_mesh=lon_mesh,
-    lat_mesh=lat_mesh,
-    bin_z=bin_z
-)
-
-lon_end_idx, lat_end_idx, depth_end_idx = find_nearest_grid_cell(
-    lon_cwc=lon_end ,
-    lat_cwc=lat_end, 
-    depth_cwc=0,
-    lon_mesh=lon_mesh,
-    lat_mesh=lat_mesh,
-    bin_z=bin_z
-)
-
-# Use Bresenham's line algorithm to find all cells along the cross section
-gridlist = akd.bresenham(lon_start_idx, lat_start_idx, lon_end_idx, lat_end_idx)
-gridlist = np.array(gridlist)
-
-#get the lon/lat coordinates of the cross section using lon_mesh and lat_mesh
-lonlat_gridlist = np.zeros((len(gridlist),2))
-for i in range(len(gridlist)):
-    lonlat_gridlist[i,1],lonlat_gridlist[i,0] = lat_mesh[gridlist[i,1],gridlist[i,0]],lon_mesh[gridlist[i,1],gridlist[i,0]]
-
-distances = np.sqrt(np.diff(gridlist[:,0])**2 + np.diff(gridlist[:,1])**2)*0.8
-
-#create a longitude list
-lon_list = bin_x[gridlist[:,0]]
-
-# Pick the gridcells defined by gridlist at every depth layer at timestep timestep
-concentration_cross_section = np.zeros((len(bin_z),len(gridlist)))*np.nan
-for i in range(len(bin_z)):
-    #check if there's data before trying to convert to array
-    if GRID[timestep][i] is not None:
-        depth_layer = GRID[timestep][i].toarray()
-        for j in range(len(gridlist)):
-            concentration_cross_section[i,j] = depth_layer[gridlist[j,0],gridlist[j,1]]
-
-#extract bathymetry for the same coordinates
-bathymetry_cross_section = []
-bathymetry_cross_section = interpolated_bathymetry[gridlist[:,1],gridlist[:,0]]
-
-# Create meshgrid for plotting
-lon_sect_mesh, depth_mesh = np.meshgrid(lon_list, bin_z)
-
-#add a zero at the beginning of the distance array
-distances = np.insert(distances,0,0)
-
-distance_mesh,depth_mesh = np.meshgrid(np.cumsum(distances),bin_z)
-
-#total distance
-total_distances = np.cumsum(distances)
-
-#get the lon/lat coordinates of the cross section
-#lonlat_gridlist = np.zeros((len(gridlist),2))
-for i in range(len(gridlist)):
-    lonlat_gridlist[i,1],lonlat_gridlist[i,0] = utm.to_latlon(bin_x[gridlist[i,0]],bin_y[gridlist[i,1]],zone_number=33,zone_letter='W')
-
-#define levels
-levels = np.linspace(np.nanmin(concentration_cross_section)*1.1,np.nanmax(concentration_cross_section)/1.1,100)
-
-# Ensure concentration values are positive and non-zero
-concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
-# Replace NaNs with zeros
-concentration_cross_section = np.nan_to_num(concentration_cross_section)
-
-# Define levels
-levels = np.linspace(np.nanmin(concentration_cross_section) * 1.1, np.nanmax(concentration_cross_section), 100)
-
-# Create figure
-fig, ax = plt.subplots(figsize=(12, 6))
-
-# Plot concentration data
-pcm = ax.contourf(distance_mesh, depth_mesh, concentration_cross_section, 
-                  shading='auto',
-                  cmap='rocket',
-                  levels=levels,
-                  extend='max')  # Extend colorbar to indicate values beyond specified levels
-
-
-# Plot contour lines with fewer levels
-contour = ax.contour(distance_mesh, depth_mesh, concentration_cross_section, levels=levels[::2], colors='white', linewidths=0.1, zorder=1, alpha=0.5)
-#ax.clabel(contour, inline=True, fontsize=8)
-#Try pcolor instead
-
-
-# Plot bathymetry as black line
-ax.plot(total_distances, -np.array(bathymetry_cross_section), 'k-', linewidth=2, zorder=3)
-
-# Fill below bathymetry line
-ax.fill_between(total_distances, -np.array(bathymetry_cross_section), 
-                -np.ones(len(bathymetry_cross_section)) * np.min(bathymetry_cross_section),
-                color='grey', zorder=2)
-
-# Customize plot
-ax.set_xlabel('Distance [km]')
-ax.set_ylabel('Depth [m]')
-ax.set_title(f'Concentration Cross Section (Timestep {timestep})')
-
-# Add colorbar with specified levels
-cbar = plt.colorbar(pcm, ticks=levels[::8])
-cbar.set_label('Concentration [mol/m³]')
-
-# Invert y-axis for depth
-ax.invert_yaxis()
-
-# Limit the y-axis to 250 m depth
-ax.set_ylim([225, 0])
-
-# Add grid lines
-#ax.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.5)
-
-plt.tight_layout()
-plt.show()
-
-# Make a map plot of the bathymetry and the line that was used for the cross section
-
-
-cross_section = lonlat_gridlist
-
-levels_bath = [0,25,50,75,100,125,150,175,200,225,250,275,300,350,400,450,500,600,700,800,900,1000]
-
-#levels for concentration data
-
-colormap  = 'rocket_r'
-
-fig = gp.plot_2d_data_on_map(data=np.abs(interpolated_bathymetry),
-                            lon=lon_mesh,
-                                lat=lat_mesh,
-                            projection=projection,
-                            levels=levels_bath,
-                            timepassed = [0,1],
-                            colormap=colormap,
-                            title='Bathymetry',
-                            unit='Depth [m]',
-                            savefile_path='C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\diss_atmospheric_flux\\test_run_25m\\make_gif\\atm_flux' + str(i) + '.png',
-                            adj_lon = [1,-1],
-                            adj_lat = [0,-0.5],
-                            show=False,
-                            dpi=90,
-                            figuresize = [12,10],
-                            log_scale = False,
-                            starttimestring = '20 May 2018',
-                            endtimestring = '21 June 2018',
-                            maxnumticks = 10,
-                            plot_progress_bar = False,
-                            #plot_model_domain = [min_lon,max_lon,min_lat,max_lat,0.5,[0.4,0.4,0.4]],
-                            contoursettings = [2,'0.8',0.1],
-                            plot_sect_line = cross_section
-                            )
-
-
-
-#L
-
-particles_all_data.keys()
-
-#loop over 
-
-
-#######################################
-### PLOTLY CONTOUR WORK IN PROGRESS ###
-#######################################
-
-
-# Ensure concentration values are positive and non-zero
-concentration_cross_section = np.maximum(concentration_cross_section, 1e-10)
-
-
-#########################################
-############ LIFETIME PLOT ##############
-#########################################
-#set plotting style to default
-plt.style.use('default')
+# -------------- #
+# LIFETIME PLOTS #
+# -------------- #
 
 # Calculate the fraction of molecules at each depth level using the particle_lifespan_matrix[:,:,0] data
 
@@ -2389,7 +2113,7 @@ for kkk in range(1, time_steps_full-1):
         if GRID[kkk][i] is not None and GRID_vtrans[kkk][i] is not None:
             # Get concentrations and velocities
             conc = GRID[kkk][i].toarray()
-            vtrans = GRID_vtrans[kkk][i].toarray()
+            #vtrans = GRID_vtrans[kkk][i].toarray()
             
             # Calculate vertical flux:
             # (mol/m³ * m³) * (m/m³ * 1/s) = mol/m²/s

@@ -26,13 +26,66 @@ import matplotlib.gridspec as gridspec
 from matplotlib.colors import LogNorm
 from matplotlib.ticker import MaxNLocator, FuncFormatter
 import gc
+from scipy.interpolate import RegularGridInterpolator
 
 
 # Cache features for reuse
 _CACHED_FEATURES = {}
+def find_bathymetry_line(bathymetry, lon, lat):
+    """
+    Extract all bathymetry contour lines from a boolean/integer array.
+    
+    Parameters
+    ----------
+    bathymetry : np.ndarray
+        2D boolean/integer array where 1s are above and 0s below the line
+    lon : np.ndarray
+        Longitude coordinates matrix
+    lat : np.ndarray
+        Latitude coordinates matrix
+        
+    Returns
+    -------
+    tuple
+        (lines_x, lines_y) lists of coordinates for each contour line
+    """
+    from skimage import measure
+    
+    # Find contours in index space
+    contours = measure.find_contours(bathymetry, level=0.5)
+    
+    if not contours:
+        return None, None
+    
+    # Get the actual grid dimensions
+    ny, nx = bathymetry.shape
+    
+    # Create regular grids for interpolation
+    y_grid = np.arange(ny)
+    x_grid = np.arange(nx)
+    
+    # Create interpolators for longitude and latitude
+    lon_interp = RegularGridInterpolator((y_grid, x_grid), lon)
+    lat_interp = RegularGridInterpolator((y_grid, x_grid), lat)
+    
+    # Process all contours
+    lines_x = []
+    lines_y = []
+    
+    for contour in contours:
+        # Convert from index space to coordinate space
+        points = np.column_stack((contour[:, 0], contour[:, 1]))
+        line_x = lon_interp(points)
+        line_y = lat_interp(points)
+        
+        lines_x.append(line_x)
+        lines_y.append(line_y)
+    
+    return lines_x, lines_y
 
 def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
-                         colormap, title, unit, **kwargs):
+                         colormap, title, unit, left_labels=True, 
+                         bathymetry_line=None,**kwargs):
 
     """
     Creates a map visualization with contours, colorbar, and time progression.
@@ -57,6 +110,8 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
         Plot title
     unit : str
         Units for colorbar label
+    bathymetry_line : tuple
+        (line_x, line_y) coordinates of the bathymetry line
     **kwargs : dict
         Optional parameters:
             savefile_path : str
@@ -86,7 +141,7 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
                 - decimal_places: int or str, format for contour labels
                 - fontsize: int, size of contour labels
             maxnumticks : int
-                Maximum number of colorbar ticks (default: 10)
+                Maximum number of colorbar ticks (default: 10) or 'NoColorbar' to disable
             decimal_places : int
                 Number of decimal places for colorbar labels (default: 2)
             plot_extent : list
@@ -146,12 +201,17 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
             lat_bounds[1] + adj_lat[1]
         ]
     
-    # Setup figure
-    figsize = kwargs.get('figuresize', [14, 10])
-    fig = plt.figure(figsize=figsize)
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
-    ax = fig.add_subplot(gs[0], projection=projection)
-    
+    # Setup figure - check if axis is provided
+    if 'ax' in kwargs:
+        ax = kwargs['ax']
+        fig = ax.figure
+    else:
+        figsize = kwargs.get('figuresize', [14, 10])
+        fig = plt.figure(figsize=figsize)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
+        ax = fig.add_subplot(gs[0], projection=projection)
+
+
     # Process data for log scale
     log_scale = kwargs.get('log_scale', False)
     if log_scale:
@@ -192,8 +252,6 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
                                 linewidths=contoursettings[2],
                                 transform=data_transform,
                                 norm=norm)
-
-            
         else:
             contourf_kwargs['extend'] = 'max'
             contourf = ax.contourf(lon, lat, data, **contourf_kwargs)
@@ -218,37 +276,51 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
     except ValueError as e:
         raise ValueError(f"Contour plotting failed: {str(e)}")
     
+    # Add after contour plotting section:
+    # In plot_2d_data_on_map, replace the bathymetry plotting section with:
+    if bathymetry_line is not None:
+        lines_x, lines_y = bathymetry_line
+        if lines_x is not None and lines_y is not None:
+            for line_x, line_y in zip(lines_x, lines_y):
+                ax.plot(line_x, line_y,
+                    color='grey',
+                    transform=data_transform,
+                    linewidth=0.5,
+                    zorder=5)
+
     maxnumticks = kwargs.get('maxnumticks', 10)
     decimal_places = kwargs.get('decimal_places', 2)
 
     # Optimize colorbar section
-    cbar = plt.colorbar(contourf, ax=ax)
-    cbar.set_label(unit, fontsize=16, labelpad=10)
+    if maxnumticks != 'NoColorbar':
+        cbar = plt.colorbar(contourf, ax=ax)
+        cbar.set_label(unit, fontsize=16, labelpad=10)
 
-    # Set ticks based on scale
-    if log_scale:
-        # For log scale
-        log_ticks = np.logspace(np.log10(levels[0]), np.log10(levels[-1]), maxnumticks)
-        cbar.set_ticks(log_ticks)
-        # Log norm is already set in contourf creation
-    else:
-        # For linear scale
-        cbar.locator = MaxNLocator(nbins=min(maxnumticks, 6), prune='both', steps=[1, 2, 5, 10])
-        linear_ticks = np.linspace(np.min(levels), np.max(levels), maxnumticks)
-        cbar.set_ticks(linear_ticks)
+        # Set ticks based on scale
+        if log_scale:
+            # For log scale
+            log_ticks = np.logspace(np.log10(levels[0]), np.log10(levels[-1]), maxnumticks)
+            cbar.set_ticks(log_ticks)
+            # Log norm is already set in contourf creation
+        else:
+            # For linear scale
+            cbar.locator = MaxNLocator(nbins=min(maxnumticks, 6), prune='both', steps=[1, 2, 5, 10])
+            linear_ticks = np.linspace(np.min(levels), np.max(levels), maxnumticks)
+            cbar.set_ticks(linear_ticks)
 
-    # Format tick labels
-    with plt.style.context({'text.usetex': False}):
-        def fmt(x, p):
-            if log_scale:
-                if abs(x) < 1e-3 or abs(x) > 1e3:
-                    return f"{x:.{decimal_places}e}"
+        # Format tick labels
+        with plt.style.context({'text.usetex': False}):
+            def fmt(x, p):
+                if log_scale:
+                    if abs(x) < 1e-3 or abs(x) > 1e3:
+                        return f"{x:.{decimal_places}e}"
+                    return f"{x:.{decimal_places}f}"
                 return f"{x:.{decimal_places}f}"
-            return f"{x:.{decimal_places}f}"
         
-        cbar.formatter = FuncFormatter(fmt)
-
-    cbar.update_ticks()
+            cbar.formatter = FuncFormatter(fmt)
+        cbar.update_ticks()
+    else:
+        cbar = None
 
     # Add features with caching
     def get_cached_feature(name):
@@ -258,7 +330,7 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
     
     ax.set_title(title, fontsize=16)
     ax.add_feature(get_cached_feature('LAND'), facecolor='0.2', zorder=2)
-    ax.add_feature(get_cached_feature('COASTLINE'), zorder=3, color='0.5', linewidth=0.5)
+    ax.add_feature(get_cached_feature('COASTLINE'), zorder=3, color='0.5', linewidth=0.25)
     
     ax.set_extent(extent)
     
@@ -291,14 +363,15 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
 
     # Custom markers (cached transform)
     ax.plot(18.9553, 69.6496, marker='o', color='white', markersize=4, transform=data_transform)
-    ax.text(19.0553, 69.58006, 'Tromsø', transform=data_transform, color='white', fontsize=12)
+    #ax.text(19.0553, 69.58006, 'Tromsø', transform=data_transform, color='white', fontsize=12)
     
     # Efficient gridlines
     gl = ax.gridlines(crs=data_transform, draw_labels=True, linewidth=0.5, 
                     color='grey', alpha=0.5, linestyle='--')
     gl.top_labels = False      # No labels on top
     gl.right_labels = False    # No labels on right
-    gl.left_labels = True      # Labels on left
+    if left_labels == True:
+        gl.left_labels = True      # Labels on left
     gl.bottom_labels = True    # Labels on bottom
     gl.xlabel_style = {'size': 12}
     gl.ylabel_style = {'size': 12}
@@ -378,3 +451,231 @@ def plot_2d_data_on_map(data, lon, lat, projection, levels, timepassed,
         plt.show()
     
     return fig
+
+
+def plot_multiple_2d_data_on_map(data_list, lon, lat, projection, levels, timepassed,
+                                colormap, unit, timestring = 'unknown', depthstring = 'unknown', 
+                                bathymetry_lines=None,savefile_path=None,nrows=2, ncols=3, 
+                                figsize=(18, 12),plot_progress_bar = False,**kwargs):
+    """
+    Creates multiple map visualizations in a grid layout.
+
+    Parameters
+    ----------
+    data_list : list of np.ndarray
+        List of 2D arrays containing the data to plot
+    nrows : int
+        Number of rows in the grid
+    ncols : int
+        Number of columns in the grid
+    Other parameters same as plot_2d_data_on_map
+    """
+
+    # Create figure
+    fig = plt.figure(figsize=figsize)
+    
+    # Create main gridspec with adjusted ratios for thinner bars
+    outer_gs = fig.add_gridspec(2, 2, 
+                               height_ratios=[1, 0.03],
+                               width_ratios=[1, 0.02],
+                               hspace=0.01,
+                               wspace=0.05)
+    
+    # Create nested gridspec for plots
+    gs_maps = outer_gs[0, 0].subgridspec(nrows, ncols, 
+                                        hspace=0.05, 
+                                        wspace=0.05)
+    
+    contourfs = []  # Store contourf objects for colorbar
+
+    # Loop through subplots
+    for idx, data in enumerate(data_list):
+        if idx >= nrows * ncols:
+            break
+            
+        # Create subplot with projection
+        ax = fig.add_subplot(gs_maps[idx//ncols, idx%ncols], projection=projection)
+        
+        data = data_list[idx]
+
+        if bathymetry_lines is not None:
+            bathymetry_line = bathymetry_lines[idx]
+
+        # Call original plotting function with shared axis¨
+        if idx % ncols != 0:
+            plot_result = plot_2d_data_on_map(
+                data=data.T,
+                lon=lon,
+                lat=lat,
+                projection=projection,
+                levels=levels,
+                timepassed=timepassed,
+                colormap=colormap,
+                unit=unit,
+                ax=ax,
+                title = '',
+                bathymetry_line = bathymetry_line,
+                show=False,
+                plot_progress_bar=False,
+                plot_model_domain = False,
+                left_labels=False,
+                maxnumticks='NoColorbar',  # Disable individual colorbars
+                **kwargs
+            )
+        else:
+            plot_result = plot_2d_data_on_map(
+                data=data.T,
+                lon=lon,
+                lat=lat,
+                projection=projection,
+                levels=levels,
+                timepassed=timepassed,
+                colormap=colormap,
+                unit=unit,
+                ax=ax,
+                title = '',
+                bathymetry_line = bathymetry_line,
+                show=False,
+                plot_progress_bar=False,
+                plot_model_domain = False,
+                maxnumticks='NoColorbar',  # Disable individual colorbars
+                **kwargs
+            )
+
+        #plot grey shading for bathymetry (its only 1 and 0s for permissible and impermissible cells)
+        #use pcolor for this
+        #ax.pcolor(lon, lat, bathymetry[:,:,idx].T, transform=ccrs.PlateCarree(), cmap='Greys', alpha=0.5)
+
+        # Store contourf for colorbar
+        contourfs.append(ax.collections[0])
+
+        # Remove labels as needed
+        if idx % ncols != 0:
+            ax.set_yticklabels([])
+        if idx < (nrows-1)*ncols:
+            ax.set_xticklabels([])
+
+        # Plot the informatioun about depth as an inline textbox in the lower right corner
+        ax.text(0.95, 0.05, depthstring[idx], transform=ax.transAxes, fontsize=16,
+                verticalalignment='bottom', horizontalalignment='right',
+                bbox=dict(facecolor=[0.1,0.1,0.1], alpha=0.9, edgecolor=[0.9,0.9,0.9], boxstyle='round,pad=0.5'))   
+
+
+#        ax.text(0.95, 0.05, depthstring[idx], transform=ax.transAxes, fontsize=16,
+#                verticalalignment='bottom', horizontalalignment='right',
+#                bbox=dict(facecolor=[0.8,0.8,0.8], alpha=0.9, edgecolor=[0.2,0.2,0.2], boxstyle='round,pad=0.5'))   
+
+
+
+    vmin = np.min(levels)
+    vmax = np.max(levels)
+
+    maxnumticks = 10
+
+    # Add shared colorbar with customized settings
+    cax = fig.add_subplot(outer_gs[0, 1])
+    if len(contourfs) > 0:
+        cbar = plt.colorbar(contourfs[0], cax=cax)
+        cbar.set_label(unit, fontsize=16, labelpad=5)
+        
+        # Set colorbar ticks based on scale
+        if kwargs.get('log_scale', False):
+                        # Get the exponent range
+            min_exp = np.floor(np.log10(vmin))
+            max_exp = np.ceil(np.log10(vmax))
+            
+            # Generate base numbers for each order of magnitude
+            base_numbers = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9])
+            tick_values = []
+            
+            # Generate tick values for each order of magnitude
+            for exp in range(int(min_exp), int(max_exp + 1)):
+                tick_values.extend(base_numbers * 10**exp)
+            
+            # Filter tick values to be within data range
+            tick_values = np.array(tick_values)
+            mask = (tick_values >= vmin) & (tick_values <= vmax)
+            tick_values = tick_values[mask]
+            
+            # Set ticks
+            cbar.set_ticks(tick_values)
+            
+            # Format tick labels
+            def fmt(x, p):
+                exp = np.floor(np.log10(abs(x)))
+                base = x / 10**exp
+                if abs(x) < 1e-3 or abs(x) > 1e3:
+                    return f"{base:.0f}e{exp:.0f}"
+                return f"{x:.1f}"
+            
+            cbar.formatter = FuncFormatter(fmt)
+
+        cbar.ax.tick_params(labelsize=16, length=3, width=0.5)
+        cbar.outline.set_linewidth(0.5)
+        cbar.outline.set_edgecolor('black')
+        cbar.update_ticks()
+        #increase the labelsize
+        cbar.ax.yaxis.label.set_size(22)
+
+
+    # Add progress bar with minimal height
+    if kwargs.get('plot_progress_bar', True):
+        ax_prog = fig.add_subplot(outer_gs[1, 0])
+        ax_prog.fill_between([0, timepassed[0]], [0, 0], [1, 1], 
+                           color='grey', alpha=0.7)  # Slightly transparent
+        
+        # Customize progress bar appearance
+        ax_prog.set_yticks([])
+        ax_prog.set_xticks([0, timepassed[1]])
+        ax_prog.set_xlim(0, timepassed[1])
+        
+        # Adjust time labels
+        ax_prog.set_xticklabels([
+            kwargs.get('starttimestring', 'May 20, 2021'),
+            kwargs.get('endtimestring', 'June 20, 2021')
+        ], fontsize=14)  # Reduced font size
+        
+        # Minimize progress bar frame
+        ax_prog.spines['top'].set_visible(False)
+        ax_prog.spines['right'].set_visible(False)
+        ax_prog.spines['left'].set_visible(False)
+        ax_prog.tick_params(axis='x', length=3, width=0.5)
+
+    #if savefile_path := kwargs.get('savefile_path', False):
+        
+    #make one title for the whole plot showing the time 
+    fig.suptitle(timestring[0], fontsize=25)
+    #remove whitespace between title and plots
+    fig.subplots_adjust(top=0.96)
+    
+    # Adjust overall layout
+    plt.tight_layout()
+
+    return fig
+
+
+def get_bathymetry_lines(impermissible_cells):
+    """
+    Create bathymetry contour lines from impermissible cells.
+    
+    Parameters
+    ----------
+    impermissible_cells : np.ndarray
+        3D array of impermissible cells
+        
+    Returns
+    -------
+    list
+        List of (line_x, line_y) tuples for each depth layer
+    """
+    bathymetry = np.zeros(np.shape(impermissible_cells))
+    bathymetry[impermissible_cells == 0] = 0
+    bathymetry[impermissible_cells > 0] = 1
+    
+    bathymetry_lines = []
+    for i in range(bathymetry.shape[2]):
+        line_x, line_y = gp.find_bathymetry_line(bathymetry[:,:,i].T, lon_mesh, lat_mesh)
+        bathymetry_lines.append((line_x, line_y))
+    
+    bathymetry_lines[0] = ([],[])  # Insert empty line for first layer
+    return bathymetry_lines

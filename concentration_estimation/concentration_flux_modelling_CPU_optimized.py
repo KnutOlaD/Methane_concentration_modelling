@@ -20,15 +20,19 @@ import time
 from pyproj import Proj, Transformer
 import xarray as xr
 from scipy.spatial import cKDTree
+#from pykdtree.kdtree import KDTree
+import pykdtree
 import sys
 import os
-#import the self-made modules
+from multiprocessing import Pool
+
+### import the self-made modules ###
 #Set up paths
 source_root = r"c:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src"
 project_root = r"c:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Methane_dispersion_modelling\concentration_estimation"
 # Set project root directory explicitly
 # Set module paths relative to project root
-akd_path = source_root+ '\\akd_estimator'
+akd_path = source_root+ '\\akd_estimator\\src'
 #add the paths
 sys.path.append(akd_path)
 sys.path.append(project_root)
@@ -121,6 +125,8 @@ get_new_bathymetry = False
 #redistribute mass?
 redistribute_lost_mass = True
 
+estimate_vertical_transport = False
+
 ### PATHS DO DATA ###
 # With vertical diffusion
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff.nc'#real dataset
@@ -137,9 +143,9 @@ redistribute_lost_mass = True
 # Sigma-level dataset with vertical diffusion in the whole water column
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0.2
-#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
+datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.2.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
+#datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 0 
 #datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_0.nc'
 
@@ -156,6 +162,55 @@ start_time_whole_script = time.time()
 ################################
 ########## FUNCTIONS ###########
 ################################
+def process_kde_layer(args):
+    """Process KDE for a single depth layer"""
+    i, parts_active_z, bin_x, bin_y, gaussian_kernels, gaussian_bandwidths_h, illegal_cells = args
+    
+    if len(parts_active_z[0]) == 0:
+        return i, None, None, None, None
+    
+    # Pre-KDE step
+    preGRID_active, preGRID_active_counts, preGRID_active_bw = akd.histogram_estimator(
+        parts_active_z[0], parts_active_z[1], bin_x, bin_y, 
+        parts_active_z[5], parts_active_z[4]
+    )
+
+    if not preGRID_active.any():
+        return i, None, None, None, None
+
+    # Compute statistics
+    autocorr_rows, autocorr_cols = akd.calculate_autocorrelation(preGRID_active_counts)
+    autocorr = (autocorr_rows + autocorr_cols) / 2
+    
+    if not autocorr.any() > 0:
+        window_size = 7
+    else:
+        integral_length_scale = (np.sum(autocorr) / autocorr[np.argwhere(autocorr != 0)[0]])
+        window_size = max(max_adaptation_window, int(integral_length_scale))
+    
+    window_size = np.clip(window_size, 7, int(max_adaptation_window/dxy_grid))
+    if window_size % 2 == 0:
+        window_size += 1
+    
+    pad_size = window_size//2
+    preGRID_active_padded = np.pad(preGRID_active, pad_size, mode='reflect')
+    preGRID_active_counts_padded = np.pad(preGRID_active_counts, pad_size, mode='reflect')
+    
+    std_estimate, N_eff, integral_length_scale_matrix, h_matrix_adaptive = akd.compute_adaptive_bandwidths(
+        preGRID_active_padded, preGRID_active_counts_padded,
+        window_size, (window_size**2)/4, grid_cell_size=dxy_grid
+    )
+
+    GRID_active = akd.grid_proj_kde(
+        bin_x, bin_y, preGRID_active,
+        gaussian_kernels, gaussian_bandwidths_h,
+        h_matrix_adaptive, illegal_cells=illegal_cells[:,:,i]
+    )
+    
+    # Get concentration
+    GRID_active = GRID_active/V_grid
+    
+    return i, GRID_active, integral_length_scale_matrix, h_matrix_adaptive
 
 def load_nc_data(filename):
     '''
@@ -543,7 +598,8 @@ def find_nearest_grid_cell(lon_cwc, lat_cwc, depth_cwc, lon_mesh, lat_mesh, bin_
     points = np.column_stack((lon_mesh.flatten(), lat_mesh.flatten()))
     
     # Build KDTree
-    tree = cKDTree(points)
+    tree = cKDTree(points) #is faster for many neighbors.. 
+    #tree = KDTree(points) #using pykdtree directly
     
     # Find nearest neighbor
     distance, index = tree.query([lon_cwc, lat_cwc])
@@ -942,6 +998,10 @@ N_eff = np.zeros(np.shape(GRID_active))
 
 print('Starting to loop through all timesteps...')
 
+time_particle_modification = np.zeros(time_steps_full-1)
+time_kde = np.zeros(time_steps_full-1)
+
+
 if run_all == True:
 
     #Start looping through.
@@ -953,7 +1013,7 @@ if run_all == True:
         # ------------------------------------------------------
         # LOADING PARTICLES INTO MEMORY (NOT MEMORY OPTIMIZED) 
         # ------------------------------------------------------
-
+        load_from_nc_file = True
         if kkk==1:         
             ### Load all data into memory ###
             if load_from_nc_file == True:
@@ -1003,6 +1063,8 @@ if run_all == True:
         #-----------------------------#
         # START WITH THE CALCULATIONS #
         #-----------------------------#
+
+        tmptime  = time.time()
 
         # Replace the 0th index with the 1st index
         particles['lon'][:,0] = particles['lon'][:,1]
@@ -1074,8 +1136,9 @@ if run_all == True:
                     particles['UTM_x'][active_particles,1],
                     particles['UTM_y'][active_particles,1]
                 ))
-                tree = cKDTree(active_positions)
-                
+                tree = cKDTree(active_positions) #cKDTree is faster for many neighbors (which we have)
+                #tree = KDTree(active_positions) #this uses pykdtree directly
+
                 # Get dead particle positions
                 dead_positions = np.column_stack((
                     particles['UTM_x'][particles_that_died,0],
@@ -1187,6 +1250,8 @@ if run_all == True:
         
         print(f"{particles_mass_out[kkk]} moles lost due to {len(outside_leaving)} particles leaving.")
         #print(f"{particles_mass_back[kkk]} moles gained due to {len(outside_coming_in)} particles re-entering.")
+
+
 
         # --------------------------------------
         # MODIFY PARTICLE WEIGHTS AND BANDWIDTHS
@@ -1325,12 +1390,17 @@ if run_all == True:
         #add a zero at the beginning (to include depth layer 0)
         change_indices = np.insert(change_indices, 0, 0)
 
+        time_particle_modification[kkk] = time.time()-tmptime
+        print(f"particle modification took {time_particle_modification[kkk]} seconds")
+
         ###########################################
         ###########################################
         ###########################################
 
-        for i in range(0,len(change_indices)-1): #This essentially loops over all particles (does it???)
+        for i in range(0,len(change_indices)-1): 
             
+            tmptime = time.time()
+
             # -----------------------------------------------------------
             # DEFINE ACTIVE GRID AND ACTIVE PARTICLES IN THIS DEPTH LAYER
             # -----------------------------------------------------------
@@ -1375,8 +1445,27 @@ if run_all == True:
             # CALCULATE THE KERNEL DENSITY ESTIMATE
             # -------------------------------------
 
-            if (kde_all and i < 12) or i == 0:  # Perform KDE for first 10 layers or layer 0
-                #print('Doing kde for depth layer',i)
+            if (kde_all and i < 12) or i == 0:
+                with Pool(processes=4) as pool:  # Limit number of processes
+                    layer_args = []
+                    for depth_idx in range(5):
+                        if len(parts_active_z[0]) > 0:
+                            layer_args.append((
+                                depth_idx, parts_active_z, bin_x, bin_y,
+                                gaussian_kernels, gaussian_bandwidths_h,
+                                illegal_cells
+                            ))
+                    
+                    results = pool.map(process_kde_layer, layer_args)
+                    
+                    # Change 'i' to 'layer_idx' to avoid conflict with outer loop
+                    for layer_idx, grid_active, integral_length, h_matrix in results:
+                        if grid_active is not None:
+                            GRID[kkk][layer_idx] = csr_matrix(grid_active)
+                            integral_length_scale_full[kkk, layer_idx] = np.mean(integral_length)
+                            h_values_full[kkk,layer_idx] = np.mean(h_matrix[h_matrix>0])
+                            h_values_std_full[kkk,layer_idx] = np.std(h_matrix[h_matrix>0])
+                            #print('Doing kde for depth layer',i)
 
                 # ------------------------------
                 # preGRIDding 
@@ -1396,18 +1485,18 @@ if run_all == True:
                                                     parts_active_z[5],
                                                     parts_active_z[4])
 
-                preGRID_vert,preGRID_vert_counts,preGRID_vert_bw = akd.histogram_estimator(parts_active_z[0],
-                                                    parts_active_z[1],
-                                                    bin_x,
-                                                    bin_y,
-                                                    parts_active_z[5],
-                                                    parts_active_z[6])
+                if estimate_vertical_transport == True:
+                    preGRID_vert,preGRID_vert_counts,preGRID_vert_bw = akd.histogram_estimator(parts_active_z[0],
+                                                        parts_active_z[1],
+                                                        bin_x,
+                                                        bin_y,
+                                                        parts_active_z[5],
+                                                        parts_active_z[6])
                 
                 # ------------------------------
                 # Using no KDE at all 
                 # ------------------------------
 
-                2+3+4
 
                 if h_adaptive == 'No_KDE':
                     GRID_active = preGRID_active
@@ -1493,14 +1582,15 @@ if run_all == True:
                                                 h_matrix_adaptive, #because it's symmetric
                                                 illegal_cells = illegal_cells[:,:,i])
                     
-                    GRID_active_verttrans = akd.grid_proj_kde(bin_x,
-                                                bin_y,
-                                                preGRID_vert,
-                                                gaussian_kernels,
-                                                gaussian_bandwidths_h,
-                                                h_matrix_adaptive, #because it's symmetric
-                                                illegal_cells = illegal_cells[:,:,i])
-                    
+                    if estimate_vertical_transport == True:
+                        GRID_active_verttrans = akd.grid_proj_kde(bin_x,
+                                                    bin_y,
+                                                    preGRID_vert,
+                                                    gaussian_kernels,
+                                                    gaussian_bandwidths_h,
+                                                    h_matrix_adaptive, #because it's symmetric
+                                                    illegal_cells = illegal_cells[:,:,i])
+                        
 
                     end_time = time.time()
                     elapsed_time = end_time - start_time
@@ -1527,24 +1617,34 @@ if run_all == True:
                 #Get concentration
                 GRID_active = GRID_active/V_grid
 
+                #plot if modulus 10 ==0
+                #if kkk % 10 == 0:
+                #    plt.imshow(GRID_active)
+                #    plt.hist(h_matrix_adaptive[h_matrix_adaptive!=0].flatten())
+                #    plt.title('h')
+                #    plt.hist(std_estimate[std_estimate!=0].flatten())
+                #    plt.title('Sigma^2')
+                #    plt.hist(N_eff[N_eff!=0].flatten())
+                #    plt.title('Neff')
+
                 #-------------------------------------------------
                 # ASSIGN VALUES TO SPARSE GRIDS
                 #-------------------------------------------------
 
                 # Make explicit copies to avoid values affecting each other
                 grid_copy = GRID_active.copy()
-                vtrans_copy = GRID_active.copy()
+                if estimate_vertical_transport == True:
+                    vtrans_copy = GRID_active.copy()
+                    sparse_vtrans = csr_matrix(vtrans_copy)
+                    GRID_vtrans[kkk][i] = sparse_vtrans
+                    del vtrans_copy
+                    del sparse_vtrans
 
                 # Create sparse matrices from copies
                 sparse_grid = csr_matrix(grid_copy)
-                sparse_vtrans = csr_matrix(vtrans_copy)
-                
                 GRID[kkk][i] = sparse_grid
-                GRID_vtrans[kkk][i] = sparse_vtrans
-
-                # Cleanup
-                del grid_copy, vtrans_copy
-                del sparse_grid, sparse_vtrans
+                del grid_copy
+                del sparse_grid
 
                 #Other stuff that could be added... 
                 #GRID_top[kkk,:,:] = GRID_copy
@@ -1574,6 +1674,9 @@ if run_all == True:
                     GRID_stds[kkk,:,:] = std_estimate
                     GRID_neff[kkk,:,:] = N_eff
 
+            time_kde[kkk] = time.time()-tmptime
+            print(f"Time for kde {time_kde[kkk]} s")
+
         end_time_full = time.time()
         elapsed_time_full = end_time_full - start_time_full
         elapsed_time_timestep[kkk] = elapsed_time_full
@@ -1591,6 +1694,8 @@ if run_all == True:
             # Create a second y-axis to plot the number of particles
             ax2 = ax1.twinx()
             ax2.plot(total_parts[:kkk], linewidth=2, color=color_2)
+            ax2.plot(time_particle_modification[:kkk],linewidth=2,color = 'b')
+            ax2.plot(time_kde[:kkk],linewidth=2,color = 'b')
             ax2.set_ylabel('Number of particles', color=color_2)
             ax2.tick_params(axis='y', labelcolor=color_2)
             ax1.set_xlim([0, len(elapsed_time_timestep)])
@@ -1613,8 +1718,8 @@ print(f"Full calculation time was: {total_computation_time}")
 #    pickle.dump(GRID, f)
     #create a sparse matrix first
 #load the GRID file
-#with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'rb') as f:
-#    GRID = pickle.load(f)
+with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID.pickle', 'rb') as f:
+    GRID = pickle.load(f)
 
 if save_data_to_file == True:
     #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
@@ -2243,12 +2348,12 @@ if kde_all == True:
 ###############################################
 
 # Define the cross section
-lon_start = 14.3
-lat_start = 69.3
+lon_start = 14.
+lat_start = 69.4
 lon_end = 14.8
-lat_end = 68.9
+lat_end = 69.1
 
-timestep = 1000
+timestep = 500
 
 # Convert cross section coordinates to UTM
 x_start, y_start = utm.from_latlon(lat_start, lon_start,force_zone_number=33)[:2]
@@ -2366,7 +2471,7 @@ cbar.set_label('Concentration [mol/m³]')
 ax.invert_yaxis()
 
 # Limit the y-axis to 250 m depth
-ax.set_ylim([225, 0])
+ax.set_ylim([300, 0])
 
 # Add grid lines
 #ax.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.5)

@@ -18,8 +18,6 @@ import pickle
 from scipy.interpolate import griddata
 import pandas as pd
 import cartopy.crs as ccrs
-import imageio
-from scipy.ndimage import gaussian_filter1d
 import seaborn as sns
 import time
 from pyproj import Proj, Transformer
@@ -67,7 +65,7 @@ manual_border = True #Set manual border for grid
 manual_border_corners = [12.5,21,68.5,72,50*60] #Manual limitations for the grid [minlon,maxlon,minlat,maxlat,maxdepth]
 get_new_bathymetry = False #Get new bathymetry or not?
 redistribute_lost_mass = True #redistribute mass of deactivated particles?
-h_adaptive = 'Local_Silverman' ##Set bandwidth estimator preference, alternatives are 'Local_Silverman', 'Time_dep' and 'No_KDE'
+h_adaptive = 'No_KDE' ##Set bandwidth estimator preference, alternatives are 'Local_Silverman', 'Time_dep' and 'No_KDE'
 load_from_nc_file = True #Load data from netcdf file
 
 ### CONSTANTS ###
@@ -1351,7 +1349,6 @@ for kkk in range(1,time_steps_full-1):
 
         plt.show()
 
-        
 end_time_whole_script = time.time()
 total_computation_time = end_time_whole_script-start_time_whole_script
 
@@ -1501,6 +1498,9 @@ if plot_concentration == True:
     # ----------------------
     # MAKE ONE PLOT FOR AVERAGE CONCENTRATION FOR EACH LAYER 
 
+    #define dummy timestep
+    timestep = 1000
+
     #Calculate the average for each layer
     GRID_average = np.zeros([10,389,501])
     for n in range(1485-720):
@@ -1559,6 +1559,7 @@ if plot_concentration == True:
         foldername = 'C:\\Users\\'
         images_layers = [] #empty list to store images
         timestep_vector = np.arange(twentiethofmay,time_steps,1) #timestepvector
+        times = times_totatm[timestep_vector] #timevector
 
         for timestep in timestep_vector:
             print(timestep)
@@ -1625,7 +1626,7 @@ if plot_concentration == True:
 
         #create gif
         if create_gif_layers == True:
-
+            import imageio
             for filename in filenames:
                 images_layers.append(imageio.imread(foldername+filename))
                 #create gif
@@ -1640,8 +1641,8 @@ if plot_concentration == True:
 if plot_atm_flux == True:
 
     #load the GRID_atm_flux
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
-        GRID_atm_flux = pickle.load(f)
+    #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
+    #    GRID_atm_flux = pickle.load(f)
     foldername = 'C:\\Users\\'
 
     # -----------------------
@@ -1754,6 +1755,7 @@ if plot_atm_flux == True:
 
         #create gif
         if create_gif_atm_flux == True:
+            import imageio
             for filename in filenames:
                 images_layers.append(imageio.imread(foldername+filename))
             imageio.mimsave(foldername+'atm_flux.gif', images_layers, duration=0.5)
@@ -1763,7 +1765,7 @@ if plot_atm_flux == True:
     # PLOT LOSS VARIABLES #
     # ------------------- #
 
-    if plot_loss = True:
+    if plot_loss == True:
 
         fig = gp.plot_loss_analysis(times_totatm, total_atm_flux, ws_interp,
                         particles_mox_loss, particles_mass_out,
@@ -1922,179 +1924,172 @@ if plot_cross_section_location == True:
 
 # Calculate the fraction of molecules at each depth level using the particle_lifespan_matrix[:,:,0] data
 
-mole_fraction_z = np.zeros_like(particle_lifespan_matrix[:,:,0])
+if plot_lifetime_plots == True:
 
-for i in range(particle_lifespan_matrix.shape[0]):
-    for j in range(particle_lifespan_matrix.shape[1]):
-        mole_fraction_z[i,j] = particle_lifespan_matrix[i,j,0]/np.sum(particle_lifespan_matrix[i,:,0])
+    foldername = 'C:\\Users\\'
+    filename = 'particle_lifespan_matrix.pickle'
 
+    # Calculate the (average) number of moles at each depth level for each time step
+    mole_fraction_z = np.zeros_like(particle_lifespan_matrix[:,:,0]) # Initialize array
+    for i in range(particle_lifespan_matrix.shape[0]):
+        for j in range(particle_lifespan_matrix.shape[1]):
+            mole_fraction_z[i,j] = particle_lifespan_matrix[i,j,0]/np.sum(particle_lifespan_matrix[i,:,0])
 
-#save the particle_lifespan_matrix using pickle
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\OpenDrift\\particle_lifespan_matrix_30s_fb02.pickle', 'wb') as f:
-    pickle.dump(particle_lifespan_matrix, f)
+    #save the matrix 
+    with open(foldername+filename, 'wb') as f:
+        pickle.dump(particle_lifespan_matrix, f)
 
-#Create depth vector
-depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
+    #Create depth vector
+    depth_vector = np.linspace(1,np.shape(particle_lifespan_matrix)[1],np.shape(particle_lifespan_matrix)[1])
 
+    # Define time points
+    hour12 = 11
+    day1 = 23
+    week1 = 167
+    week2 = 335
+    week3 = 503
+    week4 = 671
 
-# Define time points
-hour12 = 11
-day1 = 23
-week1 = 167
-week2 = 335
-week3 = 503
-week4 = 671
+    # Define profiles for each time point
+    time_points = [hour12, day1, week1, week2, week3, week4]
+    profiles = [mole_fraction_z[time, :] for time in time_points]
+    profiles = profiles*100
 
-# Define profiles for each time point
-time_points = [hour12, day1, week1, week2, week3, week4]
-profiles = [mole_fraction_z[time, :] for time in time_points]
-profiles = profiles*100
-
-# Apply Gaussian smoothing to each profile
-smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]
-
-# Create a 2x3 plot
-fig, axs = plt.subplots(2, 3, figsize=(18, 12))
-
-# Titles for each subplot
-titles = ['Methane distribution after 12 hours', 'Methane distribution after 1 day',
-          'Methane distribution after 1 week', 'Methane distribution after 2 weeks',
-          'Methane distribution after 3 weeks', 'Methane distribution after 4 weeks']
-
-# Plot each smoothed profile
-for i, ax in enumerate(axs.flat):
-    ax.plot(smoothed_profiles[i], depth_vector)
-    ax.plot(profiles[i], depth_vector, linestyle='--')
-    ax.set_title(titles[i])
-    ax.set_xlabel('Distibution of methane molecules [%]', fontsize=14)
-    ax.set_ylabel('Depth [m]', fontsize=14)
-    ax.set_ylim([0,400])  # Limit the y-axis to 250 m depth
-    ax.invert_yaxis()  # Flip the y-axis
-
-# Adjust layout
-plt.tight_layout()
-plt.show()
-
-
-# Define time points
-day1 = 0
-day7 = 24*3
-day14 = 24*7
-day28 = 24*28-1
-time_series = [day1,  # First day in hours
-    day7,  # Week in hours
-    day14, # Two weeks in hours
-    day28  # Four weeks in hours
-]
-
-# Define profiles for each time point
-time_points = [day1, day7, day14, day28]
-profiles = [mole_fraction_z[time,:] for time in time_points]
-
-# Apply Gaussian smoothing to each profile
-smoothed_profiles = [gaussian_filter1d(profile, sigma=2) for profile in profiles]*100
-
-#calculate maximum value for the x axis
-maxval = np.max([np.max(smoothed_profiles) for smooth_profiles in smoothed_profiles])
-
-# Create a 1x3 plot
-fig, axs = plt.subplots(2, 2, figsize=(10,10))
-
-# Plot each smoothed profile
-for i, ax in enumerate(axs.flat):
-    ax.plot(smoothed_profiles[i], depth_vector)
-    if ax == axs[1, 0] or ax == axs[1, 1]:
-        ax.set_xlabel('Methane distribution [%]', fontsize=14)
-    if ax == axs[0, 0] or ax == axs[1, 0]:
+    # Create a 2x3 plot
+    fig, axs = plt.subplots(2, 3, figsize=(18, 12))
+    # Titles for each subplot
+    titles = ['Methane distribution after 12 hours', 'Methane distribution after 1 day',
+            'Methane distribution after 1 week', 'Methane distribution after 2 weeks',
+            'Methane distribution after 3 weeks', 'Methane distribution after 4 weeks']
+    # Plot each profile
+    for i, ax in enumerate(axs.flat):
+        ax.plot(profiles[i], depth_vector)
+        ax.plot(profiles[i], depth_vector, linestyle='--')
+        ax.set_title(titles[i])
+        ax.set_xlabel('Distibution of methane molecules [%]', fontsize=14)
         ax.set_ylabel('Depth [m]', fontsize=14)
-    ax.set_ylim([0, 250])  # Limit the x-axis to 0.5e-5 mol
-    ax.invert_yaxis()  # Flip the y-axis
-    ax.set_xlim([0, maxval])  # Limit the x-axis to 0.5e-5 mol
-    # Add text box inside plot
-    time_text = 'After {:.0f} days'.format(time_series[i]/24)
-    ax.text(0.95, 0.95, time_text,
-        transform=ax.transAxes,  # Use axes coordinates (0-1)
-        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'),
-        horizontalalignment='right',
-        verticalalignment='top',
-        fontsize=14)
+        ax.set_ylim([0,400])  # Limit the y-axis to 250 m depth
+        ax.invert_yaxis()  # Flip the y-axis
 
-# Adjust layout
-    #add hlines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
+    # Adjust layout
+    plt.tight_layout()
+    plt.show()
+
+    # Define time points
+    day1 = 0
+    day7 = 24*3
+    day14 = 24*7
+    day28 = 24*28-1
+    time_series = [day1,  # First day in hours
+        day7,  # Week in hours
+        day14, # Two weeks in hours
+        day28  # Four weeks in hours
+    ]
+
+    # Define profiles for each time point
+    time_points = [day1, day7, day14, day28]
+    profiles = [mole_fraction_z[time,:] for time in time_points]
+    #calculate maximum value for the x axis
+    maxval = np.max([np.max(profiles) for smooth_profiles in profiles])
+
+    # Create a 1x3 plot
+    fig, axs = plt.subplots(2, 2, figsize=(10,10))
+
+    # Plot each smoothed profile
+    for i, ax in enumerate(axs.flat):
+        ax.plot(profiles[i], depth_vector)
+        if ax == axs[1, 0] or ax == axs[1, 1]:
+            ax.set_xlabel('Methane distribution [%]', fontsize=14)
+        if ax == axs[0, 0] or ax == axs[1, 0]:
+            ax.set_ylabel('Depth [m]', fontsize=14)
+        ax.set_ylim([0, 250])  # Limit the x-axis to 0.5e-5 mol
+        ax.invert_yaxis()  # Flip the y-axis
+        ax.set_xlim([0, maxval])  # Limit the x-axis to 0.5e-5 mol
+        # Add text box inside plot
+        time_text = 'After {:.0f} days'.format(time_series[i]/24)
+        ax.text(0.95, 0.95, time_text,
+            transform=ax.transAxes,  # Use axes coordinates (0-1)
+            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'),
+            horizontalalignment='right',
+            verticalalignment='top',
+            fontsize=14)
+
+    # Adjust layout
+        #add hlines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
+        #for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
+        #    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
+    # Remove the title line
+    # ax.set_title('Methane distribution at t = {:.1f} hours'.format(time_series[i]))
+
+
+    plt.tight_layout()
+    plt.show()
+
+
+    # Create a pcolor plot for the entire time series
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Define the entire time series
+    time_series = np.arange(particle_lifespan_matrix.shape[0])/24
+
+    #define levels
+    levels = np.linspace(np.nanmin(mole_fraction_z),np.nanmax(mole_fraction_z),100)
+
+    # Create the pcolor plot
+    c = ax.pcolor(time_series, depth_vector, mole_fraction_z.T, shading='auto', cmap='rocket_r',vmin=np.nanmin(mole_fraction_z),vmax=np.nanmax(mole_fraction_z))
+
+    #plot some contours too
+    contour = ax.contour(time_series, depth_vector, mole_fraction_z.T, levels=levels[::5], colors='black', linewidths=0.2, zorder=1, alpha=0.5)
+
+    # Add colorbar
+    cbar = fig.colorbar(c, ax=ax)
+    cbar.set_label('Methane distribution [%]', fontsize=14)
+
+    # Customize plot
+    #ax.set_title('Position of released methane molecules over time after release',fontsize=14)
+    ax.set_xlabel('Time [days]', fontsize=14)
+    ax.set_ylabel('Depth', fontsize=14)
+    ax.invert_yaxis()  # Flip the y-axis
+    #plot vertical dashed lines 
+
+
+    #plot horizontal lines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
     #for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
     #    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
-# Remove the title line
-# ax.set_title('Methane distribution at t = {:.1f} hours'.format(time_series[i]))
 
+    ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
 
-plt.tight_layout()
-plt.show()
+    plt.show()
 
+    #Make a pcolor plot that illustrates a similar thing which is the vertical transport. I have to derivate the z-axis then
 
-# Create a pcolor plot for the entire time series
-fig, ax = plt.subplots(figsize=(10, 6))
+    vert_diff_lifetime = np.diff(particle_lifespan_matrix[:, :, 0], axis=1) #This is in mol/s ???
 
-# Define the entire time series
-time_series = np.arange(particle_lifespan_matrix.shape[0])/24
+    # Create a pcolor plot for the entire time series
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-#define levels
-levels = np.linspace(np.nanmin(mole_fraction_z),np.nanmax(mole_fraction_z),100)
+    time_series = np.arange(0, vert_diff_lifetime.shape[0])
 
-# Create the pcolor plot
-c = ax.pcolor(time_series, depth_vector, mole_fraction_z.T, shading='auto', cmap='rocket_r',vmin=np.nanmin(mole_fraction_z),vmax=np.nanmax(mole_fraction_z))
+    levels = np.linspace(-500,500,100)
 
-#plot some contours too
-contour = ax.contour(time_series, depth_vector, mole_fraction_z.T, levels=levels[::5], colors='black', linewidths=0.2, zorder=1, alpha=0.5)
+    # Create the pcolor plot
+    c = ax.pcolor(time_series, depth_vector[1:], vert_diff_lifetime.T, shading='auto', cmap='rocket_r',vmin=np.min(levels),vmax=np.max(levels))
 
-# Add colorbar
-cbar = fig.colorbar(c, ax=ax)
-cbar.set_label('Methane distribution [%]', fontsize=14)
+    #plot some contours too
+    contour = ax.contour(time_series, depth_vector[1:], vert_diff_lifetime.T, levels=levels[::10], colors='black', linewidths=0.1, zorder=1, alpha=0.5)
 
-# Customize plot
-#ax.set_title('Position of released methane molecules over time after release',fontsize=14)
-ax.set_xlabel('Time [days]', fontsize=14)
-ax.set_ylabel('Depth', fontsize=14)
-ax.invert_yaxis()  # Flip the y-axis
-#plot vertical dashed lines 
+    # Add colorbar
+    cbar = fig.colorbar(c, ax=ax)
+    cbar.set_label('Methane [mol/s]')
+    # Customize plot
+    ax.set_title('Vertical transport of released methane molecules over time after release')
+    ax.set_xlabel('Time [hours]')
+    ax.set_ylabel('Depth')
+    ax.invert_yaxis()  # Flip the y-axis
 
+    ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
 
-#plot horizontal lines at [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]
-#for i in [  0.,   3.,  10.,  15.,  25.,  50.,  75., 100., 150., 200., 250., 300.]:
-#    ax.axhline(i, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
-
-ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
-
-plt.show()
-
-#Make a pcolor plot that illustrates a similar thing which is the vertical transport. I have to derivate the z-axis then
-
-vert_diff_lifetime = np.diff(particle_lifespan_matrix[:, :, 0], axis=1) #This is in mol/s ???
-
-# Create a pcolor plot for the entire time series
-fig, ax = plt.subplots(figsize=(10, 6))
-
-time_series = np.arange(0, vert_diff_lifetime.shape[0])
-
-levels = np.linspace(-500,500,100)
-
-# Create the pcolor plot
-c = ax.pcolor(time_series, depth_vector[1:], vert_diff_lifetime.T, shading='auto', cmap='rocket_r',vmin=np.min(levels),vmax=np.max(levels))
-
-#plot some contours too
-contour = ax.contour(time_series, depth_vector[1:], vert_diff_lifetime.T, levels=levels[::10], colors='black', linewidths=0.1, zorder=1, alpha=0.5)
-
-# Add colorbar
-cbar = fig.colorbar(c, ax=ax)
-cbar.set_label('Methane [mol/s]')
-# Customize plot
-ax.set_title('Vertical transport of released methane molecules over time after release')
-ax.set_xlabel('Time [hours]')
-ax.set_ylabel('Depth')
-ax.invert_yaxis()  # Flip the y-axis
-
-ax.set_ylim([250, 0])  # Limit the y-axis to 250 m depth
-
-plt.show()
+    plt.show()
 
 
 #####################################################

@@ -653,8 +653,7 @@ def plot_multiple_2d_data_on_map(data_list, lon, lat, projection, levels, timepa
 
     return fig
 
-
-def get_bathymetry_lines(impermissible_cells):
+def get_bathymetry_lines(impermissible_cells,lon_mesh,lat_mesh):
     """
     Create bathymetry contour lines from impermissible cells.
     
@@ -662,6 +661,12 @@ def get_bathymetry_lines(impermissible_cells):
     ----------
     impermissible_cells : np.ndarray
         3D array of impermissible cells
+
+    lon_mesh : np.ndarray
+        2D array of longitude coordinates
+
+    lat_mesh : np.ndarray
+        2D array of latitude coordinates
         
     Returns
     -------
@@ -679,3 +684,103 @@ def get_bathymetry_lines(impermissible_cells):
     
     bathymetry_lines[0] = ([],[])  # Insert empty line for first layer
     return bathymetry_lines
+
+def plot_loss_analysis(times_totatm, total_atm_flux, ws_interp, particles_mox_loss, 
+                      particles_mass_out, particles_mass_died, particle_mass_redistributed,
+                      twentiethofmay, time_steps):
+    """
+    Create a 2x2 plot showing various loss mechanisms over time.
+    
+    Parameters
+    ----------
+    times_totatm : array-like
+        Time vector
+    total_atm_flux : array-like 
+        Atmospheric flux data
+    ws_interp : array-like
+        Wind speed data
+    particles_mox_loss : array-like
+        Microbial oxidation loss data
+    particles_mass_out : array-like
+        Mass lost from domain
+    particles_mass_died : array-like
+        Mass of deactivated particles
+    particle_mass_redistributed : array-like
+        Mass redistributed
+    """
+    
+    # Style settings
+    colors = {
+        'atm_flux': '#7e1e9c',
+        'mox': '#014d4e', 
+        'domain_loss': '#448ee4',
+        'particle_death': '#b66325'
+    }
+    grid_alpha = 0.4
+    linewidth = 2.5
+
+    # Create figure and axes
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Calculate time ticks
+    tick_indices = np.linspace(twentiethofmay, time_steps - 1, 4).astype(int)
+    tick_positions = times_totatm[tick_indices]
+    tick_labels = pd.to_datetime(tick_positions).strftime('%d.%b')
+
+    # Plot 1: Atmospheric Flux & Wind Speed
+    _plot_atm_flux_wind(ax1, times_totatm, total_atm_flux, ws_interp,
+                       twentiethofmay, time_steps, tick_positions, tick_labels,
+                       colors['atm_flux'], grid_alpha, linewidth)
+
+    # Plot 2: Microbial Oxidation
+    _plot_mox(ax2, times_totatm, particles_mox_loss, twentiethofmay, time_steps,
+              tick_positions, tick_labels, colors['mox'], grid_alpha, linewidth)
+
+    # Plot 3: Domain Loss
+    _plot_domain_loss(ax3, times_totatm, particles_mass_out, twentiethofmay, time_steps,
+                     tick_positions, tick_labels, colors['domain_loss'], grid_alpha, linewidth)
+
+    # Plot 4: Particle Death
+    _plot_particle_death(ax4, times_totatm, particles_mass_died, particle_mass_redistributed,
+                        twentiethofmay, time_steps, tick_positions, tick_labels,
+                        colors['particle_death'], grid_alpha, linewidth)
+
+    # Format all axes
+    _format_axes([ax1, ax2, ax3, ax4], tick_positions, tick_labels)
+
+    plt.tight_layout()
+    return fig
+
+def _plot_atm_flux_wind(ax, times, flux, wind, start, end, tick_pos, tick_labs,
+                       color, grid_alpha, linewidth):
+    """Plot atmospheric flux and wind speed."""
+    ax.plot(times[start:end], flux[start:end], 
+            color=color, linewidth=linewidth, label='Atmospheric Flux')
+    
+    ax.set_ylabel('Atmospheric Flux [mol hr$^{-1}$]', color=color)
+    ax.grid(True, alpha=grid_alpha)
+    ax.set_xlim([times[start], times[end-1]])
+    ax.tick_params(axis='y', labelcolor=color)
+
+    # Add wind speed on twin axis
+    ax_twin = ax.twinx()
+    ax_twin.plot(times[start:end], np.mean(np.mean(wind, axis=1), axis=1)[start:end],
+                color='grey', linewidth=linewidth, linestyle='--', label='Wind Speed')
+    ax_twin.set_ylabel('Wind Speed [m s$^{-1}$]', color='grey')
+    
+    # Add legend
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax_twin.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc='upper center', fontsize=12)
+
+# Add similar helper functions for other plots...
+
+def _format_axes(axes, tick_positions, tick_labels):
+    """Apply common formatting to all axes."""
+    for ax in axes:
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, rotation=0, ha='center')
+        ax.title.set_fontsize(16)
+        ax.xaxis.label.set_fontsize(14)
+        ax.yaxis.label.set_fontsize(14)
+        ax.tick_params(axis='both', labelsize=14)

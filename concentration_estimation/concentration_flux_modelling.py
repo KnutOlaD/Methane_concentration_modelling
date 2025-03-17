@@ -1,7 +1,33 @@
 '''
 The main script for the dissolved gas concentration model framework.
 
+For the script to work, it needs to import from akd_estimator.py located here: https://github.com/KnutOlaD/akd_estimator
+
+Main Components:
+1. Grid creation and particle initialization
+2. Concentration field estimation using KDE
+3. Process calculations (oxidation, atmospheric flux)
+4. Multi-layer visualization and animation
+
+Script Structure:
+1. Import libraries and modules
+2. Define constants and parameters
+3. Functions
+4. Load data and preprocess
+5. Create grid and initialize particles
+6. Main simulation loop
+7. Visualization
+
+Script main results:
+
+1. Creates the GRID object, a list of lists containing the sparse matrices for each horizontal field at each depth level and time step. 
+2. Saves the grid object as a pickle file for later use.
+3. Creates the GRID_atm_flux object, a grid storing all the 2d atmospheric fluxes at each timestep
+4. (...)
+
 Author: Knut Ola Dølven
+Date: 2024
+License: MIT
 
 '''
 
@@ -28,8 +54,8 @@ import os
 
 ### import the self-made modules ###
 #Set up paths
-source_root = r"c:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src"
-project_root = r"c:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\src\Methane_dispersion_modelling\concentration_estimation"
+source_root = r"\src" #must be source roots where the akd_estimator is located.
+project_root = r"\src\Methane_dispersion_modelling\concentration_estimation"
 # Set project root directory explicitly
 # Set module paths relative to project root
 akd_path = source_root+ '\\akd_estimator'
@@ -1773,3 +1799,4 @@ if plot_atm_flux == True:
                         twentiethofmay, time_steps)
 
         plt.savefig('methane_loss.png', dpi=300, bbox_inches='tight')
+        plt.show()

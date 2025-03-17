@@ -5,6 +5,8 @@ GENERAL INFORMATION
 -------------------
 // Repository for code and data accompanying Dølven et al., (2025) (see bottom for publication info)
 // For the script to work, it needs to call the akd_estimator function located here: https://github.com/KnutOlaD/akd_estimator
+// See concentration_flux_modelling.py for the project source path to make sure the import is working correctly
+// There is a future plan for making a package for the akd_estimator, which will make this process easier... 
 // Contents: 
 
 // Contact Information
@@ -33,7 +35,8 @@ DATA & FILES OVERVIEW
 (...)
 
 concentration_estimation/concentration_flux_modelling.py - Python file containing the main functions and script 
-for concentration modeling, including process modules and a visualization section
+for concentration modeling, including process modules and a visualization section. Requries the the particle position dataset
+located here: (...) to work as well as the akd_estimator.py script ready for export. 
 
 concentration_estimation/geographic_plotter.py - Python file containing plotting functions used to visualize results 
 from concentration_flux_modelling.py.

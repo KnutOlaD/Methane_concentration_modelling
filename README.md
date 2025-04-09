@@ -16,7 +16,7 @@ GENERAL INFORMATION
      // ORCID: 0000-0002-5315-4834
 
 // Contributors (code): Knut Ola Dølven, Håvard Espenes (https://github.com/HvardE)
-// Controbutors (method developement): Knut Ola Dølven, Håvard Espenes, Alfred Hanssen, Magnus Drivdal, Bénédicte Férré
+// Controbutors (method developement): Knut Ola Dølven, Håvard Espenes, Alfred Hanssen, Muhammed Fatih Sert, Magnus Drivdal, Achim Randelhoff, Bénédicte Férré
 
 // For date of data collection, geographic location, funding sources, and description of data: See Dølven et al. (2025) 
 

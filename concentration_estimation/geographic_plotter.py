@@ -27,6 +27,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.ticker import MaxNLocator, FuncFormatter
 import gc
 from scipy.interpolate import RegularGridInterpolator
+import pandas as pd
 
 
 # Cache features for reuse
@@ -716,7 +717,7 @@ def plot_loss_analysis(times_totatm, total_atm_flux, ws_interp, particles_mox_lo
         'domain_loss': '#448ee4',
         'particle_death': '#b66325'
     }
-    grid_alpha = 0.4
+    grid_alpha = 0
     linewidth = 2.5
 
     # Create figure and axes
@@ -758,7 +759,7 @@ def _plot_atm_flux_wind(ax, times, flux, wind, start, end, tick_pos, tick_labs,
             color=color, linewidth=linewidth, label='Atmospheric Flux')
     
     ax.set_ylabel('Atmospheric Flux [mol hr$^{-1}$]', color=color)
-    ax.grid(True, alpha=grid_alpha)
+    ax.grid(False, alpha=grid_alpha)
     ax.set_xlim([times[start], times[end-1]])
     ax.tick_params(axis='y', labelcolor=color)
 
@@ -767,6 +768,9 @@ def _plot_atm_flux_wind(ax, times, flux, wind, start, end, tick_pos, tick_labs,
     ax_twin.plot(times[start:end], np.mean(np.mean(wind, axis=1), axis=1)[start:end],
                 color='grey', linewidth=linewidth, linestyle='--', label='Wind Speed')
     ax_twin.set_ylabel('Wind Speed [m s$^{-1}$]', color='grey')
+    #turn off grid for twin axis
+    ax_twin.grid(False, alpha=grid_alpha)
+    ax_twin.tick_params(axis='y', labelcolor='grey')
     
     # Add legend
     lines1, labels1 = ax.get_legend_handles_labels()
@@ -784,3 +788,218 @@ def _format_axes(axes, tick_positions, tick_labels):
         ax.xaxis.label.set_fontsize(14)
         ax.yaxis.label.set_fontsize(14)
         ax.tick_params(axis='both', labelsize=14)
+
+def _plot_mox(ax, times, mox_loss, start, end, tick_pos, tick_labs,
+              color, grid_alpha, linewidth):
+    """Plot microbial oxidation loss."""
+    ax.plot(times[start:end], mox_loss[start:end], 
+            color=color, linewidth=linewidth, label='Microbial Oxidation')
+    ax.set_ylabel('Microbial Oxidation [mol hr$^{-1}$]', color=color)
+    ax.grid(True, alpha=grid_alpha)
+    ax.set_xlim([times[start], times[end-1]])
+    ax.tick_params(axis='y', labelcolor=color)
+
+    # Add legend
+    lines1, labels1 = ax.get_legend_handles_labels()
+    ax.legend(lines1, labels1, loc='upper center', fontsize=12) 
+
+def _plot_domain_loss(ax, times, domain_loss, start, end, tick_pos, tick_labs,
+                     color, grid_alpha, linewidth):
+    """Plot mass lost from domain."""
+    ax.plot(times[start:end], domain_loss[start:end], 
+            color=color, linewidth=linewidth, label='Mass Lost from Domain')
+    ax.set_ylabel('Mass Lost from Domain [mol hr$^{-1}$]', color=color)
+    ax.grid(True, alpha=grid_alpha)
+    ax.set_xlim([times[start], times[end-1]])
+    ax.tick_params(axis='y', labelcolor=color)
+
+    # Add legend
+    lines1, labels1 = ax.get_legend_handles_labels()
+    ax.legend(lines1, labels1, loc='upper center', fontsize=12)
+
+def _plot_particle_death(ax, times, mass_died, mass_redistributed, start, end,
+                        tick_pos, tick_labs, color, grid_alpha, linewidth):
+    """Plot mass of deactivated particles and redistributed mass."""
+    ax.plot(times[start:end], mass_died[start:end], 
+            color=color, linewidth=linewidth, label='Mass of Deactivated Particles')
+    ax.plot(times[start:end], mass_redistributed[start:end], 
+            color='grey', linewidth=linewidth, linestyle='--', label='Mass Redistributed')
+    ax.set_ylabel('Mass of Deactivated Particles [mol hr$^{-1}$]', color=color)
+    ax.grid(True, alpha=grid_alpha)
+    ax.set_xlim([times[start], times[end-1]])
+    ax.tick_params(axis='y', labelcolor=color)
+
+    # Add legend
+    lines1, labels1 = ax.get_legend_handles_labels()
+    ax.legend(lines1, labels1, loc='upper center', fontsize=12)
+
+
+def plot_methane_fate(particle_lifespan_matrix, R_ox, show=True):
+    """
+    Creates plots showing the fate of methane over time.
+    
+    Parameters
+    ----------
+    particle_lifespan_matrix : np.ndarray
+        3D array containing particle lifespan data with shape (time, particles, type)
+        where type contains [methane amount, MOx loss, atmospheric loss]
+    R_ox : float
+        Oxidation rate constant [hr^-1]
+    show : bool, optional
+        Whether to display the plots (default: True)
+        
+    Returns
+    -------
+    tuple
+        (fig1, fig2) containing the two created figure objects
+    """
+    
+    # Calculate losses
+    loss_atm = np.nansum(particle_lifespan_matrix[:,:,2], axis=1)
+    loss_mox = (np.nansum(particle_lifespan_matrix[:,:,0], axis=1)) * R_ox * 3600
+    
+    # Trim last two timesteps (as in original code)
+    loss_mox = loss_mox[:-2]
+    loss_atm = loss_atm[:-2]
+    meth_left = np.nansum(particle_lifespan_matrix[:-2,:,0], axis=1)
+    
+    # Calculate accumulated losses
+    loss_mox_acc = np.cumsum(loss_mox)
+    loss_atm_acc = np.cumsum(loss_atm)
+    
+    # Calculate total methane and fractions
+    total_methane = meth_left + loss_mox_acc + loss_atm_acc
+    frac_remain = meth_left / total_methane * 100
+    frac_mox = loss_mox_acc / total_methane * 100
+    frac_atm = loss_atm_acc / total_methane * 100
+    
+    # Convert time to days
+    days = np.arange(len(total_methane))/24
+    
+    # Create first plot - stacked area
+    fig1 = plt.figure(figsize=(8, 6), dpi=150)
+    plt.fill_between(days, 0, frac_remain, 
+                    label='Remains in water column', 
+                    color='#069af3', alpha=0.7)
+    plt.fill_between(days, frac_remain, frac_remain + frac_mox, 
+                    label='Lost to MOx', 
+                    color='#fe01b1', alpha=0.7)
+    plt.fill_between(days, frac_remain + frac_mox, 100, 
+                    label='Lost to atmosphere', 
+                    color='#20f986', alpha=0.7)
+    plt.ylabel('Fraction of total methane [%]', fontsize=14)
+    plt.xlabel('Time [days]', fontsize=14)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.legend(loc='lower left', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.ylim(0, 100)
+    plt.xlim(0, max(days))
+    
+    # Create second plot - dual axis
+    fig2, ax1 = plt.subplots(figsize=(8, 6), dpi=150)
+    ax2 = ax1.twinx()
+    
+    l1 = ax1.plot(days, frac_atm, color='#20f986', 
+                label='Lost to atmosphere', linewidth=2)
+    ax1.set_xlabel('Time [days]', fontsize=14)
+    ax1.set_ylabel('Fraction lost to atmosphere [%]', 
+                color='#20f986', fontsize=14)
+    ax1.tick_params(axis='y', labelcolor='#20f986', labelsize=12)
+    ax1.tick_params(axis='x', labelsize=12)
+    
+    l2 = ax2.plot(days, frac_mox, color='#fe01b1', 
+                label='Lost to MOx', linewidth=2)
+    ax2.set_ylabel('Fraction lost to MOx [%]', 
+                color='#fe01b1', fontsize=14)
+    ax2.tick_params(axis='y', labelcolor='#fe01b1', labelsize=12)
+    
+    lns = l1 + l2
+    labs = [l.get_label() for l in lns]
+    ax1.legend(lns, labs, loc='upper left', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    
+    if show:
+        plt.show()
+        
+    return fig1, fig2
+
+
+# Calculate the fraction of molecules at each depth level using the particle_lifespan_matrix[:,:,0] data
+# run this if main script
+
+loss_atm = np.nansum(particle_lifespan_matrix[:,:,2],axis=1)#/np.nansum(particle_lifespan_matrix[:,:,0],axis=1)
+loss_mox = np.nansum(particle_lifespan_matrix[:,:,1],axis=1)
+frac_loss_atm = np.nansum(particle_lifespan_matrix[:,:,2],axis=1)/np.nansum(particle_lifespan_matrix[:,:,0],axis=1)
+frac_loss_mox = np.nansum(particle_lifespan_matrix[:,:,1],axis=1)/np.nansum(particle_lifespan_matrix[:,:,0],axis=1)
+
+#accumulated fractional loss
+frac_loss_atm_acc = np.cumsum(frac_loss_atm)
+frac_loss_mox_acc = np.cumsum(frac_loss_mox)
+loss_mox = (np.nansum(particle_lifespan_matrix[:,:,0],axis=1))*R_ox*3600
+
+#set plot style to default
+plt.style.use('default')
+loss_mox = loss_mox[:-2]
+loss_atm = loss_atm[:-2]
+meth_left = np.nansum(particle_lifespan_matrix[:-2,:,0],axis=1)
+
+#Calculate accumulated loss vectors
+loss_mox_acc = np.cumsum(loss_mox)
+loss_atm_acc = np.cumsum(loss_atm)
+
+# Calculate total methane at each timestep
+total_methane = meth_left + loss_mox_acc + loss_atm_acc
+
+# Calculate fractions
+frac_remain = meth_left / total_methane * 100
+frac_mox = loss_mox_acc / total_methane * 100
+frac_atm = loss_atm_acc / total_methane * 100
+
+plt.figure(figsize=(8, 6), dpi=150)
+days = np.arange(len(total_methane))/24  # Convert hours to days
+
+plt.fill_between(days, 0, frac_remain, 
+                label='Remains in water column', 
+                color='#069af3', alpha=0.7)
+
+plt.fill_between(days, frac_remain, frac_remain + frac_mox, 
+                label='Lost to MOx', 
+                color='#fe01b1', alpha=0.7)
+
+plt.fill_between(days, frac_remain + frac_mox, 100, 
+                label='Lost to atmosphere', 
+                color='#20f986', alpha=0.7)
+plt.ylabel('Fraction of total methane [%]', fontsize=14)
+plt.xlabel('Time [days]', fontsize=14)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.legend(loc='lower left', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.ylim(0, 100)
+plt.xlim(0, max(days))
+plt.show()
+
+# 2. Dual axis plot for losses
+fig, ax1 = plt.subplots(figsize=(8, 6),dpi=150)
+ax2 = ax1.twinx()
+# Plot atmospheric loss
+l1 = ax1.plot(days, frac_atm, color='#20f986', 
+            label='Lost to atmosphere', linewidth=2)
+ax1.set_xlabel('Time [days]', fontsize=14)
+ax1.set_ylabel('Fraction lost to atmosphere [%]', 
+            color='#20f986', fontsize=14)
+ax1.tick_params(axis='y', labelcolor='#20f986', labelsize=12)
+ax1.tick_params(axis='x', labelsize=12)
+# Plot MOx loss
+l2 = ax2.plot(days, frac_mox, color='#fe01b1', 
+            label='Lost to MOx', linewidth=2)
+ax2.set_ylabel('Fraction lost to MOx [%]', 
+            color='#fe01b1', fontsize=14)
+ax2.tick_params(axis='y', labelcolor='#fe01b1', labelsize=12)
+lns = l1 + l2
+labs = [l.get_label() for l in lns]
+ax1.legend(lns, labs, loc='upper left', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.show()
+

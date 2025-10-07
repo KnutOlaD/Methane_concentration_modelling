@@ -29,17 +29,35 @@ Lagrangian particle approach with adaptive kernel density estimation (KDE) and f
 See Dølven et al. (2025) for a full detailed description.
 
 --------------------
-DATA & FILES OVERVIEW
+DATA FILES, AND FOLDERS OVERVIEW
 --------------------
 
-(...)
+### Main Folders
 
-concentration_estimation/concentration_flux_modelling.py - Python file containing the main functions and script 
-for concentration modeling, including process modules and a visualization section. Requries the the particle position dataset
-located here: (...) to work as well as the akd_estimator.py script ready for export. 
+- **Atmosphere/** - Contains atmospheric data and related processing scripts
+- **concentration_estimation/** - Core implementation of concentration modeling and visualization
+- **figures/** - Figures showing the effect of using different fallback values for diffusivity in OpenDrift
+- **fvtools/** - 
+- **opendrift/** - 
+- **particle_profiles/** - Particle release profiles (derived from M2PG1 output)
+- **norkyst/** - 
+- **pythondefs/** - 
+- **runscripts/** - 
 
-concentration_estimation/geographic_plotter.py - Python file containing plotting functions used to visualize results 
-from concentration_flux_modelling.py.
+### Key Scripts
+
+#### Concentration Estimation
+- `concentration_flux_modelling.py` - Main concentration modeling implementation with process modules
+- `geographic_plotter.py` - Visualization functions for concentration model results
+- `akd_density_estimator.py` - Adaptive kernel density estimation implementation
+
+#### Configuration
+- `config.py` - Configuration and path definitions for scripts related to the concentration estimation (`concentration_flux_modelling.py` and associated scripts/functions)
+- `environment.yml` - Conda environment specification
+
+### Dependencies
+
+This project requires the akd_estimator package, available at: https://github.com/KnutOlaD/akd_estimator
 
 ---------------------------
 PUBLICATION AND HOW TO CITE

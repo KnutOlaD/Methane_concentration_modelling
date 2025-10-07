@@ -10,6 +10,10 @@ import xarray as xr
 import pandas as pd
 import pickle
 import xarray as xr
+from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
+from config import *
 
 #change plotting style to dark
 plt.style.use('dark_background')
@@ -18,10 +22,7 @@ plt.style.use('dark_background')
 ### LOAD DATA USING xarray ###
 ##############################
 
-
-import xarray as xr
-
-ds = xr.open_dataset('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_May_2018.grib', engine='cfgrib')
+ds = xr.open_dataset(ATMOSPHERE_PATHS['maydata'], engine='cfgrib')
 
 u10May = ds['u10']
 v10May = ds['v10']
@@ -41,7 +42,7 @@ latsMay = latsMay.values
 wsMay = np.sqrt(u10_array_MAY**2 + v10_array_MAY**2)
 
 
-ds = xr.open_dataset('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_June_2018.grib', engine='cfgrib')
+ds = xr.open_dataset(ATMOSPHERE_PATHS['junedata'], engine='cfgrib')
 
 u10June = ds['u10']
 v10June = ds['v10']
@@ -75,7 +76,7 @@ wsmerge = np.sqrt(u10merge**2 + v10merge**2)
 
 #save these to a pickle file
 import pickle
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\ERAV_all_2018.pickle', 'wb') as f:
+with open(ATMOSPHERE_PATHS['output_path'], 'wb') as f:
     pickle.dump([lonsJune, latsJune, timemerge, sstmerge, u10merge, v10merge, wsmerge], f)
 
 #load the pickel file
@@ -117,10 +118,7 @@ plt.xlabel('Longitude')
 plt.ylabel('Latitude')
 #add colorbar and set its label
 
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\wind_field_average.png')
-
 plt.show()
-#save figure
 
 #create a gif of the wind field by looping over the time dimension
 import imageio
@@ -177,11 +175,11 @@ for i in range(time_steps):
     #set tight layout
     #plt.tight_layout()
     #save the figure
-    plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\create_gif\\wind_field'+str(i)+'.png')
-    images.append(imageio.imread('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\create_gif\\wind_field'+str(i)+'.png'))
+    plt.savefig(ATMOSPHERE_PATHS['results_path'] / 'create_gif' / f'wind_field{i}.png')
+    images.append(imageio.imread(ATMOSPHERE_PATHS['results_path'] / 'create_gif' / f'wind_field{i}.png'))
     plt.close()
 
-imageio.mimsave('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\create_gif\\wind_field.gif', images, duration = 0.1)
+imageio.mimsave(ATMOSPHERE_PATHS['results_path'] / 'create_gif' / 'wind_field.gif', images, duration = 0.1)
 
 #make a plot that shows average wind speed over time for the whole field
 plt.figure(figsize = (7, 7))
@@ -192,12 +190,7 @@ plt.title('Average wind speed whole domain')
 plt.show()
 
 #save figure
-plt.savefig('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\results\\atmosphere\\wind_speed_over_time.png')   
-
-
-
-
-
+plt.savefig(ATMOSPHERE_PATHS['results_path'] / 'wind_speed_over_time.png')
 
 
 

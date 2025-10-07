@@ -51,19 +51,11 @@ import xarray as xr
 from scipy.spatial import cKDTree
 import sys
 import os
-
-### import the self-made modules ###
-#Set up paths
-source_root = r"\src" #must be source roots where the akd_estimator is located.
-project_root = r"\src\Methane_dispersion_modelling\concentration_estimation"
-# Set project root directory explicitly
-# Set module paths relative to project root
-akd_path = source_root+ '\\akd_estimator'
-#add the paths
-sys.path.append(akd_path)
-sys.path.append(project_root)
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent)) #importing config file
+from config import *
+sys.path.append(PROJECT_ROOT / "src" / "akd_estimator") #importing the akd_estimator module
 import akd_estimator as akd
-import geographic_plotter as gp
 
 ###############
 
@@ -85,7 +77,7 @@ plt.style.use('dark_background') #plotting style
 save_data_to_file = False #save output?
 fit_wind_data = False #fit wind data
 fit_gt_vel = False #Do a new fit of gas transfer velocity
-wind_model_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\interpolated_wind_sst_fields_test.pickle'  #path to wind model
+wind_model_path = CONCENTRATION_MODELING_PATHS['interpolated_wind_sst_data'] #path to the interpolated wind and sst data
 kde_all = False #only do KDE for top layer trigger
 manual_border = True #Set manual border for grid
 manual_border_corners = [12.5,21,68.5,72,50*60] #Manual limitations for the grid [minlon,maxlon,minlat,maxlat,maxdepth]
@@ -107,6 +99,25 @@ dz_grid = 25. #vertical grid size in meters
 dt_grid = 3600. #temporal grid size in seconds
 V_grid = dxy_grid*dxy_grid*dz_grid #grid volume in m^3
 R_ox = 2.15*10**-7 #s^-1 average is R_ox = 3.6*10**-7 #s^-1
+R_ox = 1.8*10**-6
+R_ox = 2.0*10**-8 #What happens with the highest (cold seep) value?
+R_ox = 0.98*10**-6 #What happens with the lowest (cold seep) value?
+
+R_ox = 3.6*10**-7 #average R_ox.
+R_ox = 0.18*10**-6 #between the average and the minimum
+# calculate 4 more values that are in between the min, max and average
+R_ox_values = [2.0*10**-8,0.18*10**-6,3.6*10**-7,0.98*10**-6,1.8*10**-6]
+# find 4 values that are interpolated between the min and max
+#R_ox = 2.0*10**-8 #min value from cold
+len_R_ox_original = len(R_ox_values)
+for n in range(len_R_ox_original-1):
+    R_ox_values.insert(n+1+n,(R_ox_values[n+n]+R_ox_values[n+n+1])/2)
+print(R_ox_values)
+
+R_ox = R_ox_values[1]
+
+#R_ox = 6.7*10**-7 #mean value from 0-100m in the Nordic Seas
+#R_ox = 1.74*10**-6 #max value from hydrothermal plume
 sum_sb_release = 0.02695169330621381 #mol/hr 
 sum_sb_release_hr = sum_sb_release*dt_grid #mol released each time step
 num_seed = 500
@@ -121,7 +132,7 @@ age_constant = 0.0000000000001
 
 ### PATHS DO DATA ###
 # Sigma-level dataset with vertical diffusion in the whole wc and fallback = 10^-15
-datapath = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\OpenDrift\drift_norkyst_unlimited_vdiff_30s_fb_-15.nc'
+datapath = CONCENTRATION_MODELING_PATHS['PDMD'] #Path to the netcdf file containing the particle dispersion modeling data
 
 # Timing
 start_time_whole_script = time.time()
@@ -622,15 +633,15 @@ transformer = Transformer.from_proj(polar_stereo_proj, wgs84)
 
 # Get the bathymetry data
 if get_new_bathymetry == True:
-    bathymetry_path = r'C:\Users\kdo000\Dropbox\post_doc\project_modelling_M2PG1_hydro\data\bathymetry\IBCAO_v4_400m.nc'
-    output_path = 'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle'
+    bathymetry_path = CONCENTRATION_MODELING_PATHS['bathymetry_data'] #'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\gebco_2022_northsea.nc'
+    output_path = CONCENTRATION_MODELING_PATHS['interpolated_bathymetry'] #'C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle'
     bathymetry_data = process_bathymetry(bathymetry_path, bin_x, bin_y, transformer, output_path)
     interpolated_bathymetry = bathymetry_data[0]
     lat_mesh_map = bathymetry_data[1]
     lon_mesh_map = bathymetry_data[2]
 else:
     # Load the interpolated bathymetry data from pickle file
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\bathymetry\\interpolated_bathymetry.pickle', 'rb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['interpolated_bathymetry'], 'rb') as f:
         bathymetry_data = pickle.load(f)
     interpolated_bathymetry = bathymetry_data['bathymetry']
     lat_mesh_map = bathymetry_data['latitude']
@@ -718,7 +729,7 @@ N_eff = np.zeros(np.shape(GRID_active))
 if fit_wind_data == True:
     fit_wind_sst_data(bin_x,bin_y,bin_time) #This functino saves the wind and sst fields in a pickle file
     #LOAD THE PICKLE FILE (no matter what)
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\interpolated_wind_sst_fields_test.pickle', 'rb') as f:
+with open(CONCENTRATION_MODELING_PATHS['interpolated_wind_sst_data'], 'rb') as f:
     ws_interp,sst_interp,bin_x_mesh,bin_y_mesh,ocean_time_unix = pickle.load(f)
 
 #interpolate nans in the wind field and sst field
@@ -743,10 +754,10 @@ if fit_gt_vel == True:
 
         GRID_gt_vel[gtvel,:,:] = tmp
     #save the GRID_gt_vel
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['interpolated_gt_vel_data'], 'wb') as f:
         pickle.dump(GRID_gt_vel, f)
 else:#load the GRID_gt_vel
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\atmosphere\\model_grid\\gt_vel\\GRID_gt_vel.pickle', 'rb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['interpolated_gt_vel_data'], 'rb') as f:
         GRID_gt_vel = pickle.load(f)
 
 
@@ -1389,56 +1400,56 @@ print(f"Full calculation time was: {total_computation_time}")
 #    pickle.dump(GRID, f)
     #create a sparse matrix first
 #load the GRID file
-with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\data_02diff\\GRID.pickle', 'rb') as f:
+with open(CONCENTRATION_MODELING_PATHS['concentration_grid_output'], 'rb') as f:
     GRID = pickle.load(f)
 '''
 if save_data_to_file == True:
     #GRID_atm_sparse = csr_matrix(GRID_atm_flux)    
     GRID_atm_sparse = GRID_atm_flux
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'GRID_atm_flux.pickle', 'wb') as f:
         pickle.dump(GRID_atm_sparse, f)
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'GRID_atm_flux.pickle', 'rb') as f:
         GRID_atm_flux = pickle.load(f)
     #GRID_mox_sparse = csr_matrix(GRID_mox)
     #GRID_mox_sparse = GRID_mox
-    #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_mox.pickle', 'wb') as f:
+    #with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'GRID_mox.pickle', 'wb') as f:
     #    pickle.dump(GRID_mox_sparse, f)
     #and wind, sst, and gt_vel fields
     if fit_wind_data == True:
-        with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\ws_interp.pickle', 'wb') as f:
+        with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'ws_interp.pickle', 'wb') as f:
             pickle.dump(ws_interp, f)
-        with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\sst_interp.pickle', 'wb') as f:
+        with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'sst_interp.pickle', 'wb') as f:
             pickle.dump(sst_interp, f)
-        with open('C:\\Users\\kdo000\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_gt_vel.pickle', 'wb') as f:
+        with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'GRID_gt_vel.pickle', 'wb') as f:
             pickle.dump(GRID_gt_vel, f)
     #and vectors for total values
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_atm_flux.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'total_atm_flux.pickle', 'wb') as f:
         pickle.dump(total_atm_flux, f)
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_died.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'particles_mass_died.pickle', 'wb') as f:
         pickle.dump(particles_mass_died, f)
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mass_out.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'particles_mass_out.pickle', 'wb') as f:
         pickle.dump(particles_mass_out, f)
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\particles_mox_loss.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'particles_mox_loss.pickle', 'wb') as f:
         pickle.dump(particles_mox_loss, f)
     #and number of particles
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\total_parts.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'total_parts.pickle', 'wb') as f:
         pickle.dump(total_parts, f)
     #and the bandwidths
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_full.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'h_values_full.pickle', 'wb') as f:
         pickle.dump(h_values_full, f)
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\h_values_std_full.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'h_values_std_full.pickle', 'wb') as f:
         pickle.dump(h_values_std_full, f)
     #and the integral length scales
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\integral_length_scale_full.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'integral_length_scale_full.pickle', 'wb') as f:
         pickle.dump(integral_length_scale_full, f)
     #and the time it took to estimate the bandwidths
     #Save the GRID_vtrans as well
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_vtrans.pickle', 'wb') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'GRID_vtrans.pickle', 'wb') as f:
         pickle.dump(GRID_vtrans, f)
 
 
     #save a short textfile with the settings etc..
-    with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\settings.txt', 'w') as f:
+    with open(CONCENTRATION_MODELING_PATHS['output_data_path'] / 'settings.txt', 'w') as f:
         f.write('Model run summary\n')
         f.write('--------------------------------\n')
         f.write('GRID SETTINGS\n')
@@ -1517,6 +1528,7 @@ plot_lifetime_plots = False
 
 if plot_concentration == True:
 
+    import geographic_plotter as gp
     # ----------------------------
     # DEFINE THE BATHYMETRY LINES
     bathymetry_lines = gp.get_bathymetry_lines(impermissible_cells, lon_mesh, lat_mesh)
@@ -1582,7 +1594,9 @@ if plot_concentration == True:
 
     if create_gif_layers == True or create_video_layers == True:
 
-        foldername = 'C:\\Users\\'
+        foldername = CONCENTRATION_MODELING_PATHS['output_data_path'] / 'concentration_layers/'
+        if not os.path.exists(foldername):
+            os.makedirs(foldername)
         images_layers = [] #empty list to store images
         timestep_vector = np.arange(twentiethofmay,time_steps,1) #timestepvector
         times = times_totatm[timestep_vector] #timevector
@@ -1667,9 +1681,11 @@ if plot_concentration == True:
 if plot_atm_flux == True:
 
     #load the GRID_atm_flux
-    #with open('C:\\Users\\kdo000\\Dropbox\\post_doc\\project_modelling_M2PG1_hydro\\data\\diss_atm_flux\\test_run\\GRID_atm_flux.pickle', 'rb') as f:
+    #with open(CONCENTRATION_MODELING_PATHS['output_data_path']+'GRID_atm_flux.pickle', 'rb') as f:
     #    GRID_atm_flux = pickle.load(f)
-    foldername = 'C:\\Users\\'
+    foldername = CONCENTRATION_MODELING_PATHS['output_data_path'] / 'atm_flux/'
+    if not os.path.exists(foldername):
+        os.makedirs(foldername)
 
     # -----------------------
     # PLOT ACCUMULATED ATMOSPHERIC FLUX FIELD
@@ -1793,6 +1809,8 @@ if plot_atm_flux == True:
 
     if plot_loss == True:
 
+        import geographic_plotter as gp
+
         fig = gp.plot_loss_analysis(times_totatm, total_atm_flux, ws_interp,
                         particles_mox_loss, particles_mass_out,
                         particles_mass_died, particle_mass_redistributed,
@@ -1800,3 +1818,8 @@ if plot_atm_flux == True:
 
         plt.savefig('methane_loss.png', dpi=300, bbox_inches='tight')
         plt.show()
+
+#set path to geographic_plotter
+# -------------------------------- #
+os.chdir(PROJECT_ROOT / "scripts")
+# -------------------------------- #

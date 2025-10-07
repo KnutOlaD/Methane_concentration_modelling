@@ -18,13 +18,15 @@ def calc_turnover_from_k_in_seconds(k_ox, percent=0.01):
 
 k_ox = 0.00735
 k_ox = (2.15 * 10**-7) * 3600 * 24
+k_ox = 3.6*10**-7 * 3600 * 24  # m2/s to m2/day
+k_ox = 10**-6 * 3600 * 24
+
 
 loss_profile = 100 * calc_loss_profile(k_ox, range=100000)
 
 t_50 = calc_turnover_time(k_ox, percent=0.5)
 t_90 = calc_turnover_time(k_ox, percent=0.1)
 t_99 = calc_turnover_time(k_ox, percent=0.01)
-
 
 print(t_50)
 

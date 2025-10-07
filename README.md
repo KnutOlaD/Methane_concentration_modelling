@@ -49,7 +49,7 @@ DATA FILES, AND FOLDERS OVERVIEW
 #### Concentration Estimation
 - `concentration_flux_modelling.py` - Main concentration modeling implementation with process modules
 - `geographic_plotter.py` - Visualization functions for concentration model results
-- `akd_density_estimator.py` - Adaptive kernel density estimation implementation
+- `load_eraV_grib` - Loads eraV data, converts to .nc and interpolates onto modeling grid. 
 
 #### Configuration
 - `config.py` - Configuration and path definitions for scripts related to the concentration estimation (`concentration_flux_modelling.py` and associated scripts/functions)

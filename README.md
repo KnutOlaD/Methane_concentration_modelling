@@ -16,7 +16,7 @@ GENERAL INFORMATION
      // ORCID: 0000-0002-5315-4834
 
 // Contributors (code): Knut Ola Dølven, Håvard Espenes (https://github.com/HvardE)
-// Controbutors (method developement): Knut Ola Dølven, Håvard Espenes, Alfred Hanssen, Muhammed Fatih Sert, Magnus Drivdal, Achim Randelhoff, Bénédicte Férré
+// Contributors (method developement): Knut Ola Dølven, Håvard Espenes, Alfred Hanssen, Muhammed Fatih Sert, Magnus Drivdal, Achim Randelhoff, Bénédicte Férré
 
 // For date of data collection, geographic location, funding sources, and description of data: See Dølven et al. (2025) 
 
@@ -37,12 +37,12 @@ DATA FILES, AND FOLDERS OVERVIEW
 - **Atmosphere/** - Contains atmospheric data and related processing scripts
 - **concentration_estimation/** - Core implementation of concentration modeling and visualization
 - **figures/** - Figures showing the effect of using different fallback values for diffusivity in OpenDrift
-- **fvtools/** - 
-- **opendrift/** - 
+- **fvtools/** - Support scripts used when setting up particle tracking scenatios
+- **opendrift/** - OpenDrift is a software package for modeling the trajectories and fate of objects or substances drifting in the ocean (or even in the atmosphere).
 - **particle_profiles/** - Particle release profiles (derived from M2PG1 output)
-- **norkyst/** - 
-- **pythondefs/** - 
-- **runscripts/** - 
+- **norkyst/** - Contains a python class to access ROMS data (the NorKyst model) stored on norwegian met office servers
+- **pythondefs/** - Contains a definitions file to create a singularity container used to run python
+- **runscripts/** - Scripts used to run the particle tracking (opendrift) experiment explored in Dølvel et a. (2025)
 
 ### Key Scripts
 
